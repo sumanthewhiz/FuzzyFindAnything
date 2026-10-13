@@ -31,12 +31,15 @@ if (-not (Test-Path $python)) {
 $bootstrap = Get-Command python -ErrorAction Stop
 $previousPipConfig = $env:PIP_CONFIG_FILE
 try {
+    [string[]]$indexArguments = @()
     if ($PackageIndex) {
         $env:PIP_CONFIG_FILE = 'NUL'
-        & $bootstrap.Source -m pip --python $python install --index-url $PackageIndex --disable-pip-version-check --no-warn-script-location -r (Join-Path $root 'engine\requirements.txt')
-    } else {
-        & $bootstrap.Source -m pip --python $python install --disable-pip-version-check --no-warn-script-location -r (Join-Path $root 'engine\requirements.txt')
+        $indexArguments = @('--index-url', $PackageIndex)
     }
+    # Embedded Python ignores the temporary PYTHONPATH used by PEP 517 build isolation.
+    & $bootstrap.Source -m pip --python $python install @indexArguments --disable-pip-version-check --no-warn-script-location -r (Join-Path $root 'engine\build-requirements.txt')
+    if ($LASTEXITCODE -ne 0) { throw 'Installing the private build backend failed.' }
+    & $bootstrap.Source -m pip --python $python install @indexArguments --no-build-isolation --disable-pip-version-check --no-warn-script-location -r (Join-Path $root 'engine\requirements.txt')
     $installExitCode = $LASTEXITCODE
 } finally {
     $env:PIP_CONFIG_FILE = $previousPipConfig

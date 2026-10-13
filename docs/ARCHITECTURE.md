@@ -79,6 +79,8 @@ Run the following commands from the repository root in PowerShell. Dependency se
 
 This downloads the embedded Python runtime, checks its Python Software Foundation signature on initial installation, configures its private import paths, and installs `engine\requirements.txt`. It does not install packages into the bootstrap Python environment.
 
+The pinned Transformers dependency is built from source. Setup first installs the declared `engine\build-requirements.txt` backend into the private runtime, then builds without pip's temporary build-isolation environment, which embedded Python's `._pth` isolation does not import. This does not change the bootstrap interpreter or disable the application's own runtime isolation.
+
 Where an organization requires an approved package index:
 
 ```powershell
