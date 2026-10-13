@@ -24,4 +24,7 @@ unittest.main(module=None, argv=[
     $ErrorActionPreference = $previousPreference
 }
 Get-Content -LiteralPath $output -Tail 70
-if ($result -ne 0) { throw "Regression checks failed. Full output: $output" }
+if ($result -ne 0) {
+    Select-String -LiteralPath $output -Pattern '^FAIL:|^ERROR:' -Context 0,18 | ForEach-Object { $_.ToString() }
+    throw "Regression checks failed. Full output: $output"
+}

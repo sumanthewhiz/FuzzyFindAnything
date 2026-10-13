@@ -43,7 +43,7 @@ class IndexingEngine:
         self.model_factory = model_factory
         self.cpu_budget = get_budget()
         self.extractor = TextExtractor(extractor_path)
-        self.exclusions = [data_path, model_path, app_path, Path(sys.executable).parent]
+        self.exclusions = [Path(path).resolve() for path in (data_path, model_path, app_path, Path(sys.executable).parent)]
         self.condition = threading.Condition(threading.RLock())
         self.pending: dict[int, DirtyFolder] = {}
         self.stop_event = threading.Event()
@@ -232,7 +232,7 @@ class IndexingEngine:
         errors = []
         if request.paths and not request.force and not request.full_scan:
             for changed in request.paths:
-                path = Path(changed)
+                path = Path(changed).resolve()
                 if not is_within(path, root) or self.excluded(path): continue
                 if path.is_dir():
                     self._discover(identifier, path, False, errors)

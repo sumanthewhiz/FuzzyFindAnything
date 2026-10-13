@@ -30,7 +30,7 @@ def vector(axis: int = 0) -> np.ndarray:
 class StoreTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="ffa-unit-")
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve()
         self.corpus = self.root / "files"
         self.corpus.mkdir()
         self.store = VectorStore(self.root / "index")
@@ -239,7 +239,7 @@ class FakeModel:
 class CrawlerTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="ffa-crawler-")
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve()
         self.corpus = self.root / "files"
         self.corpus.mkdir()
         self.engine = IndexingEngine(
@@ -476,6 +476,26 @@ class CrawlerTests(unittest.TestCase):
         self.reconcile(self.folder, DirtyFolder(0, paths={path_key(path)}))
         self.assertEqual(str(path), self.engine.store.get_file(path)["path"])
 
+    def test_short_path_notifications_reconcile_the_canonical_file(self):
+        import ctypes
+        from ctypes import wintypes
+        path = self.corpus / "Quarterly budget notes.txt"
+        path.write_text("apple", encoding="utf-8")
+        self.reconcile(self.folder, DirtyFolder(0))
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.GetShortPathNameW.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+        output = ctypes.create_unicode_buffer(32768)
+        if not kernel.GetShortPathNameW(str(path), output, len(output)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if path_key(output.value) == path_key(path):
+            self.skipTest("8.3 aliases are disabled on this volume.")
+        stamp = path.stat()
+        path.write_text("boats", encoding="utf-8")
+        os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        self.reconcile(self.folder, DirtyFolder(0, paths={output.value}))
+        self.assertEqual([], self.engine.search("apple"))
+        self.assertEqual(1, len(self.engine.search("boats")))
+
     def test_user_exit_preserves_batches_without_recording_a_retry_failure(self):
         path = self.corpus / "interrupted.txt"
         path.write_text("apple", encoding="utf-8")
@@ -572,7 +592,7 @@ class NotificationTests(unittest.TestCase):
 class LiveUsnTests(unittest.TestCase):
     def test_usn_alone_detects_create_preserved_timestamp_update_and_delete(self):
         with tempfile.TemporaryDirectory(prefix="ffa-usn-") as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             corpus = root / "files"
             corpus.mkdir()
             # Disable directory callbacks to prove the USN journal itself drives these updates.

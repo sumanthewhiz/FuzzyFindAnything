@@ -17,7 +17,7 @@ from test_engine import FakeModel
 class LoggingTests(unittest.TestCase):
     def test_default_xml_configuration_and_validation(self):
         with tempfile.TemporaryDirectory(prefix="ffa-log-settings-") as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             self.assertEqual((True, root / "Logs"), load_logging_settings(root))
             target = root / "custom"
             config = root / "settings.xml"
@@ -36,7 +36,7 @@ class LoggingTests(unittest.TestCase):
 
     def test_per_file_outcomes_disable_and_location_change(self):
         with tempfile.TemporaryDirectory(prefix="ffa-log-files-") as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             corpus = root / "files"
             corpus.mkdir()
             good, bad = corpus / "notes.txt", corpus / "empty.txt"
@@ -78,7 +78,7 @@ class LoggingTests(unittest.TestCase):
 
     def test_unwritable_target_keeps_active_destination_and_reports_runtime_failure(self):
         with tempfile.TemporaryDirectory(prefix="ffa-log-errors-") as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             sink = IndexerLogging(True, root / "Logs")
             try:
                 invalid = root / "not-a-directory"
@@ -95,7 +95,7 @@ class LoggingTests(unittest.TestCase):
 
     def test_rotation_retains_bounded_history(self):
         with tempfile.TemporaryDirectory(prefix="ffa-log-rotation-") as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             sink = IndexerLogging(True, root)
             sink.engine_handler.maxBytes = 140
             try:
