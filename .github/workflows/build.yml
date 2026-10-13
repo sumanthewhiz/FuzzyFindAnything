@@ -1,0 +1,152 @@
+name: Build and release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  build:
+    name: Build ${{ matrix.runtime }}
+    runs-on: windows-2025
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: [win-x64, win-arm64]
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      HF_HUB_DISABLE_TELEMETRY: '1'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Set up bootstrap Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+          architecture: x64
+
+      - name: Resolve and validate version
+        id: version
+        run: |
+          [xml]$properties = Get-Content .\Directory.Build.props -Raw
+          $version = [string]$properties.Project.PropertyGroup.Version
+          if ($version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$') {
+            throw 'Directory.Build.props contains an invalid release version.'
+          }
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -cne "v$version") {
+            throw "Release tag must match Directory.Build.props: v$version."
+          }
+          "value=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Provision private runtime without the model
+        run: .\Setup.ps1 -SkipModel
+
+      - name: Run engine and packaging regressions
+        run: .\tests\RunChecks.ps1
+
+      - name: Check .NET build and formatting
+        run: |
+          dotnet build .\FuzzyFindAnything.sln -c Release --nologo
+          if ($LASTEXITCODE -ne 0) { throw 'The solution build failed.' }
+          dotnet format .\FuzzyFindAnything.sln --no-restore --verify-no-changes --verbosity quiet
+          if ($LASTEXITCODE -ne 0) { throw 'Formatting checks failed.' }
+
+      - name: Create relocatable package
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.value }}
+          RELEASE_RUNTIME: ${{ matrix.runtime }}
+        run: .\Build-Release.ps1 -SkipSetup -RuntimeIdentifier $env:RELEASE_RUNTIME -Version $env:RELEASE_VERSION
+
+      - name: Verify extracted runtime
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.value }}
+          RELEASE_RUNTIME: ${{ matrix.runtime }}
+        run: |
+          $archive = ".\artifacts\releases\FuzzyFindAnything-v$env:RELEASE_VERSION-$env:RELEASE_RUNTIME.zip"
+          & .\.runtime\python.exe .\tools\verify_release.py --archive $archive --runtime-id $env:RELEASE_RUNTIME --version $env:RELEASE_VERSION --smoke
+          if ($LASTEXITCODE -ne 0) { throw 'Relocated runtime verification failed.' }
+
+      - name: Upload packages and checksums
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: FuzzyFindAnything-${{ matrix.runtime }}
+          path: |
+            artifacts/releases/*.zip
+            artifacts/releases/*.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  release:
+    name: Publish release downloads
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified packages
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: FuzzyFindAnything-win-*
+          path: release
+          merge-multiple: true
+
+      - name: Verify checksums and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd release
+          test "$(find . -maxdepth 1 -name '*.zip' | wc -l)" -eq 2
+          test "$(find . -maxdepth 1 -name '*.sha256' | wc -l)" -eq 2
+          sha256sum --check --strict *.sha256
+          cat > release-notes.md <<'NOTES'
+          ## Download and run
+
+          Choose **win-x64** for Intel/AMD or **win-arm64** for Windows on ARM.
+          Extract the complete ZIP, run the included **Get-Model.ps1**, then open
+          **FuzzyFindAnything.exe**. No separate Python or .NET installation is required.
+
+          The model is downloaded separately (approximately 1.5 GB plus configuration).
+          Packages are unsigned. Check the matching SHA-256 file and follow your
+          organization's application policy.
+
+          [Quickstart](https://github.com/sumanthewhiz/FuzzyFindAnything/blob/main/QUICKSTART.md)
+          | [Architecture and limitations](https://github.com/sumanthewhiz/FuzzyFindAnything/blob/main/docs/ARCHITECTURE.md)
+
+          This release contains the application/runtime only, not personal indexes,
+          folder configuration, or model weights. See bundled notices for component
+          licensing; no open-source license has been designated for the application.
+          NOTES
+          prerelease=()
+          if [[ "$RELEASE_TAG" == *-* ]]; then prerelease=(--prerelease); fi
+          gh release create "$RELEASE_TAG" --verify-tag --draft \
+            --title "Fuzzy Find Anything $RELEASE_TAG" --notes-file release-notes.md \
+            "${prerelease[@]}" *.zip *.sha256
+          gh release edit "$RELEASE_TAG" --draft=false

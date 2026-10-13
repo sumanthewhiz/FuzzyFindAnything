@@ -1,0 +1,414 @@
+[CmdletBinding()]
+param(
+    [switch]$Enhanced,
+    [switch]$Diagnose
+)
+
+$ErrorActionPreference = 'Stop'
+$root = Split-Path $PSScriptRoot -Parent
+$app = Join-Path $root 'artifacts\FuzzyFindAnything\FuzzyFindAnything.exe'
+$python = Join-Path $root '.runtime\python.exe'
+$work = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) ('ffa-ui-' + [Guid]::NewGuid().ToString('N'))))
+$data = Join-Path $work 'index'
+$corpus = Join-Path $work 'files'
+Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Drawing
+Add-Type -ReferencedAssemblies @(
+    [System.Windows.Automation.AutomationElement].Assembly.Location,
+    [System.Windows.Automation.AutomationPattern].Assembly.Location,
+    [System.Drawing.Bitmap].Assembly.Location,
+    'System.Core'
+) -TypeDefinition @'
+using System;
+using System.Drawing;
+using System.Drawing.Imaging;
+using System.Runtime.InteropServices;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Windows.Automation;
+public static class FfaUiChecks {
+    [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hwnd, IntPtr dc, uint flags);
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out Rect rectangle);
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd);
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hwnd, int command);
+    [DllImport("user32.dll")] public static extern bool RedrawWindow(IntPtr hwnd, IntPtr rect, IntPtr region, uint flags);
+    [DllImport("user32.dll")] public static extern int GetDlgCtrlID(IntPtr hwnd);
+    [DllImport("user32.dll", SetLastError=true)] public static extern bool PostMessage(IntPtr hwnd, uint message, IntPtr wparam, IntPtr lparam);
+    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd, IntPtr process);
+    [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll", SetLastError=true)] public static extern bool AttachThreadInput(uint from, uint to, bool attach);
+    [DllImport("user32.dll")] public static extern IntPtr SetFocus(IntPtr hwnd);
+    [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left,Top,Right,Bottom; }
+    public static Task InvokeAsync(AutomationElement element) {
+        return Task.Run(() => ((InvokePattern)element.GetCurrentPattern(InvokePattern.Pattern)).Invoke());
+    }
+    public static void AcceptFolderDialog(AutomationElement dialog, AutomationElement button) {
+        var parent = new IntPtr(dialog.Current.NativeWindowHandle);
+        var child = new IntPtr(button.Current.NativeWindowHandle);
+        int identifier = GetDlgCtrlID(child);
+        if(parent == IntPtr.Zero || child == IntPtr.Zero || identifier != 1)
+            throw new Exception("The native folder confirmation button could not be identified.");
+        // Focus commits the edited path; the UIA proxy's global SendInput cannot target a private desktop.
+        uint current = GetCurrentThreadId(), target = GetWindowThreadProcessId(parent,IntPtr.Zero);
+        if(!AttachThreadInput(current,target,true))
+            throw new Exception("Could not attach to the test dialog input queue: " + Marshal.GetLastWin32Error());
+        try {
+            SetFocus(child);
+            if(!PostMessage(child,0xF5,IntPtr.Zero,IntPtr.Zero))
+                throw new Exception("Could not confirm the native folder dialog: " + Marshal.GetLastWin32Error());
+        } finally { AttachThreadInput(current,target,false); }
+    }
+    public static void Capture(IntPtr hwnd, string path) {
+        ShowWindow(hwnd,3);
+        SetForegroundWindow(hwnd);
+        RedrawWindow(hwnd,IntPtr.Zero,IntPtr.Zero,0x185);
+        Thread.Sleep(600);
+        Rect rect; GetWindowRect(hwnd,out rect);
+        using(var bitmap=new Bitmap(rect.Right-rect.Left,rect.Bottom-rect.Top))
+        using(var graphics=Graphics.FromImage(bitmap)) {
+            var dc=graphics.GetHdc();
+            try { if(!PrintWindow(hwnd,dc,2)) throw new Exception("PrintWindow failed."); }
+            finally { graphics.ReleaseHdc(dc); }
+            bitmap.Save(path,ImageFormat.Png);
+        }
+    }
+}
+'@
+
+function Find-Id([string]$id) {
+    $window.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
+        (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty, $id)))
+}
+
+function Wait-Check([scriptblock]$test, [string]$label, [int]$seconds = 90) {
+    $deadline = [DateTime]::UtcNow.AddSeconds($seconds)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        if ($process.HasExited) { throw "Application exited while waiting for $label, code $($process.ExitCode)" }
+        if (& $test) { return }
+        Start-Sleep -Milliseconds 250
+    }
+    foreach ($id in @('SearchInput','EmptyResultsTitle','IndexCounts','EngineState','IndexingActivity','ErrorBanner','LogDirectory','LoggingToggle')) {
+        $element = Find-Id $id
+        if ($element) {
+            Write-Output "$id | enabled=$($element.Current.IsEnabled) | $($element.Current.Name)"
+            $pattern = $null
+            if ($element.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$pattern)) {
+                Write-Output "  Value: $($pattern.Current.Value)"
+            }
+        }
+    }
+    if (Test-Path (Join-Path $data 'settings.xml')) { Get-Content -LiteralPath (Join-Path $data 'settings.xml') }
+    if ($window) { [FfaUiChecks]::Capture([IntPtr]$window.Current.NativeWindowHandle, (Join-Path $root '.downloads\ui-failure.png')) }
+    throw "Timed out waiting for $label"
+}
+
+function Select-Tab([string]$id) {
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    do {
+        $tab = Find-Id $id
+        if ($tab) { break }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+    if (-not $tab) { throw "Missing tab $id after waiting for the modal window to close." }
+    ([System.Windows.Automation.SelectionItemPattern]$tab.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)).Select()
+}
+
+function Invoke-Button([string]$id) {
+    $button = Find-Id $id
+    if (-not $button) { throw "Missing button $id" }
+    ([System.Windows.Automation.InvokePattern]$button.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)).Invoke()
+}
+
+function Toggle-Control([string]$id) {
+    $control = Find-Id $id
+    if (-not $control) { throw "Missing toggle $id" }
+    ([System.Windows.Automation.TogglePattern]$control.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)).Toggle()
+}
+
+$process = $null
+$window = $null
+try {
+    if ($Diagnose) { $env:FFA_TRACE_HANGS = '1' }
+    New-Item -ItemType Directory -Path $work, $corpus | Out-Null
+    @'
+import sys
+from pathlib import Path
+root=Path(sys.argv[1]); work=Path(sys.argv[2])
+sys.path.insert(0,str(root/'engine'))
+from store import VectorStore
+from PIL import Image,ImageDraw
+corpus=work/'files'
+(corpus/'Shape guide.txt').write_text('Geometry notes: a red circle is a round shape. This document describes a red circle on a white background.',encoding='utf-8')
+image=Image.new('RGB',(256,256),'white')
+ImageDraw.Draw(image).ellipse((40,40,216,216),fill='red')
+image.save(corpus/'Red circle.png')
+store=VectorStore(work/'index')
+store.add_folder(corpus)
+store.close()
+'@ | & $python - $root $work
+    if ($LASTEXITCODE -ne 0) { throw 'Could not prepare the isolated UI test corpus.' }
+    $process = Start-Process -FilePath $app -ArgumentList @('--data-dir', "`"$data`"") -PassThru
+    Wait-Check {
+        $script:window = [System.Windows.Automation.AutomationElement]::RootElement.FindFirst(
+            [System.Windows.Automation.TreeScope]::Children,
+            (New-Object System.Windows.Automation.AndCondition(
+                (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty, $process.Id)),
+                (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty, 'MainWindow')))))
+        $script:window -ne $null
+    } 'main window' 30
+    $mainHandle = [IntPtr]$window.Current.NativeWindowHandle
+    $windowPattern = [System.Windows.Automation.WindowPattern]$window.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern)
+    if ($windowPattern.Current.WindowVisualState -ne [System.Windows.Automation.WindowVisualState]::Maximized) {
+        throw 'The application did not open maximized.'
+    }
+    Write-Output 'PASS native WPF opens maximized'
+    if ((Find-Id 'Attribution').Current.Name -ne '(c) 2026 Suman Ghosh' -or
+        (Find-Id 'LinkedInLink').Current.HelpText -ne 'https://www.linkedin.com/in/ghoshsuman/' -or
+        (Find-Id 'GitHubLink').Current.HelpText -ne 'https://github.com/sumanthewhiz') {
+        throw 'The attribution or profile links are incorrect.'
+    }
+    foreach ($id in @('LinkedInLink','GitHubLink')) {
+        $pattern = $null
+        if (-not (Find-Id $id).TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) {
+            throw "Profile link $id is not accessible as an actionable button."
+        }
+    }
+    Write-Output 'PASS accessible attribution and profile links'
+    if ($Diagnose) {
+        Start-Sleep -Seconds 120
+        $items = $window.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+        foreach ($item in $items) {
+            $current = $item.Current
+            if ($current.Name -or $current.AutomationId) {
+                Write-Output "$($current.ControlType.ProgrammaticName) | $($current.AutomationId) | enabled=$($current.IsEnabled) | $($current.Name)"
+            }
+        }
+        [FfaUiChecks]::Capture($mainHandle, (Join-Path $root '.downloads\ui-diagnostic.png'))
+        return
+    }
+    Wait-Check { Select-Tab 'SearchTab'; (Find-Id 'SearchButton').Current.IsEnabled } 'model ready' 360
+    Select-Tab 'FoldersTab'
+    Wait-Check {
+        Select-Tab 'FoldersTab'
+        $window.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
+            (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Indexed'))) -ne $null
+    } 'configured folder indexing' 240
+    Write-Output 'PASS configured folders and live indexing status'
+    if ($Enhanced) {
+        if ((Find-Id 'FolderIndexingDetails').Current.Name -ne '2 succeeded  |  0 failed') { throw 'Folder details are not concise outcome counts.' }
+        [FfaUiChecks]::Capture($mainHandle, (Join-Path $root '.downloads\ui-folders-light.png'))
+        Toggle-Control 'ThemeToggle'
+        Wait-Check { (Find-Id 'ThemeToggle').Current.ItemStatus -eq 'Dark' } 'dark appearance'
+        [xml]$configuration = Get-Content -LiteralPath (Join-Path $data 'settings.xml') -Raw
+        if ($configuration.FuzzyFindAnythingConfiguration.Appearance.theme -ne 'Dark') { throw 'The theme was not saved to XML.' }
+        [FfaUiChecks]::Capture($mainHandle, (Join-Path $root '.downloads\ui-folders-dark.png'))
+        Write-Output 'PASS light/dark switching, persisted appearance and concise folder counts'
+    }
+
+    $browse = [FfaUiChecks]::InvokeAsync((Find-Id 'AddFolderButton'))
+    $dialog = $null
+    Wait-Check {
+        $script:dialog = $window.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
+            (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Choose a folder to index')))
+        $script:dialog -ne $null
+    } 'native folder picker' 15
+    ([System.Windows.Automation.WindowPattern]$dialog.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern)).Close()
+    if (-not $browse.Wait(5000)) { throw 'The folder picker did not close.' }
+    Write-Output 'PASS native folder browser'
+
+    Select-Tab 'SearchTab'
+    $query = [System.Windows.Automation.ValuePattern](Find-Id 'SearchInput').GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+    $query.SetValue('a red circle on a white background')
+    Invoke-Button 'SearchButton'
+    Wait-Check {
+        $window.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
+            (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Shape guide.txt'))) -ne $null
+    } 'real document search result'
+    Wait-Check {
+        $window.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
+            (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Red circle.png'))) -ne $null
+    } 'real image search result'
+    Write-Output 'PASS WPF-to-engine real document and image search'
+    if ($Enhanced) {
+        if (-not (Find-Id 'DocumentResults') -or -not (Find-Id 'ImageGallery')) { throw 'Missing separated result sections.' }
+        Wait-Check {
+            $previews = (Find-Id 'ImageGallery').FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Image thumbnail')))
+            $previews.Count -gt 0 -and $previews[0].Current.ItemStatus -eq 'Preview loaded'
+        } 'actual gallery thumbnail'
+        [FfaUiChecks]::Capture($mainHandle, (Join-Path $root '.downloads\ui-search.png'))
+        Toggle-Control 'ThemeToggle'
+        Wait-Check { (Find-Id 'ThemeToggle').Current.ItemStatus -eq 'Light' } 'light appearance'
+        [FfaUiChecks]::Capture($mainHandle, (Join-Path $root '.downloads\ui-search-light.png'))
+        Toggle-Control 'ThemeToggle'
+        Select-Tab 'IndexInfoTab'
+        if (-not (Find-Id 'IndexMetadataPanel')) { throw 'Missing index metadata panel.' }
+        Wait-Check { (Find-Id 'TotalFilesValue').Current.Name -eq '2' } 'initial metadata counts'
+        if ((Find-Id 'TotalDocumentsValue').Current.Name -ne '1' -or (Find-Id 'TotalImagesValue').Current.Name -ne '1') {
+            throw 'Document/image metadata counts are incorrect.'
+        }
+        if ((Find-Id 'IndexTypeValue').Current.Name -notlike 'DiskANN (*') { throw 'DiskANN version is missing.' }
+        if ((Find-Id 'LastRefreshedValue').Current.Name -eq 'Not refreshed yet') { throw 'Refresh timestamp is missing.' }
+        $liveFile = Join-Path $corpus 'Live update.txt'
+        [IO.File]::WriteAllText($liveFile, 'A new document to verify live index statistics.', [Text.Encoding]::UTF8)
+        Wait-Check { (Find-Id 'TotalFilesValue').Current.Name -eq '3' -and (Find-Id 'TotalDocumentsValue').Current.Name -eq '2' } 'live metadata update'
+        [FfaUiChecks]::Capture($mainHandle, (Join-Path $root '.downloads\ui-index.png'))
+        [IO.File]::Delete($liveFile)
+        Wait-Check { (Find-Id 'TotalFilesValue').Current.Name -eq '2' } 'live metadata deletion'
+        Write-Output 'PASS actual image thumbnail and live metadata counts, version and refresh timestamp'
+    } else {
+        [FfaUiChecks]::Capture($mainHandle, (Join-Path $root '.downloads\ui-search.png'))
+    }
+    Select-Tab 'SearchTab'
+    Invoke-Button 'ClearSearchButton'
+    if ($query.Current.Value -ne '' -or (Find-Id 'EmptyResultsTitle').Current.Name -ne 'Search your index') {
+        throw 'Clear did not reset the query and results.'
+    }
+    $query.SetValue(('quarterly financial report budget forecast ' * 30))
+    Invoke-Button 'SearchButton'
+    if ((Find-Id 'SearchButton').Current.IsEnabled) { throw 'The cancellation check did not begin an active search.' }
+    Invoke-Button 'ClearSearchButton'
+    Start-Sleep -Seconds 8
+    if ($query.Current.Value -ne '' -or (Find-Id 'ClearSearchButton').Current.IsEnabled -or
+        (Find-Id 'EmptyResultsTitle').Current.Name -ne 'Search your index') {
+        throw 'A late search response repopulated cleared results.'
+    }
+    Write-Output 'PASS clearing completed and in-flight searches without stale results'
+    $query.SetValue('a red circle on a white background')
+
+    if ($Enhanced) {
+        Select-Tab 'ConfigurationTab'
+        Wait-Check { (Find-Id 'LoggingToggle').Current.IsEnabled } 'logging controls'
+        if ((Find-Id 'LoggingToggle').Current.ItemStatus -ne 'Enabled') { throw 'Logging is not enabled by default.' }
+        $defaultLogs = Join-Path $data 'Logs'
+        $outcomes = Get-Content -LiteralPath (Join-Path $defaultLogs 'indexer.jsonl') | ForEach-Object { $_ | ConvertFrom-Json }
+        if (@($outcomes | Where-Object outcome -eq 'Succeeded').Count -lt 2) { throw 'Initial per-file success records are missing.' }
+        Toggle-Control 'LoggingToggle'
+        Wait-Check { (Find-Id 'LoggingToggle').Current.ItemStatus -eq 'Disabled' } 'disable logging'
+        $logSizes = @{}
+        Get-ChildItem -LiteralPath $defaultLogs -File | ForEach-Object { $logSizes[$_.Name] = $_.Length }
+        [IO.File]::WriteAllText((Join-Path $corpus 'Not logged.txt'), 'A file indexed while diagnostic logging is disabled.', [Text.Encoding]::UTF8)
+        Wait-Check { (Find-Id 'IndexCounts').Current.Name -eq '3 files | 3 passages' } 'indexing while logging disabled'
+        foreach ($name in $logSizes.Keys) {
+            if ((Get-Item -LiteralPath (Join-Path $defaultLogs $name)).Length -ne $logSizes[$name]) { throw "Disabled logging still wrote $name" }
+        }
+        $customLogs = Join-Path $work 'log & diagnostics'
+        New-Item -ItemType Directory -Path $customLogs | Out-Null
+        $picker = [FfaUiChecks]::InvokeAsync((Find-Id 'ChangeLogDirectoryButton'))
+        Wait-Check {
+            $script:dialog = $window.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
+                (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Choose a log folder')))
+            $script:dialog -ne $null
+        } 'log location picker' 15
+        $edits = $dialog.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+            (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Edit)))
+        $folderInput = @($edits | Where-Object { $_.Current.Name -like 'Folder*' }) | Select-Object -First 1
+        if (-not $folderInput) { throw ('Missing folder input: ' + (($edits | ForEach-Object { $_.Current.Name + ':' + $_.Current.AutomationId }) -join ', ')) }
+        ([System.Windows.Automation.ValuePattern]$folderInput.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)).SetValue($customLogs)
+        $select = $dialog.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
+            (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty, '1')))
+        if (-not $select) { throw 'The folder picker has no Select folder button.' }
+        [FfaUiChecks]::AcceptFolderDialog($dialog, $select)
+        Start-Sleep -Milliseconds 700
+        $stillOpen = $window.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
+            (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Choose a log folder')))
+        if ($stillOpen) {
+            $remainingInput = [System.Windows.Automation.ValuePattern]$folderInput.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+            Write-Output "Folder picker input after navigation: $($remainingInput.Current.Value)"
+            [FfaUiChecks]::AcceptFolderDialog($dialog, $select)
+        }
+        if (-not $picker.Wait(10000)) { throw 'The log folder picker did not close.' }
+        Select-Tab 'ConfigurationTab'
+        Wait-Check {
+            Select-Tab 'ConfigurationTab'
+            ([System.Windows.Automation.ValuePattern](Find-Id 'LogDirectory').GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)).Current.Value -eq $customLogs -and
+            (Find-Id 'LoggingToggle').Current.IsEnabled
+        } 'custom log directory' 30
+        Toggle-Control 'LoggingToggle'
+        Wait-Check { (Find-Id 'LoggingToggle').Current.ItemStatus -eq 'Enabled' } 'enable custom logging'
+        [IO.File]::WriteAllText((Join-Path $corpus 'Logged.txt'), 'An indexed document with a per-file log record.', [Text.Encoding]::UTF8)
+        [IO.File]::WriteAllBytes((Join-Path $corpus 'Unreadable.txt'), [byte[]]@())
+        Wait-Check {
+            $records = Get-Content -LiteralPath (Join-Path $customLogs 'indexer.jsonl') | ForEach-Object { $_ | ConvertFrom-Json }
+            @($records | Where-Object { $_.path -like '*\Logged.txt' -and $_.outcome -eq 'Succeeded' }).Count -gt 0 -and
+            @($records | Where-Object { $_.path -like '*\Unreadable.txt' -and $_.outcome -eq 'Failed' -and $_.error.code -eq 'empty_file' -and $_.error.details }).Count -gt 0
+        } 'success and failure records in the custom log folder'
+        [FfaUiChecks]::Capture($mainHandle, (Join-Path $root '.downloads\ui-configuration-dark.png'))
+        Toggle-Control 'ThemeToggle'
+        [FfaUiChecks]::Capture($mainHandle, (Join-Path $root '.downloads\ui-configuration-light.png'))
+        Toggle-Control 'ThemeToggle'
+        Toggle-Control 'LoggingToggle'
+        Wait-Check { (Find-Id 'LoggingToggle').Current.ItemStatus -eq 'Disabled' } 'persist disabled logging'
+        [xml]$configuration = Get-Content -LiteralPath (Join-Path $data 'settings.xml') -Raw
+        if ($configuration.FuzzyFindAnythingConfiguration.Logging.enabled -ne 'false' -or
+            $configuration.FuzzyFindAnythingConfiguration.Logging.directory -ne $customLogs) { throw 'Logging preferences were not saved to XML.' }
+        Write-Output 'PASS logging defaults, disable, native folder selection, per-file outcomes and XML persistence'
+    }
+
+    Select-Tab 'FoldersTab'
+    $checkbox = $window.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
+        (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::CheckBox)))
+    ([System.Windows.Automation.TogglePattern]$checkbox.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)).Toggle()
+    Wait-Check { (Find-Id 'RemoveFolderButton').Current.IsEnabled } 'checkbox selection'
+    Invoke-Button 'RemoveFolderButton'
+    Wait-Check { -not (Find-Id 'RemoveFolderButton').Current.IsEnabled } 'folder removal'
+    Select-Tab 'SearchTab'
+    Wait-Check { (Find-Id 'SearchButton').Current.IsEnabled -and (Find-Id 'IndexCounts').Current.Name -eq '0 files | 0 passages' } 'completed folder removal'
+    Invoke-Button 'SearchButton'
+    Wait-Check {
+        (Find-Id 'EmptyResultsTitle').Current.Name -eq 'No matching files found.'
+    } 'no-match result state'
+    if (-not (Test-Path (Join-Path $corpus 'Shape guide.txt'))) { throw 'Removing a folder deleted an original file.' }
+    Write-Output 'PASS checkbox removal and no-match UI; original files retained'
+
+    $windowPattern.Close()
+    Start-Sleep -Milliseconds 500
+    if ($process.HasExited -or $windowPattern.Current.WindowVisualState -ne [System.Windows.Automation.WindowVisualState]::Minimized) {
+        throw 'Closing did not leave the background application minimized.'
+    }
+    $second = Start-Process -FilePath $app -ArgumentList @('--data-dir', "`"$data`"") -PassThru
+    $second.WaitForExit(15000) | Out-Null
+    Wait-Check { $windowPattern.Current.WindowVisualState -eq [System.Windows.Automation.WindowVisualState]::Maximized } 'single-instance activation' 15
+    Write-Output 'PASS close-to-taskbar and maximized single-instance restore'
+    Invoke-Button 'QuitButton'
+    if (-not $process.WaitForExit(50000)) { throw 'Quit did not stop the application.' }
+    if ($Enhanced) {
+        $process = Start-Process -FilePath $app -ArgumentList @('--data-dir', "`"$data`"") -PassThru
+        Wait-Check {
+            $script:window = [System.Windows.Automation.AutomationElement]::RootElement.FindFirst(
+                [System.Windows.Automation.TreeScope]::Children,
+                (New-Object System.Windows.Automation.AndCondition(
+                    (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty, $process.Id)),
+                    (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty, 'MainWindow')))))
+            $script:window -ne $null
+        } 'appearance restart' 30
+        if ((Find-Id 'ThemeToggle').Current.ItemStatus -ne 'Dark') { throw 'The theme did not survive an application restart.' }
+        Select-Tab 'ConfigurationTab'
+        if ((Find-Id 'LoggingToggle').Current.ItemStatus -ne 'Disabled' -or
+            ([System.Windows.Automation.ValuePattern](Find-Id 'LogDirectory').GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)).Current.Value -ne $customLogs) {
+            throw 'The logging configuration did not survive restart.'
+        }
+        Select-Tab 'SearchTab'
+        Wait-Check { (Find-Id 'SearchButton').Current.IsEnabled } 'restart model ready' 180
+        Invoke-Button 'QuitButton'
+        if (-not $process.WaitForExit(50000)) { throw 'Restarted test application did not quit.' }
+        Write-Output 'PASS appearance and logging retained after a complete restart'
+    }
+    Write-Output 'ALL NATIVE UI CHECKS PASSED'
+} finally {
+    if ($process -and -not $process.HasExited) {
+        try {
+            if ($window) {
+                $quit = Find-Id 'QuitButton'
+                if ($quit) { [FfaUiChecks]::InvokeAsync($quit).Wait(5000) | Out-Null }
+            }
+            $process.WaitForExit(45000) | Out-Null
+        } finally {
+            if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
+        }
+    }
+    if (Test-Path $work) {
+        Get-ChildItem -LiteralPath $data -Filter '*.log' -Recurse -ErrorAction SilentlyContinue |
+            Copy-Item -Destination (Join-Path $root '.downloads') -Force
+        [IO.Directory]::Delete($work, $true)
+    }
+}

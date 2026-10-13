@@ -1,0 +1,313 @@
+using System.Collections.ObjectModel;
+using System.ComponentModel;
+using System.IO;
+using System.Runtime.CompilerServices;
+using System.Globalization;
+using System.Windows.Media.Imaging;
+using FuzzyFindAnything.App.Services;
+
+namespace FuzzyFindAnything.App.ViewModels;
+
+public abstract class ObservableObject : INotifyPropertyChanged
+{
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    protected void Set<T>(ref T field, T value, [CallerMemberName] string? name = null)
+    {
+        if (EqualityComparer<T>.Default.Equals(field, value))
+            return;
+        field = value;
+        Changed(name);
+    }
+
+    protected void Changed([CallerMemberName] string? name = null) =>
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+}
+
+public sealed class FolderViewModel : ObservableObject
+{
+    private bool selected;
+    private FolderStatus data;
+
+    public FolderViewModel(FolderStatus data) => this.data = data;
+    public int Id => data.Id;
+    public string Path => data.Path;
+    public string Name => System.IO.Path.GetFileName(Path.TrimEnd('\\')) is { Length: > 0 } name ? name : Path;
+    public string Status => data.Status;
+    public string Detail => $"{data.Succeeded:N0} succeeded  |  {data.Failed:N0} failed";
+    public bool IsIndexed => Status == "Indexed";
+    public bool IsIndeterminate => !IsIndexed && data.Total == 0 && data.Errors == 0;
+    public double Progress => data.Total == 0 ? (IsIndexed ? 100 : 0) : 100d * data.Completed / data.Total;
+    public string ProgressLabel => data.Total == 0 ? (IsIndexed ? "No supported files" : "Discovering files") : $"{data.Completed:N0} / {data.Total:N0} files";
+    public bool IsSelected { get => selected; set => Set(ref selected, value); }
+
+    public void Update(FolderStatus status)
+    {
+        data = status;
+        Changed(null);
+    }
+}
+
+public sealed class MainViewModel : ObservableObject
+{
+    private string query = "";
+    private double threshold = 0.3;
+    private bool searching;
+    private bool connected;
+    private bool ready;
+    private bool darkMode;
+    private bool loggingEnabled = true;
+    private bool configurationBusy;
+    private bool foldersBusy;
+    private string logDirectory = "";
+    private string settingsPath = "";
+    private string error = "";
+    private string engineMessage = "Starting the local indexing engine...";
+    private string modelState = "Starting";
+    private string monitor = "Watching begins when you add a folder.";
+    private string counts = "0 files / 0 passages";
+    private string resultSummary = "Enter a search phrase to begin.";
+    private string emptyTitle = "Search your index";
+    private string emptyHint = "Add folders to index, then search their documents and images.";
+    private string cpuSummary = "CPU limit";
+    private string cpuDetail = "The application is restricted to at most half of the physical CPU cores.";
+    private IndexMetadata? indexInfo;
+
+    public ObservableCollection<FolderViewModel> Folders { get; } = [];
+    public ObservableCollection<SearchResult> Results { get; } = [];
+    public ObservableCollection<SearchResult> DocumentResults { get; } = [];
+    public ObservableCollection<ImageResultViewModel> ImageResults { get; } = [];
+    public string DocumentHeading => $"Documents ({DocumentResults.Count})";
+    public string ImageHeading => $"Images ({ImageResults.Count})";
+    public bool NoDocuments => DocumentResults.Count == 0;
+    public bool NoImages => ImageResults.Count == 0;
+    public bool ShowResults => Results.Count > 0 && !IsSearching;
+    public string IndexType => indexInfo?.TypeVersion ?? "Connecting...";
+    public string IndexLocation => indexInfo?.DatabaseLocation ?? "Connecting...";
+    public string TotalFiles => (indexInfo?.TotalFiles ?? 0).ToString("N0");
+    public string TotalDocuments => (indexInfo?.TotalDocuments ?? 0).ToString("N0");
+    public string TotalImages => (indexInfo?.TotalImages ?? 0).ToString("N0");
+    public string DatabaseSize => indexInfo is null ? "Connecting..." : FormatBytes(indexInfo.DatabaseSizeBytes);
+    public string LastRefreshed => DateTimeOffset.TryParse(indexInfo?.LastRefreshed, CultureInfo.InvariantCulture,
+        DateTimeStyles.None, out var timestamp) ? timestamp.ToLocalTime().ToString("G") : "Not refreshed yet";
+    public string RefreshTimestamp => indexInfo?.LastRefreshed ?? "";
+    public string Query { get => query; set { Set(ref query, value); Changed(nameof(CanClearSearch)); } }
+    public bool CanClearSearch => Query.Length > 0 || Results.Count > 0 || IsSearching;
+    public bool IsDarkMode { get => darkMode; set { Set(ref darkMode, value); Changed(nameof(ThemeName)); } }
+    public string ThemeName => IsDarkMode ? "Dark" : "Light";
+    public bool LoggingEnabled { get => loggingEnabled; private set { Set(ref loggingEnabled, value); Changed(nameof(LoggingLabel)); } }
+    public string LoggingLabel => LoggingEnabled ? "Enabled" : "Disabled";
+    public string LogDirectory { get => logDirectory; private set => Set(ref logDirectory, value); }
+    public string SettingsPath { get => settingsPath; private set => Set(ref settingsPath, value); }
+    public bool ConfigurationBusy
+    {
+        get => configurationBusy;
+        set { Set(ref configurationBusy, value); Changed(nameof(CanConfigure)); Changed(nameof(IsConfigurationIdle)); }
+    }
+    public bool IsConfigurationIdle => !ConfigurationBusy;
+    public bool CanConfigure => IsConnected && !ConfigurationBusy;
+    public string CpuSummary { get => cpuSummary; private set => Set(ref cpuSummary, value); }
+    public string CpuDetail { get => cpuDetail; private set => Set(ref cpuDetail, value); }
+    public double Threshold { get => threshold; set => Set(ref threshold, value); }
+    public bool IsSearching
+    {
+        get => searching;
+        set { Set(ref searching, value); Changed(nameof(CanSearch)); Changed(nameof(CanClearSearch)); Changed(nameof(SearchButtonLabel)); Changed(nameof(ShowEmpty)); Changed(nameof(ShowResults)); }
+    }
+    public bool IsConnected
+    {
+        get => connected;
+        set { Set(ref connected, value); Changed(nameof(CanSearch)); Changed(nameof(CanRemove)); Changed(nameof(CanConfigure)); Changed(nameof(CanManageFolders)); }
+    }
+    public bool FoldersBusy
+    {
+        get => foldersBusy;
+        set { Set(ref foldersBusy, value); Changed(nameof(CanSearch)); Changed(nameof(CanRemove)); Changed(nameof(CanManageFolders)); }
+    }
+    public bool CanManageFolders => IsConnected && !FoldersBusy;
+    public bool CanSearch => IsConnected && ready && !IsSearching && !FoldersBusy;
+    public bool CanRemove => CanManageFolders && Folders.Any(folder => folder.IsSelected);
+    public bool HasFolders => Folders.Count > 0;
+    public bool NoFolders => !HasFolders;
+    public bool ShowEmpty => Results.Count == 0 && !IsSearching;
+    public bool HasError => !string.IsNullOrEmpty(Error);
+    public string SearchButtonLabel => IsSearching ? "Searching..." : "Search";
+    public string Error { get => error; set { Set(ref error, value); Changed(nameof(HasError)); } }
+    public string EngineMessage { get => engineMessage; set => Set(ref engineMessage, value); }
+    public string ModelState { get => modelState; set => Set(ref modelState, value); }
+    public string Monitor { get => monitor; set => Set(ref monitor, value); }
+    public string Counts { get => counts; set => Set(ref counts, value); }
+    public string ResultSummary { get => resultSummary; set => Set(ref resultSummary, value); }
+    public string EmptyTitle { get => emptyTitle; set => Set(ref emptyTitle, value); }
+    public string EmptyHint { get => emptyHint; set => Set(ref emptyHint, value); }
+    public string FolderSummary => $"{Folders.Count} configured folder{(Folders.Count == 1 ? "" : "s")}";
+    public string RemoveLabel => Folders.Count(folder => folder.IsSelected) is var count && count > 0
+        ? $"Remove selected ({count})" : "Remove selected";
+
+    public void Apply(EngineStatus status)
+    {
+        IsConnected = true;
+        ready = status.ModelState == "Ready";
+        ModelState = status.ModelState;
+        EngineMessage = status.Activities.Count > 0
+            ? string.Join("  |  ", status.Activities.Select(item =>
+                $"{item.Stage}: {Path.GetFileName(item.Path)}" +
+                (item.TotalPassages > 0 ? $" ({item.CompletedPassages:N0}/{item.TotalPassages:N0} passages)" : "")))
+            : status.QueueCount > 0 && ready ? $"{status.QueueCount:N0} files queued" : status.Message;
+        Monitor = status.Monitor;
+        Counts = $"{status.FileCount:N0} files | {status.VectorCount:N0} passages";
+        CpuSummary = $"CPU limit: {status.Cpu.CoreLimit}/{status.Cpu.TotalCores}";
+        CpuDetail = $"Maximum {status.Cpu.CoreLimit} of {status.Cpu.TotalCores} physical cores across the application and all workers. " +
+            $"{status.Cpu.WorkerCount} inference workers, {status.Cpu.ThreadsPerWorker} compute threads each.";
+        indexInfo = status.IndexInfo;
+        foreach (string property in new[] { nameof(IndexType), nameof(IndexLocation), nameof(TotalFiles),
+                     nameof(TotalDocuments), nameof(TotalImages), nameof(DatabaseSize), nameof(LastRefreshed), nameof(RefreshTimestamp) })
+            Changed(property);
+        if (!string.IsNullOrWhiteSpace(status.Error))
+            Error = status.Error;
+        else if (!string.IsNullOrWhiteSpace(status.Logging.Error))
+            Error = status.Logging.Error;
+        foreach (var obsolete in Folders.Where(folder => status.Folders.All(item => item.Id != folder.Id)).ToArray())
+        {
+            obsolete.PropertyChanged -= FolderChanged;
+            Folders.Remove(obsolete);
+        }
+
+        foreach (var item in status.Folders)
+        {
+            var existing = Folders.FirstOrDefault(folder => folder.Id == item.Id);
+            if (existing is not null)
+                existing.Update(item);
+            else
+            {
+                var folder = new FolderViewModel(item);
+                folder.PropertyChanged += FolderChanged;
+                Folders.Add(folder);
+            }
+        }
+        Changed(nameof(CanSearch));
+        Changed(nameof(CanRemove));
+        Changed(nameof(HasFolders));
+        Changed(nameof(NoFolders));
+        Changed(nameof(FolderSummary));
+        Changed(nameof(RemoveLabel));
+    }
+
+    public void ApplySettings(ApplicationSettings settings, string path)
+    {
+        LoggingEnabled = settings.LoggingEnabled;
+        LogDirectory = settings.LogDirectory;
+        SettingsPath = path;
+    }
+
+    private void FolderChanged(object? sender, PropertyChangedEventArgs args)
+    {
+        if (args.PropertyName == nameof(FolderViewModel.IsSelected))
+        {
+            Changed(nameof(CanRemove));
+            Changed(nameof(RemoveLabel));
+        }
+    }
+
+    public void BeginSearch()
+    {
+        Error = "";
+        Results.Clear();
+        DocumentResults.Clear();
+        ImageResults.Clear();
+        IsSearching = true;
+        ResultSummary = $"Finding files that match \"{Query.Trim()}\"";
+    }
+
+    public void FinishSearch(IReadOnlyList<SearchResult> results, TimeSpan elapsed)
+    {
+        Results.Clear();
+        DocumentResults.Clear();
+        ImageResults.Clear();
+        foreach (var result in results)
+        {
+            Results.Add(result);
+            if (result.Kind == "Image")
+                ImageResults.Add(new ImageResultViewModel(result));
+            else
+                DocumentResults.Add(result);
+        }
+        ResultSummary = $"{results.Count} matching file{(results.Count == 1 ? "" : "s")} / {elapsed.TotalSeconds:0.0}s";
+        EmptyTitle = "No matching files found.";
+        EmptyHint = HasFolders
+            ? "Try a different description, lower the minimum similarity, or wait for indexing to finish."
+            : "Add a folder in Indexed folders to make your files searchable.";
+        IsSearching = false;
+        Changed(nameof(ShowEmpty));
+        ResultsChanged();
+    }
+
+    public void SearchFailed()
+    {
+        IsSearching = false;
+        ResultSummary = "Search could not be completed.";
+        EmptyTitle = "Search is temporarily unavailable";
+        EmptyHint = "See the message above. Your folders and committed index have been preserved.";
+        Changed(nameof(ShowEmpty));
+    }
+
+    public void ClearResults()
+    {
+        Results.Clear();
+        DocumentResults.Clear();
+        ImageResults.Clear();
+        IsSearching = false;
+        ResultSummary = "The folder list changed. Search again for current results.";
+        EmptyTitle = "Folder configuration updated";
+        EmptyHint = "Search again to refresh the results.";
+        Changed(nameof(ShowEmpty));
+        ResultsChanged();
+    }
+
+    public void ClearSearch()
+    {
+        Query = "";
+        Results.Clear();
+        DocumentResults.Clear();
+        ImageResults.Clear();
+        IsSearching = false;
+        ResultSummary = "Enter a search phrase to begin.";
+        EmptyTitle = "Search your index";
+        EmptyHint = "Search the documents and images in your configured folders.";
+        Changed(nameof(ShowEmpty));
+        ResultsChanged();
+    }
+
+    private void ResultsChanged()
+    {
+        foreach (string property in new[] { nameof(DocumentHeading), nameof(ImageHeading), nameof(NoDocuments), nameof(NoImages), nameof(ShowResults), nameof(CanClearSearch) })
+            Changed(property);
+    }
+
+    private static string FormatBytes(long bytes) => bytes switch
+    {
+        >= 1_073_741_824 => $"{bytes / 1_073_741_824d:N2} GB",
+        >= 1_048_576 => $"{bytes / 1_048_576d:N2} MB",
+        >= 1024 => $"{bytes / 1024d:N1} KB",
+        _ => $"{bytes:N0} bytes"
+    };
+}
+
+public sealed class ImageResultViewModel(SearchResult result) : ObservableObject
+{
+    private BitmapSource? thumbnail;
+    private string thumbnailMessage = "Loading preview...";
+    public SearchResult Result { get; } = result;
+    public BitmapSource? Thumbnail
+    {
+        get => thumbnail;
+        set { Set(ref thumbnail, value); Changed(nameof(HasNoThumbnail)); Changed(nameof(ThumbnailStatus)); }
+    }
+    public bool HasNoThumbnail => Thumbnail is null;
+    public string ThumbnailStatus => HasNoThumbnail ? ThumbnailMessage : "Preview loaded";
+    public string ThumbnailMessage
+    {
+        get => thumbnailMessage;
+        set { Set(ref thumbnailMessage, value); Changed(nameof(ThumbnailStatus)); }
+    }
+}
