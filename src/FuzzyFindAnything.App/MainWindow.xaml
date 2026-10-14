@@ -6,10 +6,46 @@
         FontFamily="Segoe UI Variable, Segoe UI" FontSize="14" Foreground="{DynamicResource Ink}"
         Icon="Assets/app.ico" Loaded="Window_Loaded" Closing="Window_Closing"
         AutomationProperties.AutomationId="MainWindow">
+  <Window.Resources>
+    <DataTemplate x:Key="TextResultTemplate">
+      <Button Click="Result_Click" HorizontalContentAlignment="Stretch" Padding="12"
+              ToolTip="{Binding Path}" AutomationProperties.Name="{Binding Name}">
+        <StackPanel>
+          <Grid>
+            <Grid.ColumnDefinitions><ColumnDefinition Width="30" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+            <TextBlock Text="{Binding Glyph}" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="20"
+                       Foreground="{DynamicResource Accent}" VerticalAlignment="Center" />
+            <TextBlock Grid.Column="1" Text="{Binding Name}" FontSize="15" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+          </Grid>
+          <TextBlock Text="{Binding Path}" FontSize="11" Foreground="{DynamicResource Muted}" TextTrimming="CharacterEllipsis" Margin="0,7" />
+          <TextBlock Text="{Binding Snippet}" FontSize="13" FontWeight="Normal" TextWrapping="Wrap"
+                     TextTrimming="WordEllipsis" MaxHeight="58" LineHeight="19">
+            <TextBlock.Style>
+              <Style TargetType="TextBlock">
+                <Style.Triggers>
+                  <DataTrigger Binding="{Binding Kind}" Value="Code">
+                    <Setter Property="FontFamily" Value="Cascadia Code, Consolas" />
+                  </DataTrigger>
+                </Style.Triggers>
+              </Style>
+            </TextBlock.Style>
+          </TextBlock>
+          <Grid Margin="0,10,0,0">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+            <TextBlock Text="{Binding Metadata}" FontWeight="Normal" FontSize="10" Foreground="{DynamicResource Muted}"
+                       VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,0,8,0" />
+            <Border Grid.Column="1" Background="{DynamicResource SuccessSurface}" CornerRadius="6" Padding="7,4">
+              <TextBlock Text="{Binding ScoreLabel}" Foreground="{DynamicResource SuccessText}" FontSize="10" FontWeight="SemiBold" />
+            </Border>
+          </Grid>
+        </StackPanel>
+      </Button>
+    </DataTemplate>
+  </Window.Resources>
   <Grid>
     <Grid.RowDefinitions>
       <RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
-      <RowDefinition Height="*" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
+      <RowDefinition Height="*" /><RowDefinition Height="Auto" />
     </Grid.RowDefinitions>
 
     <Border Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1" Padding="32,22">
@@ -26,7 +62,14 @@
           <TextBlock Text="Fuzzy Find Anything" FontSize="24" FontWeight="SemiBold" />
           <TextBlock Text="Semantic file search" Foreground="{DynamicResource Muted}" Margin="0,3,0,0" FontSize="13" />
         </StackPanel>
-        <Border Grid.Column="2" CornerRadius="12" Padding="12,6" Margin="16,0,24,0" VerticalAlignment="Center">
+        <StackPanel Grid.Column="2" Width="170" Margin="16,0,24,0" VerticalAlignment="Center"
+                    Visibility="{Binding IsEngineLoading, Converter={StaticResource BoolToVisibility}}">
+          <TextBlock Text="Loading search engine..." FontSize="12" Foreground="{DynamicResource Muted}" />
+          <ProgressBar x:Name="StartupProgress" IsIndeterminate="True" Height="4" Margin="0,8,0,0"
+                       AutomationProperties.AutomationId="StartupProgress" AutomationProperties.Name="Loading search engine" />
+        </StackPanel>
+        <Border Grid.Column="2" CornerRadius="12" Padding="12,6" Margin="16,0,24,0" VerticalAlignment="Center"
+                Visibility="{Binding ShowEngineState, Converter={StaticResource BoolToVisibility}}">
           <Border.Style>
             <Style TargetType="Border">
               <Setter Property="Background" Value="{DynamicResource WarningSurface}" />
@@ -94,7 +137,7 @@
           </Grid.RowDefinitions>
           <StackPanel>
             <TextBlock Text="Search files" FontSize="28" FontWeight="SemiBold" />
-            <TextBlock Text="Find indexed documents and images by their content." Foreground="{DynamicResource Muted}" Margin="0,6,0,0" />
+            <TextBlock Text="Find indexed documents, code and images by their content." Foreground="{DynamicResource Muted}" Margin="0,6,0,0" />
           </StackPanel>
           <Border Grid.Row="1" Background="{DynamicResource Surface}" BorderThickness="1" CornerRadius="12" Padding="12,8" Margin="0,22,0,0">
             <Border.Style>
@@ -114,7 +157,7 @@
                          Background="Transparent" FontSize="17" VerticalContentAlignment="Center" Padding="4,10"
                          MaxLength="2048" KeyDown="SearchInput_KeyDown"
                          AutomationProperties.AutomationId="SearchInput" AutomationProperties.Name="Search phrase" />
-                <TextBlock Text="Describe a document or image" FontSize="17" Foreground="{DynamicResource Placeholder}"
+                <TextBlock Text="Describe a document, code or image" FontSize="17" Foreground="{DynamicResource Placeholder}"
                            Margin="4,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False">
                   <TextBlock.Style>
                     <Style TargetType="TextBlock">
@@ -138,8 +181,9 @@
             <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center"
                         ToolTip="Cosine similarity, not a probability. Lower the threshold to include more results.">
               <TextBlock Text="Minimum similarity" Foreground="{DynamicResource Muted}" FontSize="12" VerticalAlignment="Center" Margin="0,0,10,0" />
-              <Slider Value="{Binding Threshold}" Minimum="0" Maximum="0.9" TickFrequency="0.05" IsSnapToTickEnabled="True"
-                      Width="110" VerticalAlignment="Center" AutomationProperties.Name="Minimum similarity" />
+              <Slider x:Name="SimilaritySlider" Value="{Binding Threshold, Mode=TwoWay}" Minimum="0" Maximum="0.9" TickFrequency="0.05" IsSnapToTickEnabled="True"
+                      ValueChanged="Similarity_Changed" IsEnabled="{Binding IsConfigurationIdle}" Width="110" VerticalAlignment="Center"
+                      AutomationProperties.AutomationId="MinimumSimilarity" AutomationProperties.Name="Minimum similarity" />
               <TextBlock Text="{Binding Threshold, StringFormat=F2}" FontSize="12" Foreground="{DynamicResource Accent}" Margin="8,0,0,0" VerticalAlignment="Center" />
             </StackPanel>
           </Grid>
@@ -163,7 +207,10 @@
               <TextBlock Text="Searching the local index..." Margin="0,16,0,0" Foreground="{DynamicResource Muted}" />
             </StackPanel>
             <Grid Visibility="{Binding ShowResults, Converter={StaticResource BoolToVisibility}}">
-              <Grid.ColumnDefinitions><ColumnDefinition Width="3*" /><ColumnDefinition Width="20" /><ColumnDefinition Width="2*" /></Grid.ColumnDefinitions>
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" /><ColumnDefinition Width="18" /><ColumnDefinition Width="*" />
+                <ColumnDefinition Width="18" /><ColumnDefinition Width="*" />
+              </Grid.ColumnDefinitions>
               <Grid>
                 <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
                 <TextBlock Text="{Binding DocumentHeading}" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,12" />
@@ -175,35 +222,22 @@
                          ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.CanContentScroll="True"
                          VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling"
                          HorizontalContentAlignment="Stretch" KeyDown="Results_KeyDown" ItemContainerStyle="{StaticResource ResultItem}"
-                         AutomationProperties.AutomationId="DocumentResults">
-                  <ListBox.ItemTemplate>
-                    <DataTemplate>
-                      <Button Click="Result_Click" HorizontalContentAlignment="Stretch" Padding="16"
-                              ToolTip="Open in the associated application" AutomationProperties.Name="{Binding Name}">
-                        <Grid>
-                          <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-                          <Border Width="44" Height="48" Background="{DynamicResource AccentSurface}" CornerRadius="10" Margin="0,0,14,0" VerticalAlignment="Top">
-                            <TextBlock Text="{Binding Glyph}" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="22" Foreground="{DynamicResource Accent}"
-                                       HorizontalAlignment="Center" VerticalAlignment="Center" />
-                          </Border>
-                          <StackPanel Grid.Column="1">
-                            <TextBlock Text="{Binding Name}" FontSize="15" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
-                            <TextBlock Text="{Binding Path}" FontSize="12" Foreground="{DynamicResource Muted}" TextTrimming="CharacterEllipsis" Margin="0,3,0,7" />
-                            <TextBlock Text="{Binding Snippet}" FontSize="13" FontWeight="Normal" TextWrapping="Wrap" TextTrimming="WordEllipsis" MaxHeight="39" LineHeight="19" />
-                          </StackPanel>
-                          <StackPanel Grid.Column="2" Margin="16,0,0,0" VerticalAlignment="Top" HorizontalAlignment="Right">
-                            <Border Background="{DynamicResource SuccessSurface}" CornerRadius="6" Padding="9,5">
-                              <TextBlock Text="{Binding ScoreLabel}" Foreground="{DynamicResource SuccessText}" FontSize="11" FontWeight="SemiBold" />
-                            </Border>
-                            <TextBlock Text="{Binding Metadata}" FontWeight="Normal" FontSize="10" Foreground="{DynamicResource Muted}" HorizontalAlignment="Right" Margin="0,8,0,0" />
-                          </StackPanel>
-                        </Grid>
-                      </Button>
-                    </DataTemplate>
-                  </ListBox.ItemTemplate>
-                </ListBox>
+                         AutomationProperties.AutomationId="DocumentResults" ItemTemplate="{StaticResource TextResultTemplate}" />
               </Grid>
               <Grid Grid.Column="2">
+                <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                <TextBlock Text="{Binding CodeHeading}" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,12" />
+                <Border Grid.Row="1" Background="{DynamicResource Surface}" CornerRadius="12" BorderBrush="{DynamicResource Line}" BorderThickness="1"
+                        Visibility="{Binding NoCode, Converter={StaticResource BoolToVisibility}}">
+                  <TextBlock Text="No matching code." Foreground="{DynamicResource Muted}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                </Border>
+                <ListBox Grid.Row="1" ItemsSource="{Binding CodeResults}" Background="Transparent" BorderThickness="0"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.CanContentScroll="True"
+                         VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling"
+                         HorizontalContentAlignment="Stretch" KeyDown="Results_KeyDown" ItemContainerStyle="{StaticResource ResultItem}"
+                         AutomationProperties.AutomationId="CodeResults" ItemTemplate="{StaticResource TextResultTemplate}" />
+              </Grid>
+              <Grid Grid.Column="4">
                 <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
                 <TextBlock Text="{Binding ImageHeading}" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,12" />
                 <Border Grid.Row="1" Background="{DynamicResource Surface}" CornerRadius="12" BorderBrush="{DynamicResource Line}" BorderThickness="1"
@@ -219,10 +253,10 @@
                   </ListBox.ItemContainerStyle>
                   <ListBox.ItemTemplate>
                     <DataTemplate>
-                      <Button Width="208" Padding="10" HorizontalContentAlignment="Stretch" Click="Image_Click"
+                      <Button Width="180" Padding="10" HorizontalContentAlignment="Stretch" Click="Image_Click"
                               ToolTip="{Binding Result.Path}" AutomationProperties.Name="{Binding Result.Name}">
                         <StackPanel>
-                          <Border Height="140" Background="{DynamicResource SubtleSurface}" CornerRadius="8">
+                          <Border Height="124" Background="{DynamicResource SubtleSurface}" CornerRadius="8">
                             <Grid>
                               <Image Source="{Binding Thumbnail}" Stretch="Uniform" Margin="4" AutomationProperties.Name="Image thumbnail"
                                      AutomationProperties.ItemStatus="{Binding ThumbnailStatus}" />
@@ -260,7 +294,7 @@
           <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
           <StackPanel>
             <TextBlock Text="Indexed folders" FontSize="28" FontWeight="SemiBold" />
-            <TextBlock Text="Documents and images in these folders and their subfolders are indexed automatically."
+            <TextBlock Text="Documents, code and images in these folders and their subfolders are indexed automatically."
                        Foreground="{DynamicResource Muted}" Margin="0,6,0,0" />
           </StackPanel>
           <Grid Grid.Row="1" Margin="0,22,0,20">
@@ -282,7 +316,7 @@
               <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Margin="24">
                 <TextBlock Text="&#xE8B7;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Foreground="{DynamicResource Accent}" FontSize="42" HorizontalAlignment="Center" Margin="0,0,0,18" />
                 <TextBlock Text="No folders configured" FontSize="22" FontWeight="SemiBold" HorizontalAlignment="Center" />
-                <TextBlock Text="Add a folder to begin indexing documents and images."
+                <TextBlock Text="Add a folder to begin indexing documents, code and images."
                            TextWrapping="Wrap" TextAlignment="Center" Foreground="{DynamicResource Muted}" Margin="0,9,0,0" />
               </StackPanel>
             </Border>
@@ -359,7 +393,7 @@
                 <Grid.ColumnDefinitions><ColumnDefinition Width="235" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
                 <Grid.RowDefinitions>
                   <RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
-                  <RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
                 <Grid.Resources><Style TargetType="TextBlock">
                   <Setter Property="Margin" Value="0,14" /><Setter Property="VerticalAlignment" Value="Center" /><Setter Property="FontSize" Value="16" />
@@ -374,13 +408,15 @@
                 <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding TotalFiles}" FontSize="22" FontWeight="SemiBold" AutomationProperties.AutomationId="TotalFilesValue" />
                 <TextBlock Grid.Row="3" Text="Total documents" Foreground="{DynamicResource Muted}" />
                 <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding TotalDocuments}" FontWeight="SemiBold" AutomationProperties.AutomationId="TotalDocumentsValue" />
-                <TextBlock Grid.Row="4" Text="Total images" Foreground="{DynamicResource Muted}" />
-                <TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding TotalImages}" FontWeight="SemiBold" AutomationProperties.AutomationId="TotalImagesValue" />
-                <TextBlock Grid.Row="5" Text="Database size" Foreground="{DynamicResource Muted}" />
-                <TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding DatabaseSize}" FontWeight="SemiBold" AutomationProperties.AutomationId="DatabaseSizeValue"
+                <TextBlock Grid.Row="4" Text="Total code files" Foreground="{DynamicResource Muted}" />
+                <TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding TotalCodeFiles}" FontWeight="SemiBold" AutomationProperties.AutomationId="TotalCodeFilesValue" />
+                <TextBlock Grid.Row="5" Text="Total images" Foreground="{DynamicResource Muted}" />
+                <TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding TotalImages}" FontWeight="SemiBold" AutomationProperties.AutomationId="TotalImagesValue" />
+                <TextBlock Grid.Row="6" Text="Database size" Foreground="{DynamicResource Muted}" />
+                <TextBlock Grid.Row="6" Grid.Column="1" Text="{Binding DatabaseSize}" FontWeight="SemiBold" AutomationProperties.AutomationId="DatabaseSizeValue"
                            ToolTip="Catalog, queued passage checkpoints and DiskANN files. Excludes models, runtime and logs." />
-                <TextBlock Grid.Row="6" Text="Index last refreshed" Foreground="{DynamicResource Muted}" />
-                <TextBlock Grid.Row="6" Grid.Column="1" Text="{Binding LastRefreshed}" FontWeight="SemiBold"
+                <TextBlock Grid.Row="7" Text="Index last refreshed" Foreground="{DynamicResource Muted}" />
+                <TextBlock Grid.Row="7" Grid.Column="1" Text="{Binding LastRefreshed}" FontWeight="SemiBold"
                            AutomationProperties.AutomationId="LastRefreshedValue" ToolTip="{Binding RefreshTimestamp}" />
               </Grid>
             </Border>
@@ -451,8 +487,8 @@
     </TabControl>
 
     <Border Grid.Row="3" Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0" Padding="32,12">
-      <Grid>
-        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+      <Grid x:Name="StatusBar">
+        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
         <TextBlock Text="{Binding EngineMessage}" ToolTip="{Binding EngineMessage}" FontSize="12" Foreground="{DynamicResource Muted}"
                    VerticalAlignment="Center" TextTrimming="CharacterEllipsis" AutomationProperties.AutomationId="IndexingActivity" />
         <TextBlock Grid.Column="1" Text="{Binding Counts}" FontSize="12" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" Margin="20,0,0,0"
@@ -460,31 +496,29 @@
         <Border Grid.Column="2" Background="{DynamicResource SubtleSurface}" CornerRadius="6" Padding="10,6" Margin="20,0,0,0" VerticalAlignment="Center" ToolTip="{Binding CpuDetail}">
           <TextBlock Text="{Binding CpuSummary}" FontSize="11" Foreground="{DynamicResource Muted}" AutomationProperties.AutomationId="CpuBudget" />
         </Border>
+        <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center" Margin="20,0,0,0">
+          <TextBlock Text="&#xA9; 2026 Suman Ghosh" Foreground="{DynamicResource Muted}" FontSize="11" VerticalAlignment="Center"
+                     AutomationProperties.AutomationId="Attribution" />
+          <Button Width="30" Height="28" Padding="4" Margin="12,0,2,0" Background="Transparent" BorderBrush="Transparent"
+                  Foreground="{DynamicResource Muted}" Click="Profile_Click" Tag="https://www.linkedin.com/in/ghoshsuman/"
+                  ToolTip="Suman Ghosh on LinkedIn" AutomationProperties.AutomationId="LinkedInLink"
+                  AutomationProperties.Name="LinkedIn profile for Suman Ghosh" AutomationProperties.HelpText="https://www.linkedin.com/in/ghoshsuman/">
+            <TextBlock Text="in" FontWeight="Bold" FontSize="16" />
+          </Button>
+          <Button Width="30" Height="28" Padding="4" Background="Transparent" BorderBrush="Transparent"
+                  Foreground="{DynamicResource Muted}" Click="Profile_Click" Tag="https://github.com/sumanthewhiz"
+                  ToolTip="sumanthewhiz on GitHub" AutomationProperties.AutomationId="GitHubLink"
+                  AutomationProperties.Name="GitHub profile for sumanthewhiz" AutomationProperties.HelpText="https://github.com/sumanthewhiz">
+            <Grid Width="20" Height="20">
+              <Path Data="M 5,5 L 5,15 M 15,5 L 15,8 C 15,12 5,8 5,14"
+                    Stroke="{DynamicResource Muted}" StrokeThickness="1.7" />
+              <Ellipse Width="5" Height="5" Stroke="{DynamicResource Muted}" StrokeThickness="1.7" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="2.5,1" />
+              <Ellipse Width="5" Height="5" Stroke="{DynamicResource Muted}" StrokeThickness="1.7" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,1,2.5,0" />
+              <Ellipse Width="5" Height="5" Stroke="{DynamicResource Muted}" StrokeThickness="1.7" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="2.5,0,0,1" />
+            </Grid>
+          </Button>
+        </StackPanel>
       </Grid>
-    </Border>
-    <Border Grid.Row="4" Background="{DynamicResource Surface}" Padding="32,0,32,10">
-      <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-        <TextBlock Text="(c) 2026 Suman Ghosh" Foreground="{DynamicResource Muted}" FontSize="11" VerticalAlignment="Center"
-                   AutomationProperties.AutomationId="Attribution" />
-        <Button Width="30" Height="28" Padding="4" Margin="12,0,2,0" Background="Transparent" BorderBrush="Transparent"
-                Foreground="{DynamicResource Muted}" Click="Profile_Click" Tag="https://www.linkedin.com/in/ghoshsuman/"
-                ToolTip="Suman Ghosh on LinkedIn" AutomationProperties.AutomationId="LinkedInLink"
-                AutomationProperties.Name="LinkedIn profile for Suman Ghosh" AutomationProperties.HelpText="https://www.linkedin.com/in/ghoshsuman/">
-          <TextBlock Text="in" FontWeight="Bold" FontSize="16" />
-        </Button>
-        <Button Width="30" Height="28" Padding="4" Background="Transparent" BorderBrush="Transparent"
-                Foreground="{DynamicResource Muted}" Click="Profile_Click" Tag="https://github.com/sumanthewhiz"
-                ToolTip="sumanthewhiz on GitHub" AutomationProperties.AutomationId="GitHubLink"
-                AutomationProperties.Name="GitHub profile for sumanthewhiz" AutomationProperties.HelpText="https://github.com/sumanthewhiz">
-          <Grid Width="20" Height="20">
-            <Path Data="M 5,5 L 5,15 M 15,5 L 15,8 C 15,12 5,8 5,14"
-                  Stroke="{DynamicResource Muted}" StrokeThickness="1.7" />
-            <Ellipse Width="5" Height="5" Stroke="{DynamicResource Muted}" StrokeThickness="1.7" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="2.5,1" />
-            <Ellipse Width="5" Height="5" Stroke="{DynamicResource Muted}" StrokeThickness="1.7" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,1,2.5,0" />
-            <Ellipse Width="5" Height="5" Stroke="{DynamicResource Muted}" StrokeThickness="1.7" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="2.5,0,0,1" />
-          </Grid>
-        </Button>
-      </StackPanel>
     </Border>
   </Grid>
 </Window>

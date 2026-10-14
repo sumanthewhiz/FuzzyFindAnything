@@ -1,5 +1,7 @@
 # Quickstart: run Fuzzy Find Anything on your PC
 
+> This `dev` branch also supports source-code indexing and a saved minimum-similarity preference. These additions are not included in the unchanged `v1.0.0` stable download; use a `dev` build to try them.
+
 Download the application, acquire its model, and index a small folder. You do **not** need to install Python, pip, Git, Visual Studio, or .NET to use a release.
 
 [Project](https://github.com/sumanthewhiz/FuzzyFindAnything) ·
@@ -98,7 +100,7 @@ Wait for the engine status to show **Ready**. The first model load can take a mi
 2. Choose a small local folder containing a few `.txt` files and photos. Start small rather than selecting an entire drive.
 3. Wait for the status to become **Indexed**. The details show succeeded/failed counts; current processing appears in the status bar.
 4. Open **Search**, describe something in those files, and select **Search**.
-5. Click a document or image tile to open the original file in its usual application.
+5. Click a document, code result, or image tile to open the original file in its usual application.
 
 For a predictable text test, save a `.txt` file containing:
 
@@ -108,11 +110,13 @@ Index its folder, then search for **“planning spending for travel and equipmen
 
 If results are too narrow, reduce **Minimum similarity**. Similarity is a ranking score, not a probability.
 
+On `dev`, the initial minimum similarity is **0.60**, and changes are retained in the configuration XML across restarts. Code results appear in their own section. Supported source languages include Python, JavaScript/TypeScript, Java, C/C++, Go, Rust, SQL, Bash, C#, PHP, Ruby, Swift, Kotlin and R; source files are read as text, not executed.
+
 ## Everyday controls
 
 | Action | Where / behavior |
 |---|---|
-| Clear a search | **Clear**, or Escape in the search field, removes the phrase and both result sections |
+| Clear a search | **Clear**, or Escape in the search field, removes the phrase and all result sections |
 | Remove a folder | Check it in **Indexed folders**, then **Remove selected**; original files are not deleted |
 | Inspect the index | **Index information** shows live counts, size, location, and refresh time |
 | Change appearance | Use the **Dark mode** toggle |

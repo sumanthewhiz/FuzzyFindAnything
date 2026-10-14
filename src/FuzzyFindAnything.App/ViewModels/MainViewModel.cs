@@ -51,7 +51,7 @@ public sealed class FolderViewModel : ObservableObject
 public sealed class MainViewModel : ObservableObject
 {
     private string query = "";
-    private double threshold = 0.3;
+    private double threshold = 0.60;
     private bool searching;
     private bool connected;
     private bool ready;
@@ -68,7 +68,7 @@ public sealed class MainViewModel : ObservableObject
     private string counts = "0 files / 0 passages";
     private string resultSummary = "Enter a search phrase to begin.";
     private string emptyTitle = "Search your index";
-    private string emptyHint = "Add folders to index, then search their documents and images.";
+    private string emptyHint = "Add folders to index, then search their documents, code and images.";
     private string cpuSummary = "CPU limit";
     private string cpuDetail = "The application is restricted to at most half of the physical CPU cores.";
     private IndexMetadata? indexInfo;
@@ -76,16 +76,20 @@ public sealed class MainViewModel : ObservableObject
     public ObservableCollection<FolderViewModel> Folders { get; } = [];
     public ObservableCollection<SearchResult> Results { get; } = [];
     public ObservableCollection<SearchResult> DocumentResults { get; } = [];
+    public ObservableCollection<SearchResult> CodeResults { get; } = [];
     public ObservableCollection<ImageResultViewModel> ImageResults { get; } = [];
     public string DocumentHeading => $"Documents ({DocumentResults.Count})";
+    public string CodeHeading => $"Code ({CodeResults.Count})";
     public string ImageHeading => $"Images ({ImageResults.Count})";
     public bool NoDocuments => DocumentResults.Count == 0;
+    public bool NoCode => CodeResults.Count == 0;
     public bool NoImages => ImageResults.Count == 0;
     public bool ShowResults => Results.Count > 0 && !IsSearching;
     public string IndexType => indexInfo?.TypeVersion ?? "Connecting...";
     public string IndexLocation => indexInfo?.DatabaseLocation ?? "Connecting...";
     public string TotalFiles => (indexInfo?.TotalFiles ?? 0).ToString("N0");
     public string TotalDocuments => (indexInfo?.TotalDocuments ?? 0).ToString("N0");
+    public string TotalCodeFiles => (indexInfo?.TotalCodeFiles ?? 0).ToString("N0");
     public string TotalImages => (indexInfo?.TotalImages ?? 0).ToString("N0");
     public string DatabaseSize => indexInfo is null ? "Connecting..." : FormatBytes(indexInfo.DatabaseSizeBytes);
     public string LastRefreshed => DateTimeOffset.TryParse(indexInfo?.LastRefreshed, CultureInfo.InvariantCulture,
@@ -134,7 +138,13 @@ public sealed class MainViewModel : ObservableObject
     public string SearchButtonLabel => IsSearching ? "Searching..." : "Search";
     public string Error { get => error; set { Set(ref error, value); Changed(nameof(HasError)); } }
     public string EngineMessage { get => engineMessage; set => Set(ref engineMessage, value); }
-    public string ModelState { get => modelState; set => Set(ref modelState, value); }
+    public string ModelState
+    {
+        get => modelState;
+        set { Set(ref modelState, value); Changed(nameof(IsEngineLoading)); Changed(nameof(ShowEngineState)); }
+    }
+    public bool IsEngineLoading => ModelState is "Starting" or "Loading";
+    public bool ShowEngineState => !IsEngineLoading;
     public string Monitor { get => monitor; set => Set(ref monitor, value); }
     public string Counts { get => counts; set => Set(ref counts, value); }
     public string ResultSummary { get => resultSummary; set => Set(ref resultSummary, value); }
@@ -161,7 +171,7 @@ public sealed class MainViewModel : ObservableObject
             $"{status.Cpu.WorkerCount} inference workers, {status.Cpu.ThreadsPerWorker} compute threads each.";
         indexInfo = status.IndexInfo;
         foreach (string property in new[] { nameof(IndexType), nameof(IndexLocation), nameof(TotalFiles),
-                     nameof(TotalDocuments), nameof(TotalImages), nameof(DatabaseSize), nameof(LastRefreshed), nameof(RefreshTimestamp) })
+                     nameof(TotalDocuments), nameof(TotalCodeFiles), nameof(TotalImages), nameof(DatabaseSize), nameof(LastRefreshed), nameof(RefreshTimestamp) })
             Changed(property);
         if (!string.IsNullOrWhiteSpace(status.Error))
             Error = status.Error;
@@ -195,6 +205,7 @@ public sealed class MainViewModel : ObservableObject
 
     public void ApplySettings(ApplicationSettings settings, string path)
     {
+        Threshold = settings.MinimumSimilarity;
         LoggingEnabled = settings.LoggingEnabled;
         LogDirectory = settings.LogDirectory;
         SettingsPath = path;
@@ -214,6 +225,7 @@ public sealed class MainViewModel : ObservableObject
         Error = "";
         Results.Clear();
         DocumentResults.Clear();
+        CodeResults.Clear();
         ImageResults.Clear();
         IsSearching = true;
         ResultSummary = $"Finding files that match \"{Query.Trim()}\"";
@@ -223,12 +235,15 @@ public sealed class MainViewModel : ObservableObject
     {
         Results.Clear();
         DocumentResults.Clear();
+        CodeResults.Clear();
         ImageResults.Clear();
         foreach (var result in results)
         {
             Results.Add(result);
             if (result.Kind == "Image")
                 ImageResults.Add(new ImageResultViewModel(result));
+            else if (result.Kind == "Code")
+                CodeResults.Add(result);
             else
                 DocumentResults.Add(result);
         }
@@ -255,6 +270,7 @@ public sealed class MainViewModel : ObservableObject
     {
         Results.Clear();
         DocumentResults.Clear();
+        CodeResults.Clear();
         ImageResults.Clear();
         IsSearching = false;
         ResultSummary = "The folder list changed. Search again for current results.";
@@ -269,18 +285,19 @@ public sealed class MainViewModel : ObservableObject
         Query = "";
         Results.Clear();
         DocumentResults.Clear();
+        CodeResults.Clear();
         ImageResults.Clear();
         IsSearching = false;
         ResultSummary = "Enter a search phrase to begin.";
         EmptyTitle = "Search your index";
-        EmptyHint = "Search the documents and images in your configured folders.";
+        EmptyHint = "Search the documents, code and images in your configured folders.";
         Changed(nameof(ShowEmpty));
         ResultsChanged();
     }
 
     private void ResultsChanged()
     {
-        foreach (string property in new[] { nameof(DocumentHeading), nameof(ImageHeading), nameof(NoDocuments), nameof(NoImages), nameof(ShowResults), nameof(CanClearSearch) })
+        foreach (string property in new[] { nameof(DocumentHeading), nameof(CodeHeading), nameof(ImageHeading), nameof(NoDocuments), nameof(NoCode), nameof(NoImages), nameof(ShowResults), nameof(CanClearSearch) })
             Changed(property);
     }
 

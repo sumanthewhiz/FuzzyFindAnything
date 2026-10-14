@@ -4,7 +4,7 @@ using System.Xml.Linq;
 
 namespace FuzzyFindAnything.App.Services;
 
-public sealed record ApplicationSettings(string Theme, bool LoggingEnabled, string LogDirectory);
+public sealed record ApplicationSettings(string Theme, bool LoggingEnabled, string LogDirectory, double MinimumSimilarity = 0.60);
 
 public sealed class SettingsService
 {
@@ -41,11 +41,13 @@ public sealed class SettingsService
             if (!bool.TryParse((string?)logging?.Attribute("enabled") ?? "true", out bool enabled))
                 throw new InvalidDataException("The logging enabled setting must be true or false.");
             string directory = (string?)logging?.Attribute("directory") ?? defaultLogDirectory;
-            var settings = new ApplicationSettings(theme, enabled, directory);
+            string? similarity = (string?)root.Element("Search")?.Attribute("minimumSimilarity");
+            var settings = new ApplicationSettings(theme, enabled, directory,
+                similarity is null ? 0.60 : XmlConvert.ToDouble(similarity));
             Validate(settings);
             return settings with { LogDirectory = Path.GetFullPath(directory) };
         }
-        catch (Exception exception) when (exception is XmlException or InvalidDataException or ArgumentException)
+        catch (Exception exception) when (exception is XmlException or InvalidDataException or ArgumentException or FormatException or OverflowException)
         {
             throw new InvalidDataException($"Cannot read configuration at {FilePath}: {exception.Message}", exception);
         }
@@ -55,7 +57,8 @@ public sealed class SettingsService
     {
         Validate(settings);
         settings = settings with { LogDirectory = Path.GetFullPath(settings.LogDirectory) };
-        if (settings.LoggingEnabled)
+        if (settings.LoggingEnabled && (!File.Exists(FilePath) || !Current.LoggingEnabled ||
+            !settings.LogDirectory.Equals(Current.LogDirectory, StringComparison.OrdinalIgnoreCase)))
             ValidateLogDirectory(settings.LogDirectory);
         string directory = Path.GetDirectoryName(FilePath)!;
         Directory.CreateDirectory(directory);
@@ -65,6 +68,7 @@ public sealed class SettingsService
             var document = new XDocument(
                 new XElement("FuzzyFindAnythingConfiguration", new XAttribute("version", "1"),
                     new XElement("Appearance", new XAttribute("theme", settings.Theme)),
+                    new XElement("Search", new XAttribute("minimumSimilarity", settings.MinimumSimilarity)),
                     new XElement("Logging", new XAttribute("enabled", settings.LoggingEnabled),
                         new XAttribute("directory", settings.LogDirectory))));
             using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None,
@@ -89,6 +93,8 @@ public sealed class SettingsService
             throw new InvalidDataException($"Unknown appearance theme: {settings.Theme}.");
         if (string.IsNullOrWhiteSpace(settings.LogDirectory) || !Path.IsPathFullyQualified(settings.LogDirectory))
             throw new InvalidDataException("The logging directory must be an absolute path.");
+        if (!double.IsFinite(settings.MinimumSimilarity) || settings.MinimumSimilarity is < 0 or > 0.9)
+            throw new InvalidDataException("Minimum similarity must be a finite number between 0.00 and 0.90.");
     }
 
     private static void ValidateLogDirectory(string directory)

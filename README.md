@@ -1,6 +1,8 @@
 # Fuzzy Find Anything
 
-**Search your documents and images by meaning, entirely on your Windows PC.**
+**Search your documents, code and images by meaning, entirely on your Windows PC.**
+
+> **Development branch:** Code indexing, the revised status/results layout, and persisted similarity preferences are available on `dev`. The published `v1.0.0` release remains unchanged. Build this branch to try these additions.
 
 [![Build and release](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml/badge.svg)](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml)
 [![Latest release](https://img.shields.io/github/v/release/sumanthewhiz/FuzzyFindAnything)](https://github.com/sumanthewhiz/FuzzyFindAnything/releases/latest)
@@ -11,7 +13,7 @@
 [Architecture and operations](docs/ARCHITECTURE.md) ·
 [Report an issue](https://github.com/sumanthewhiz/FuzzyFindAnything/issues)
 
-Fuzzy Find Anything is a native WPF desktop application for finding files when you remember their contents, but not their names. Describe a document, subject, or image in natural language; the application searches a persistent local vector index and opens results in your usual Windows applications.
+Fuzzy Find Anything is a native WPF desktop application for finding files when you remember their contents, but not their names. Describe a document, code behavior, subject, or image in natural language; the application searches a persistent local vector index and opens results in your usual Windows applications.
 
 Text and images share the same embedding space through **Google EmbeddingGemma 2**. **Microsoft DiskANN** provides nearest-neighbor search, Windows **IFilters** extract document content, and a durable SQLite catalog keeps indexing progress recoverable.
 
@@ -29,13 +31,13 @@ See the [quickstart](QUICKSTART.md) for exact commands, hardware requirements, m
 
 | Area | What the application provides |
 |---|---|
-| Semantic search | Natural-language retrieval across document contents and image features, with an adjustable similarity threshold |
-| Results | Separate document list and image thumbnail gallery; open any result through its registered Windows viewer |
+| Semantic search | Natural-language retrieval across documents, source code and image features, with a persisted similarity threshold (initially 0.60) |
+| Results | Separate document and code lists plus an image thumbnail gallery; open any result through its registered Windows viewer/editor |
 | Indexing scope | Explicit folder selection, recursive indexing, and safe removal without deleting original files |
 | Background updates | USN journal and directory notifications, with periodic reconciliation where needed |
 | Parallel processing | Concurrent file/passage work within a hard, shared limit of half the physical CPU cores |
 | Durable progress | Persistent file jobs and saved passage batches resume after an exit or interruption |
-| Index information | Live file/document/image counts, database size, location, backend version, and refresh timestamp |
+| Index information | Live file/document/code/image counts, database size, location, backend version, and refresh timestamp |
 | Application settings | Light/dark appearance, XML-persisted preferences, configurable per-file logging, and search clearing |
 
 ### Supported formats
@@ -46,11 +48,13 @@ See the [quickstart](QUICKSTART.md) for exact commands, hardware requirements, m
 
 Plain text is read directly. Other document formats require compatible **installed Windows/Office/PDF IFilters**; the application does not redistribute Office filters. Images use the model's vision encoder rather than filename matching.
 
+Source indexing covers **Python, JavaScript, TypeScript, Java, C/C++, Go, Rust, SQL, Bash, C#, PHP, Ruby, Swift, Kotlin and R**, including common header/module/script extensions. Code is read as plain text, never executed or sent through IFilter. See the [extension reference](docs/ARCHITECTURE.md#source-code-formats) for supported filenames and limits.
+
 ## The interface
 
 | Tab | Purpose |
 |---|---|
-| **Search** | Enter a phrase, inspect document/image matches, adjust similarity, and clear the current search |
+| **Search** | Enter a phrase, inspect document/code/image matches, adjust saved similarity, and clear the current search |
 | **Indexed folders** | Add roots, review succeeded/failed counts, and remove checked folders |
 | **Index information** | Inspect live statistics and local storage details |
 | **Configuration** | Enable or disable logging and choose where new logs are written |
@@ -92,12 +96,12 @@ For process boundaries, queue transactions, model identity, extraction limits, r
 Development requires Windows 11, the **.NET 10 SDK**, PowerShell, and a bootstrap Python installation with pip supporting `--python`.
 
 ```powershell
-git clone https://github.com/sumanthewhiz/FuzzyFindAnything.git
+git clone --branch dev https://github.com/sumanthewhiz/FuzzyFindAnything.git
 Set-Location .\FuzzyFindAnything
 .\Setup.ps1 -SkipModel
 .\Get-Model.ps1
-.\Build.ps1 -SkipSetup
-& .\artifacts\FuzzyFindAnything\FuzzyFindAnything.exe
+.\Build.ps1 -SkipSetup -OutputDirectory .\artifacts\dev\FuzzyFindAnything
+& .\artifacts\dev\FuzzyFindAnything\FuzzyFindAnything.exe
 ```
 
 The model is pinned to a specific revision and is not stored in Git. Dependencies are installed into a private `.runtime` directory, not the developer's global Python environment.
@@ -106,7 +110,7 @@ The model is pinned to a specific revision and is not stored in Git. Dependencie
 
 [GitHub Actions](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml) builds self-contained x64 and ARM64 packages, runs automated regressions, validates release contents, and exercises a relocated runtime.
 
-- **Pull requests and `main`:** build checks and downloadable, short-lived Actions artifacts.
+- **Pull requests, `main`, and `dev`:** build checks and downloadable, short-lived Actions artifacts. A `dev` push does not publish a release or change `main`.
 - **Version tags (`v1.0.0`, for example):** the same checks followed by a GitHub Release with ZIPs and SHA-256 checksums.
 - **Model files and personal indexes:** never included in release assets.
 

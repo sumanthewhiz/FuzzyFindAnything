@@ -161,7 +161,7 @@ store.close()
         throw 'The application did not open maximized.'
     }
     Write-Output 'PASS native WPF opens maximized'
-    if ((Find-Id 'Attribution').Current.Name -ne '(c) 2026 Suman Ghosh' -or
+    if ((Find-Id 'Attribution').Current.Name -ne ([char]0xA9 + ' 2026 Suman Ghosh') -or
         (Find-Id 'LinkedInLink').Current.HelpText -ne 'https://www.linkedin.com/in/ghoshsuman/' -or
         (Find-Id 'GitHubLink').Current.HelpText -ne 'https://github.com/sumanthewhiz') {
         throw 'The attribution or profile links are incorrect.'
@@ -229,7 +229,7 @@ store.close()
     } 'real image search result'
     Write-Output 'PASS WPF-to-engine real document and image search'
     if ($Enhanced) {
-        if (-not (Find-Id 'DocumentResults') -or -not (Find-Id 'ImageGallery')) { throw 'Missing separated result sections.' }
+        if (-not (Find-Id 'DocumentResults') -or -not (Find-Id 'CodeResults') -or -not (Find-Id 'ImageGallery')) { throw 'Missing separated result sections.' }
         Wait-Check {
             $previews = (Find-Id 'ImageGallery').FindAll([System.Windows.Automation.TreeScope]::Descendants,
                 (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Image thumbnail')))
@@ -243,8 +243,8 @@ store.close()
         Select-Tab 'IndexInfoTab'
         if (-not (Find-Id 'IndexMetadataPanel')) { throw 'Missing index metadata panel.' }
         Wait-Check { (Find-Id 'TotalFilesValue').Current.Name -eq '2' } 'initial metadata counts'
-        if ((Find-Id 'TotalDocumentsValue').Current.Name -ne '1' -or (Find-Id 'TotalImagesValue').Current.Name -ne '1') {
-            throw 'Document/image metadata counts are incorrect.'
+        if ((Find-Id 'TotalDocumentsValue').Current.Name -ne '1' -or (Find-Id 'TotalCodeFilesValue').Current.Name -ne '0' -or (Find-Id 'TotalImagesValue').Current.Name -ne '1') {
+            throw 'Document/code/image metadata counts are incorrect.'
         }
         if ((Find-Id 'IndexTypeValue').Current.Name -notlike 'DiskANN (*') { throw 'DiskANN version is missing.' }
         if ((Find-Id 'LastRefreshedValue').Current.Name -eq 'Not refreshed yet') { throw 'Refresh timestamp is missing.' }

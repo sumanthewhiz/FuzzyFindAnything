@@ -129,7 +129,8 @@ class WorkQueue:
             warning = self.db.execute("SELECT warning FROM index_jobs WHERE id=?", (job["id"],)).fetchone()[0]
             return self.store.replace_file(
                 owners[0], Path(job["path"]), (job["mtime_ns"], job["size"], job["file_identity"]), job["kind"],
-                [(" ".join(row["content"].split())[:400], np.frombuffer(row["embedding"], dtype=np.float32)) for row in rows],
+                [((row["content"].strip() if job["kind"] == "Code" else " ".join(row["content"].split()))[:400],
+                  np.frombuffer(row["embedding"], dtype=np.float32)) for row in rows],
                 warning=warning, content_hash=job["content_hash"], job_ref=(job["id"], job["revision"]),
             )
 

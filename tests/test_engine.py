@@ -171,6 +171,20 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(timestamp, self.store.metadata()["last_refreshed"])
         self.assertEqual(1, self.store.metadata()["total_documents"])
 
+    def test_code_metadata_and_existing_content_survive_restart(self):
+        self.add("notes.txt")
+        self.add("photo.png", axis=1)
+        code = self.add("source.py", axis=2)
+        folders = [(row["id"], row["path"]) for row in self.store.folders()]
+        self.store.close()
+        self.store = VectorStore(self.root / "index")
+        info = self.store.metadata()
+        self.assertEqual((3, 1, 1, 1), (info["total_files"], info["total_documents"], info["total_code_files"], info["total_images"]))
+        self.assertEqual(folders, [(row["id"], row["path"]) for row in self.store.folders()])
+        result = self.store.search(vector(2), 5, 0.6)[0]
+        self.assertEqual(str(code), result["path"])
+        self.assertEqual("Code", result["kind"])
+
     def test_offline_reset_preserves_folders_and_removes_all_generated_index_data(self):
         sys.path.insert(0, str(ROOT / "tools"))
         from reset_index import reset
@@ -272,6 +286,27 @@ class CrawlerTests(unittest.TestCase):
         path.rename(nested / "notes.bin")
         self.reconcile(self.folder, DirtyFolder(0))
         self.assertEqual((0, 0), self.engine.store.counts())
+
+    def test_code_is_added_without_reindexing_existing_documents_or_resetting_scope(self):
+        document = self.corpus / "notes.txt"
+        document.write_text("apple", encoding="utf-8")
+        self.reconcile(self.folder, DirtyFolder(0))
+        file_id = self.engine.store.get_file(document)["id"]
+        original_vectors = self.engine.store.db.execute("SELECT id FROM vectors WHERE file_id=?", (file_id,)).fetchall()
+        source = self.corpus / "apples.py"
+        source.write_text('def harvest_apple():\n    return "ripe apple"\n', encoding="utf-8")
+        with patch("extraction.subprocess.Popen", side_effect=AssertionError("Code must not use IFilter")):
+            self.reconcile(self.folder, DirtyFolder(0))
+        self.assertEqual(original_vectors, self.engine.store.db.execute("SELECT id FROM vectors WHERE file_id=?", (file_id,)).fetchall())
+        self.assertEqual([self.folder], [row["id"] for row in self.engine.store.folders()])
+        results = self.engine.search("apple")
+        code = next(row for row in results if row["kind"] == "Code")
+        self.assertEqual(str(source), code["path"])
+        self.assertIn('\n    return "ripe apple"', code["snippet"])
+        self.assertEqual(1, self.engine.store.metadata()["total_code_files"])
+        generation = self.engine.store.generation
+        self.reconcile(self.folder, DirtyFolder(0))
+        self.assertEqual(generation, self.engine.store.generation)
 
     def test_usn_dirty_path_reindexes_even_if_mtime_and_size_are_preserved(self):
         path = self.corpus / "mutable.txt"
@@ -540,6 +575,26 @@ class ExtractionAndPathTests(unittest.TestCase):
             self.assertIsNotNone(file_kind("item" + suffix.upper()))
         self.assertIsNone(file_kind("item.exe"))
         self.assertIsNone(file_kind("item.txt.exe"))
+
+    def test_requested_source_languages_and_common_variants(self):
+        languages = {
+            "Python": [".py", ".pyw", ".pyi"],
+            "JavaScript": [".js", ".jsx", ".mjs", ".cjs"],
+            "TypeScript": [".ts", ".tsx", ".mts", ".cts"],
+            "Java": [".java"], "C": [".c", ".h"],
+            "C++": [".cpp", ".cc", ".cxx", ".hpp", ".hxx", ".hh"],
+            "Go": [".go"], "Rust": [".rs"], "SQL": [".sql"], "Bash": [".sh", ".bash"],
+            "C#": [".cs", ".csx"], "PHP": [".php", ".phtml"], "Ruby": [".rb", ".rake", ".gemspec", ".rbs"],
+            "Swift": [".swift"], "Kotlin": [".kt", ".kts"], "R": [".r"],
+        }
+        for language, extensions in languages.items():
+            for extension in extensions:
+                with self.subTest(language=language, extension=extension):
+                    self.assertEqual("Code", file_kind("source" + extension.upper()))
+        for name in (".bashrc", ".bash_profile", ".Rprofile", "Gemfile", "Rakefile"):
+            self.assertEqual("Code", file_kind(name))
+        for name in ("source.pyc", "Example.class", "library.dll", "program.exe", "bundle.jar", "data.RData"):
+            self.assertIsNone(file_kind(name))
 
 
 class NotificationTests(unittest.TestCase):

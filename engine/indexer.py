@@ -134,7 +134,7 @@ class IndexingEngine:
             "logging": self.outcome_log.status() if self.outcome_log else {"enabled": False, "directory": "", "error": ""},
         }
 
-    def search(self, text: str, threshold=0.3, limit=50):
+    def search(self, text: str, threshold=0.6, limit=50):
         if not isinstance(text, str) or not text.strip(): raise ValueError("Enter a search phrase.")
         if len(text) > 2048: raise ValueError("Search phrases must be under 2,048 characters.")
         if self.model_state != "Ready": raise RuntimeError(self.error or self.message)

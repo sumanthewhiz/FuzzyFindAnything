@@ -439,8 +439,8 @@ class VectorStore:
 
     def metadata(self) -> dict:
         with self.lock:
-            documents, images = self.db.execute(
-                "SELECT COALESCE(SUM(kind='Document'),0), COALESCE(SUM(kind='Image'),0) "
+            documents, images, code_files = self.db.execute(
+                "SELECT COALESCE(SUM(kind='Document'),0), COALESCE(SUM(kind='Image'),0), COALESCE(SUM(kind='Code'),0) "
                 "FROM files WHERE error IS NULL AND EXISTS(SELECT 1 FROM vectors WHERE file_id=files.id)"
             ).fetchone()
             paths = [
@@ -457,8 +457,9 @@ class VectorStore:
             return {
                 "type_version": f"DiskANN ({self.diskann_version})",
                 "database_location": str(self.directory.resolve()),
-                "total_files": documents + images,
+                "total_files": documents + images + code_files,
                 "total_documents": documents,
+                "total_code_files": code_files,
                 "total_images": images,
                 "database_size_bytes": size,
                 "last_refreshed": self.get_setting("last_refreshed"),

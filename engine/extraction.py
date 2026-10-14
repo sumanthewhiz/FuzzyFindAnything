@@ -7,6 +7,8 @@ import subprocess
 import time
 from pathlib import Path
 
+from paths import file_kind
+
 MAX_TEXT_CHARACTERS = 8_000_000
 log = logging.getLogger(__name__)
 
@@ -30,8 +32,11 @@ def read_text(path: Path) -> str:
         raw = stream.read(MAX_TEXT_CHARACTERS * 4 + 1)
     if not raw:
         raise ExtractionError("The file is empty (0 bytes); there is no content to index.", "empty_file")
-    if b"Standard ACE DB" in raw[:64] or b"Standard Jet DB" in raw[:64]:
-        raise ExtractionError("The .txt file contains a Microsoft Access database, not plain text.", "unsupported_content")
+    if raw.startswith(b"\x00\x01\x00\x00") and (b"Standard ACE DB" in raw[:64] or b"Standard Jet DB" in raw[:64]):
+        raise ExtractionError("The file contains a Microsoft Access database, not plain text.", "unsupported_content")
+    unicode_bom = raw.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE, codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE))
+    if file_kind(path) == "Code" and b"\x00" in raw and not unicode_bom:
+        raise ExtractionError("The code file contains binary data rather than plain-text source.", "unsupported_content")
     if len(raw) > MAX_TEXT_CHARACTERS * 4:
         raise ExtractionError("Text file exceeds the 32 MB extraction safety limit.", "resource_limit")
     try:
@@ -68,6 +73,8 @@ class TextExtractor:
     def extract_details(self, path: Path, is_cancelled=lambda: False) -> ExtractedText:
         if is_cancelled():
             raise InterruptedError("Extraction was cancelled.")
+        if file_kind(path) == "Code":
+            return ExtractedText(read_text(path), format=path.suffix.lower() or path.name)
         if path.suffix.lower() == ".txt":
             with path.open("rb") as stream:
                 header = stream.read(1024)

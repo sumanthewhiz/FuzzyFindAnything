@@ -2,9 +2,9 @@
 
 [Project overview](../README.md) | [Download and quickstart](../QUICKSTART.md)
 
-Fuzzy Find Anything is a Windows desktop application for semantic discovery of documents and images across explicitly configured folders. It combines a native WPF interface, local multimodal inference, Windows document filters, and a persistent DiskANN index.
+Fuzzy Find Anything is a Windows desktop application for semantic discovery of documents, code and images across explicitly configured folders. It combines a native WPF interface, local multimodal inference, Windows document filters, and a persistent DiskANN index.
 
-The application is intended for users who know what a file contains but do not remember its name or location. Documents and images share one embedding space, allowing natural-language queries to retrieve both written content and visual material.
+The application is intended for users who know what a file contains but do not remember its name or location. Documents, code and images share one embedding space, allowing natural-language queries to retrieve written content, source behavior and visual material. Code is indexed as text; the engine does not execute it or provide compiler/symbol-navigation semantics.
 
 ## Contents
 
@@ -297,7 +297,7 @@ Volumes or shares without a usable USN journal use directory notifications and r
 
 The similarity value is a cosine similarity, not a confidence probability. The default UI result limit is 50 files. Empty results are presented explicitly.
 
-**Clear** (or Escape in the search field) resets the phrase and both result sections immediately. Pending response waits and thumbnails are cancelled; generation checks prevent a late result from repopulating a cleared search. An already-running native query may finish, but its obsolete response is ignored.
+**Clear** (or Escape in the search field) resets the phrase and all three result sections immediately. Pending response waits and thumbnails are cancelled; generation checks prevent a late result from repopulating a cleared search. An already-running native query may finish, but its obsolete response is ignored.
 
 ## Persistence and recovery
 
@@ -367,6 +367,27 @@ An alternate directory can be selected at launch:
 | Documents | `.rtf`, `.pdf`, `.doc`, `.docx`, `.ppt`, `.pptx`, `.xls`, `.xlsx` | Windows COM IFilter |
 | Images | `.jpg`, `.jpeg`, `.png`, `.gif`, `.bmp`, `.ico` | Direct EmbeddingGemma 2 vision embeddings |
 
+### Source code formats
+
+| Language | Extensions / special filenames |
+|---|---|
+| Python | `.py`, `.pyw`, `.pyi` |
+| JavaScript | `.js`, `.jsx`, `.mjs`, `.cjs` |
+| TypeScript | `.ts`, `.tsx`, `.mts`, `.cts` |
+| Java | `.java` |
+| C / C++ | `.c`, `.h`, `.cc`, `.cpp`, `.cxx`, `.c++`, `.hh`, `.hpp`, `.hxx`, `.h++` |
+| Go / Rust / SQL | `.go`, `.rs`, `.sql` |
+| Bash | `.sh`, `.bash`, `.bashrc`, `.bash_profile`, `.bash_login`, `.bash_logout` |
+| C# | `.cs`, `.csx` |
+| PHP | `.php`, `.phtml`, `.php3`, `.php4`, `.php5`, `.php7`, `.php8`, `.phps` |
+| Ruby | `.rb`, `.rake`, `.gemspec`, `.rbs`, `Gemfile`, `Rakefile` |
+| Swift / Kotlin | `.swift`, `.kt`, `.kts` |
+| R | `.r`, `.Rprofile` |
+
+Filename matching is case-insensitive. Source is decoded directly as text using the existing encoding and size limits; it is not executed and does not require an IFilter. Binary/compiled outputs such as `.pyc`, `.class`, `.dll`, and `.jar` are not source formats. Code uses the same text embedding pipeline and durable passage queue as documents, but retains a distinct `Code` kind and code preview formatting.
+
+This is an additive catalog change: the existing schema, model fingerprint, file/vector identities, and configured roots are retained. Startup discovery adds newly supported code files without re-embedding unchanged documents/images. Code counts are included in the total file count and separately exposed as `total_code_files`.
+
 ### Filter selection
 
 The extractor inspects signatures and Office container contents before selecting a filter. Supported content with a mismatched filename extension is routed to the appropriate filter without renaming the source.
@@ -426,9 +447,12 @@ Preferences are saved atomically to `settings.xml` in the selected data director
 ```xml
 <FuzzyFindAnythingConfiguration version="1">
   <Appearance theme="Light" />
+  <Search minimumSimilarity="0.6" />
   <Logging enabled="true" directory="C:\Users\USER\AppData\Local\FuzzyFindAnything\Logs" />
 </FuzzyFindAnythingConfiguration>
 ```
+
+Minimum similarity defaults to **0.60** when no search preference has been saved, including older XML files without a `Search` element. Slider changes are saved automatically and restored at startup. Values must be finite and within the slider's `0.00`-`0.90` range; parsing and serialization are culture-independent. Clearing results does not reset this preference.
 
 Logging is enabled by default. **Configuration > Change...** opens the native folder picker. New records use the selected destination; previous logs are retained, not moved or deleted. Disabling logging stops normal outcome and diagnostic file writes while indexing, search, and pipe draining continue. Records are not backfilled for disabled intervals.
 
@@ -549,6 +573,14 @@ Compile and check formatting:
 dotnet build FuzzyFindAnything.sln -c Release
 dotnet format FuzzyFindAnything.sln --no-restore --verify-no-changes
 ```
+
+The managed regression executable checks XML preference persistence, result partitioning, loading state, and footer/layout contracts **without creating an application window or starting the engine**:
+
+```powershell
+dotnet run --project .\tests\FuzzyFindAnything.HeadlessTests\FuzzyFindAnything.HeadlessTests.csproj -c Release -p:SelfContained=true -- .
+```
+
+Use the matching runtime/platform properties when running these tests natively on ARM64. The `dev` workflow runs this headless suite in addition to the engine regressions; pushing `dev` does not modify `main` or publish a tagged release.
 
 The integration/UI suites create their own temporary corpus and index. They do not operate against the normal per-user catalog, but do consume inference memory/CPU. The direct UI script opens test windows on its current desktop; the private-desktop launcher avoids disturbing the active desktop. Schedule resource-intensive suites appropriately.
 

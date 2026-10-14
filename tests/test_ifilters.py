@@ -74,6 +74,31 @@ class NativeFilterTests(unittest.TestCase):
 
 
 class ExtractionLifecycleTests(unittest.TestCase):
+    def test_code_is_plain_text_even_when_it_mentions_document_signatures(self):
+        text = 'signature = "Standard ACE DB / %PDF-1.7"\n\ndef parse_file():\n    return signature\n'
+        with tempfile.TemporaryDirectory(prefix="ffa-source-") as temporary:
+            path = Path(temporary) / "parser.py"
+            path.write_bytes(text.encode("utf-8"))
+            with patch("extraction.subprocess.Popen", side_effect=AssertionError("Unexpected IFilter invocation")):
+                extracted = TextExtractor(Path(temporary) / "missing.exe").extract_details(path)
+            self.assertEqual(text.strip(), extracted.text)
+            self.assertEqual(".py", extracted.format)
+            self.assertEqual(text, path.read_text(encoding="utf-8"))
+
+    def test_unicode_code_is_read_and_binary_code_is_rejected(self):
+        with tempfile.TemporaryDirectory(prefix="ffa-source-encoding-") as temporary:
+            path = Path(temporary) / "source.cs"
+            text = 'string title = "caf\u00e9";\n    // indentation'
+            extractor = TextExtractor(Path(temporary) / "missing.exe")
+            for encoding in ("utf-8-sig", "utf-16", "utf-32"):
+                with self.subTest(encoding=encoding):
+                    path.write_bytes(text.encode(encoding))
+                    self.assertEqual(text, extractor.extract(path))
+            path.write_bytes(b"MZ\x00binary")
+            with self.assertRaises(ExtractionError) as error:
+                extractor.extract(path)
+            self.assertEqual("unsupported_content", error.exception.code)
+
     def test_timeout_kills_and_reaps_helper(self):
         process = Mock()
         process.__enter__ = Mock(return_value=process)

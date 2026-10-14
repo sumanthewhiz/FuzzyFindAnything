@@ -18,6 +18,7 @@ public partial class MainWindow : Window
     private readonly SettingsService settings;
     private bool quitting;
     private bool updatingAppearance;
+    private bool updatingSimilarity;
     private CancellationTokenSource thumbnailLifetime = new();
     private CancellationTokenSource? searchLifetime;
     private long searchGeneration;
@@ -161,6 +162,28 @@ public partial class MainWindow : Window
         }
     }
 
+    private void Similarity_Changed(object sender, RoutedPropertyChangedEventArgs<double> args)
+    {
+        if (!IsLoaded || updatingSimilarity || viewModel.ConfigurationBusy ||
+            args.NewValue == settings.Current.MinimumSimilarity)
+            return;
+        updatingSimilarity = true;
+        try
+        {
+            settings.Save(settings.Current with { MinimumSimilarity = args.NewValue });
+        }
+        catch (Exception exception)
+        {
+            viewModel.Threshold = settings.Current.MinimumSimilarity;
+            SimilaritySlider.SetCurrentValue(System.Windows.Controls.Primitives.RangeBase.ValueProperty, viewModel.Threshold);
+            ShowError($"Could not save minimum similarity: {exception.Message}");
+        }
+        finally
+        {
+            updatingSimilarity = false;
+        }
+    }
+
     private async void Logging_Changed(object sender, RoutedEventArgs args)
     {
         if (!IsLoaded || viewModel.ConfigurationBusy)
@@ -274,7 +297,7 @@ public partial class MainWindow : Window
 
     private void Results_KeyDown(object sender, KeyEventArgs args)
     {
-        if (args.Key == Key.Enter && ResultsList.SelectedItem is SearchResult result)
+        if (args.Key == Key.Enter && sender is ListBox { SelectedItem: SearchResult result })
         {
             args.Handled = true;
             OpenResult(result);

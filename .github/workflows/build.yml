@@ -2,7 +2,7 @@ name: Build and release
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
     tags: ['v*']
   pull_request:
   workflow_dispatch:
@@ -72,6 +72,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'The solution build failed.' }
           dotnet format .\FuzzyFindAnything.sln --no-restore --verify-no-changes --verbosity quiet
           if ($LASTEXITCODE -ne 0) { throw 'Formatting checks failed.' }
+
+      - name: Run headless UI and settings checks
+        run: |
+          dotnet run --project .\tests\FuzzyFindAnything.HeadlessTests\FuzzyFindAnything.HeadlessTests.csproj -c Release -r win-x64 -p:PlatformTarget=x64 -p:SelfContained=true -- $env:GITHUB_WORKSPACE
+          if ($LASTEXITCODE -ne 0) { throw 'Headless UI/settings checks failed.' }
 
       - name: Create relocatable package
         env:

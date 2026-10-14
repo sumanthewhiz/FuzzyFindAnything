@@ -105,7 +105,7 @@ def main() -> int:
                     result = engine.status()
                 elif command == "search":
                     result = engine.search(
-                        arguments["query"], float(arguments.get("threshold", 0.3)), int(arguments.get("limit", 50))
+                        arguments["query"], float(arguments.get("threshold", 0.6)), int(arguments.get("limit", 50))
                     )
                 elif command == "rescan":
                     for folder in engine.store.folders():

@@ -297,7 +297,7 @@ public sealed record IndexActivity(string Path, string Stage, int CompletedPassa
 
 public sealed record IndexMetadata(
     string TypeVersion, string DatabaseLocation, long TotalFiles, long TotalDocuments, long TotalImages,
-    long DatabaseSizeBytes, string? LastRefreshed);
+    long DatabaseSizeBytes, string? LastRefreshed, long TotalCodeFiles = 0);
 
 public sealed record FolderStatus(
     int Id, string Path, string Status, string Detail, int Completed, int Total, int Errors,
@@ -306,8 +306,9 @@ public sealed record FolderStatus(
 public sealed record SearchResult(
     string Path, string Name, string Kind, long Size, long MtimeNs, string Snippet, double Score)
 {
-    public string Glyph => Kind == "Image" ? "\uEB9F" : "\uE8A5";
-    public string Extension => System.IO.Path.GetExtension(Path).TrimStart('.').ToUpperInvariant();
+    public string Glyph => Kind switch { "Image" => "\uEB9F", "Code" => "\uE943", _ => "\uE8A5" };
+    public string Extension => System.IO.Path.GetExtension(Path).TrimStart('.').ToUpperInvariant() is { Length: > 0 } extension
+        ? extension : Kind.ToUpperInvariant();
     public string ScoreLabel => $"{Score:0.000} similarity";
     public string Metadata => $"{Extension}   /   {(Size >= 1048576 ? $"{Size / 1048576d:0.#} MB" : $"{Math.Max(1, Size / 1024d):0.#} KB")}";
 }
