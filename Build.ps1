@@ -54,18 +54,22 @@ try {
     } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $staging 'runtime.json') -Encoding utf8
 
     if (Test-Path $output) {
-        Move-Item -LiteralPath $output -Destination $previous
+        [IO.Directory]::Move($output, $previous)
     }
     try {
-        Move-Item -LiteralPath $staging -Destination $output
+        [IO.Directory]::Move($staging, $output)
     } catch {
         if ((Test-Path $previous) -and -not (Test-Path $output)) {
-            Move-Item -LiteralPath $previous -Destination $output
+            [IO.Directory]::Move($previous, $output)
         }
         throw
     }
     if (Test-Path $previous) {
-        [IO.Directory]::Delete($previous, $true)
+        try {
+            [IO.Directory]::Delete($previous, $true)
+        } catch [IO.IOException], [UnauthorizedAccessException] {
+            Write-Warning "The new build is published, but the retired output is still in use and was retained at $previous. $($_.Exception.Message)"
+        }
     }
 } finally {
     if (Test-Path $staging) {

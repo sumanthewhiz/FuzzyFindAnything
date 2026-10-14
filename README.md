@@ -35,7 +35,7 @@ See the [quickstart](QUICKSTART.md) for exact commands, hardware requirements, m
 | Results | Separate document and code lists plus an image thumbnail gallery; open any result through its registered Windows viewer/editor |
 | Indexing scope | Explicit folder selection, recursive indexing, and safe removal without deleting original files |
 | Background updates | USN journal and directory notifications, with periodic reconciliation where needed |
-| Parallel processing | Concurrent file/passage work within a hard, shared limit of half the physical CPU cores |
+| Parallel processing | Independent file pipelines plus cross-file inference batches, within a hard shared limit of half the physical CPU cores |
 | Durable progress | Persistent file jobs and saved passage batches resume after an exit or interruption |
 | Startup readiness | Percentage and current phase; search becomes ready after the first complete model, with optional worker capacity warmed in the background |
 | Index information | Live file/document/code/image counts, database size, location, backend version, and refresh timestamp |
@@ -69,6 +69,7 @@ The window opens maximized. Closing it minimizes it to the taskbar so indexing c
 - **Recoverable work.** Completed files and committed passage batches survive restarts. A batch interrupted before its commit may be recomputed.
 - **Delta updates.** Repeated notifications and directory changes do not restart unchanged files or discard their queued progress.
 - **Bounded CPU use.** All workers share one restricted set of physical cores; the limit is not independently multiplied per worker.
+- **Independent file concurrency.** Reducing model copies to fit RAM does not reduce file processing to one worker. A 12-core PC can run six file pipelines while sharing one loaded model.
 - **Visible failures.** Per-file logs distinguish permanent content errors from temporary failures. Logging failures do not erase indexing progress.
 
 The local catalog contains filenames, extracted snippets, and embeddings. Logs can contain paths and error details. Protect these locations with Windows permissions and disk encryption; local inference does not make stored data anonymous.
@@ -89,6 +90,8 @@ flowchart LR
 The UI is native to the selected architecture. The current engine uses a **bundled x64 Python runtime** and isolated inference processes; the application is not yet Python-free internally. On ARM64, the UI runs natively while the engine and extraction helper use Windows x64 compatibility.
 
 The active mutable DiskANN graph resides in memory and is checkpointed to disk. SQLite preserves vectors and work-in-progress so the graph can recover without repeating committed inference.
+
+File workers extract and prepare content concurrently. A bounded scheduler combines similarly sized text requests into batches of up to eight passages, or images into batches of up to two, and returns each result to its original durable job. The CPU tooltip distinguishes file-worker count, model-process count, compute threads, and the most recent inference batch size. Eligible cores are an upper bound, not a guarantee of constant utilization.
 
 For process boundaries, queue transactions, model identity, extraction limits, recovery, and maintenance, read [Architecture and operations](docs/ARCHITECTURE.md).
 

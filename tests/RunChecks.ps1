@@ -16,7 +16,7 @@ import unittest
 sys.path.insert(0, str(Path(sys.argv.pop(1)) / "tests"))
 unittest.main(module=None, argv=[
     "unittest", "test_engine", "test_cpu_pool", "test_logging", "test_model_acquisition",
-    "test_ifilters.ExtractionLifecycleTests", "test_release", "test_startup", "-v"
+    "test_ifilters.ExtractionLifecycleTests", "test_release", "test_startup", "test_inference_batches", "-v"
 ])
 '@ | & $python - $root *> $output
     $result = $LASTEXITCODE

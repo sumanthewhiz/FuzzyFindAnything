@@ -4,6 +4,7 @@ import logging
 import threading
 
 from cpu_budget import get_budget
+from inference_batches import InferenceBatcher
 from model_client import EmbeddingClient
 from startup import available_memory, plan_workers, WORKER_MEMORY, MEMORY_RESERVE, GIB
 from vectors import normalized
@@ -19,6 +20,7 @@ class EmbeddingPool:
         plan = plan_workers(self.budget.processors, workers or self.budget.workers, memory)
         self.worker_count = plan.workers
         self.threads_per_worker = plan.threads
+        self.batch_concurrency = min(self.budget.processors, 2 * self.worker_count)
         self.condition = threading.Condition()
         self.waiting_queries = 0
         self.closed = False
@@ -43,6 +45,8 @@ class EmbeddingPool:
             for client in self.clients:
                 client.close()
             raise
+        self.batcher = InferenceBatcher(self._encode_group, is_cancelled=self._cancelled)
+        self.batcher.add_worker()
         if self.worker_count > 1:
             self.initializer = threading.Thread(target=self._warm_remaining, name="Additional inference startup", daemon=True)
             self.initializer.start()
@@ -76,6 +80,7 @@ class EmbeddingPool:
                 if not accepted:
                     client.close()
                     return
+                self.batcher.add_worker()
                 log.info("Additional inference worker ready; %s workers available.", self.ready_worker_count)
         except InterruptedError:
             log.info("Additional inference startup cancelled.")
@@ -123,9 +128,18 @@ class EmbeddingPool:
             return client._request("split", {"text": text})
 
     def embed_batch(self, title, passages):
+        if not passages:
+            return []
+        texts = [f"title: {title[:160]} | text: {passage}" for passage in passages]
+        return self.batcher.submit("documents", texts).result()
+
+    def _encode_group(self, operation, items):
         with self.lease() as client:
-            values = client._request("documents", {"texts": [f"title: {title[:160]} | text: {passage}" for passage in passages]})
-        if len(values) != len(passages):
+            if self._cancelled():
+                raise InterruptedError("Inference batching was cancelled.")
+            arguments = {"texts": items} if operation == "documents" else {"paths": items}
+            values = client._request(operation, arguments)
+        if len(values) != len(items):
             raise RuntimeError("The inference worker returned an incomplete batch.")
         return [normalized(value) for value in values]
 
@@ -136,7 +150,7 @@ class EmbeddingPool:
         chunks = [None] * len(passages)
         batches = iter(range(0, len(passages), 4))
         completed = 0
-        with ThreadPoolExecutor(max_workers=self.worker_count) as executor:
+        with ThreadPoolExecutor(max_workers=self.batch_concurrency) as executor:
             pending = {}
 
             def submit():
@@ -145,7 +159,7 @@ class EmbeddingPool:
                 batch = passages[start:start + 4]
                 pending[executor.submit(self.embed_batch, title, batch)] = (start, batch)
 
-            for _ in range(self.worker_count): submit()
+            for _ in range(self.batch_concurrency): submit()
             while pending:
                 if is_cancelled():
                     for future in pending: future.cancel()
@@ -162,8 +176,11 @@ class EmbeddingPool:
         return chunks
 
     def image(self, path):
-        with self.lease() as client:
-            return client.image(path)
+        values = self.batcher.submit("images", [str(path)]).result()
+        return [("Visual content indexed with EmbeddingGemma 2.", values[0])]
+
+    def batch_statistics(self):
+        return self.batcher.statistics()
 
     def close(self):
         self.stop_event.set()
@@ -174,6 +191,7 @@ class EmbeddingPool:
             self.initializer.join(timeout=15)
             if self.initializer.is_alive():
                 raise TimeoutError("The additional inference worker did not stop.")
+        self.batcher.close()
         if self.clients:
             with ThreadPoolExecutor(max_workers=len(self.clients)) as executor:
                 list(executor.map(lambda client: client.close(), self.clients))

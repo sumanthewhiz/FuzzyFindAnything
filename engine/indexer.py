@@ -47,6 +47,7 @@ class IndexingEngine:
         self.model_path = model_path
         self.model_factory = model_factory
         self.cpu_budget = get_budget()
+        self.file_worker_count = min(8, self.cpu_budget.processors)
         self.extractor = TextExtractor(extractor_path)
         self.exclusions = [Path(path).resolve() for path in (data_path, model_path, app_path, Path(sys.executable).parent)]
         self.condition = threading.Condition(threading.RLock())
@@ -127,6 +128,7 @@ class IndexingEngine:
             if self.store.get_setting(f"scan_error:{folder['id']}"):
                 folder["status"] = "In Progress"
         queue_counts = self.queue.counts()
+        batches = self.model.batch_statistics() if self.model is not None and hasattr(self.model, "batch_statistics") else {}
         return {
             "model_state": self.model_state, "message": self.message,
             "error": self.error or getattr(self.model, "warmup_error", ""),
@@ -135,7 +137,9 @@ class IndexingEngine:
             "recovery": self.store.recovery_message, "index_info": self.store.metadata(),
             "cpu": {"total_cores": self.cpu_budget.total_cores, "core_limit": self.cpu_budget.processors,
                     "worker_count": getattr(self.model, "ready_worker_count", getattr(self.model, "worker_count", 0)),
-                    "threads_per_worker": getattr(self.model, "threads_per_worker", self.cpu_budget.threads_per_worker)},
+                    "threads_per_worker": getattr(self.model, "threads_per_worker", self.cpu_budget.threads_per_worker),
+                    "file_worker_count": self.file_worker_count, "last_batch_size": batches.get("last_batch_size", 0)},
+            "inference_batches": batches,
             "queue_count": sum(queue_counts.values()), "active_count": queue_counts.get("active", 0),
             "activities": activities,
             "logging": self.outcome_log.status() if self.outcome_log else {"enabled": False, "directory": "", "error": ""},
@@ -161,7 +165,9 @@ class IndexingEngine:
             log.info("Primary inference ready: available_workers=%s planned_workers=%s core_limit=%s total_cores=%s",
                      getattr(self.model, "ready_worker_count", 1), getattr(self.model, "worker_count", 1),
                      self.cpu_budget.processors, self.cpu_budget.total_cores)
-            for index in range(getattr(self.model, "worker_count", 1)):
+            log.info("File pipeline: %s concurrent workers within the shared %s-core affinity budget.",
+                     self.file_worker_count, self.cpu_budget.processors)
+            for index in range(self.file_worker_count):
                 worker = threading.Thread(target=self._work_loop, name=f"Index worker {index + 1}", daemon=True)
                 self.workers.append(worker)
                 worker.start()
@@ -349,7 +355,7 @@ class IndexingEngine:
                     raise InterruptedError()
             elif remaining:
                 failure = None
-                with ThreadPoolExecutor(max_workers=getattr(self.model, "worker_count", 1)) as executor:
+                with ThreadPoolExecutor(max_workers=getattr(self.model, "batch_concurrency", min(2, self.cpu_budget.processors))) as executor:
                     pending = {}
                     for start in range(0, len(remaining), 4):
                         batch = remaining[start:start + 4]

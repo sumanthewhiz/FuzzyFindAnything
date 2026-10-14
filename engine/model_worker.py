@@ -63,6 +63,8 @@ def main():
                     result = model.split_document(arguments["text"])
                 elif operation == "image":
                     result = model.image(Path(arguments["path"]))[0][1].tolist()
+                elif operation == "images":
+                    result = [vector.tolist() for vector in model.encode_images([Path(path) for path in arguments["paths"]])]
                 elif operation == "shutdown":
                     result = None
                 else:

@@ -98,6 +98,8 @@ Wait for the engine status to show **Ready**. The first model load can take a mi
 
 Search is enabled when the first complete text/vision model is ready. A second worker, when memory permits, warms in the background without delaying readiness. The CPU-status tooltip reports ready workers. If startup reports insufficient available RAM, close other applications and retry; your index and queued work remain intact.
 
+The number of loaded model processes is not the number of files processed concurrently. On `dev`, a 12-core PC can run six file pipelines even with one model copy, grouping pending content into inference batches. Hover over the CPU status to inspect file workers, model processes, compute threads, and recent batch size.
+
 1. Open **Indexed folders** and select **Add folder**.
 2. Choose a small local folder containing a few `.txt` files and photos. Start small rather than selecting an entire drive.
 3. Wait for the status to become **Indexed**. The details show succeeded/failed counts; current processing appears in the status bar.

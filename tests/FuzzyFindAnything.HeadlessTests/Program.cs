@@ -118,9 +118,11 @@ internal static class Program
         var model = new MainViewModel { Query = "parsing files", Threshold = 0.65 };
         model.Apply(new EngineStatus("Ready", "Ready", "", [], 4, 4, "Monitoring", "",
             new IndexMetadata("DiskANN", @"C:\fixtures\index", 4, 1, 1, 1024, null, 2),
-            new CpuStatus(12, 6, 2, 3), 0, 0, [], new LoggingStatus(false, @"C:\fixtures\logs", "")));
+            new CpuStatus(12, 6, 1, 6, 6, 8), 0, 0, [], new LoggingStatus(false, @"C:\fixtures\logs", "")));
         Require(model.TotalFiles == "4" && model.TotalDocuments == "1" && model.TotalCodeFiles == "2" && model.TotalImages == "1",
             "Live metadata does not account for all three file categories.");
+        Require(model.CpuDetail.Contains("6 concurrent file workers") && model.CpuDetail.Contains("1 ready model processes"),
+            "CPU diagnostics must distinguish file concurrency from model-copy count.");
         SearchResult[] results =
         [
             new(@"C:\fixtures\guide.txt", "guide.txt", "Document", 120, 0, "guide", 0.9),

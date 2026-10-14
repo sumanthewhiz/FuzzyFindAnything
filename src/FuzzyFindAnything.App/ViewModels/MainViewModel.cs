@@ -179,7 +179,8 @@ public sealed class MainViewModel : ObservableObject
         Counts = $"{status.FileCount:N0} files | {status.VectorCount:N0} passages";
         CpuSummary = $"CPU limit: {status.Cpu.CoreLimit}/{status.Cpu.TotalCores}";
         CpuDetail = $"Maximum {status.Cpu.CoreLimit} of {status.Cpu.TotalCores} physical cores across the application and all workers. " +
-            $"{status.Cpu.WorkerCount} ready inference workers, {status.Cpu.ThreadsPerWorker} compute threads each.";
+            $"{status.Cpu.FileWorkerCount} concurrent file workers; {status.Cpu.WorkerCount} ready model processes, " +
+            $"{status.Cpu.ThreadsPerWorker} compute threads per process. Last inference batch: {status.Cpu.LastBatchSize} inputs.";
         indexInfo = status.IndexInfo;
         foreach (string property in new[] { nameof(IndexType), nameof(IndexLocation), nameof(TotalFiles),
                      nameof(TotalDocuments), nameof(TotalCodeFiles), nameof(TotalImages), nameof(DatabaseSize), nameof(LastRefreshed), nameof(RefreshTimestamp) })

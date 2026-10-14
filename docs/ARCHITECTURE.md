@@ -234,6 +234,7 @@ flowchart LR
 | Indexing coordinator | `engine\worker.py`, `engine\indexer.py` | Separate discovery and concurrent file processing, scoped deltas, status publication, and retry policy |
 | Durable work queue | `engine\work_queue.py` | File claims, owner roots, source revisions, prepared passages, batch commits, recovery, and fair rescheduling |
 | Inference pool | `engine\model_pool.py`, `engine\model_worker.py`, `engine\model_client.py`, `engine\embeddings.py` | Reused model processes, tokenization, embeddings, bounded batches, worker replacement, and query priority |
+| Cross-file batching | `engine\inference_batches.py` | Bounded text/image request aggregation, result demultiplexing, size bucketing, error isolation, and cancellation |
 | CPU budget | `engine\cpu_budget.py`, `Services\CpuBudget.cs` | Physical-core discovery, restricted affinity, inherited thread limits, and job-object enforcement |
 | Extraction process | `src\FuzzyFindAnything.Extractor` | Content-format detection, COM filter activation, stream/file initialization, bounded text extraction, and structured failure reporting |
 | Persistent store | `engine\store.py` | SQLite transactions, native graph mutations, snapshot generation, recovery, search-result resolution, and metadata |
@@ -244,11 +245,17 @@ flowchart LR
 
 The WPF process does not execute model inference or third-party document filters in its UI thread. It supervises a long-lived indexing coordinator with separate discovery and file-worker threads, a bounded inference-process pool, and short-lived extraction helpers.
 
-PyTorch and DiskANN run in separate processes to avoid interaction between their native runtimes. Each inference process serializes its own requests, while different processes can handle separate files or passage batches concurrently. Batches contain up to four passages. A file yields after up to sixteen passages so a large workbook does not monopolize the queue. Search requests receive priority when a worker becomes available; an active native operation is not arbitrarily interrupted.
+PyTorch and DiskANN run in separate processes to avoid interaction between their native runtimes. File concurrency is independent of the number of model copies: the engine starts up to one file worker per eligible core, capped at eight concurrent file pipelines. On a 12-core machine this permits six simultaneous file jobs even when memory planning selects one model process.
+
+File workers overlap extraction and preparation, then submit bounded inference requests. A short coalescing window combines requests from multiple files into up to eight text passages or two images. Text requests use approximate length buckets to avoid padding tiny files to a much larger passage. Each model process handles one native request at a time; different model processes can process batches concurrently. Queries retain priority when an inference slot becomes available.
+
+Completed results are mapped back to their originating requests before their existing passage checkpoints are committed. If a combined request fails, its constituent requests are retried individually to identify the failing file rather than incorrectly failing healthy neighbors. Cancellation releases pending requests without marking them as successful. Durable passage commits remain in groups of up to four, and a file yields after up to sixteen passages so a large workbook does not monopolize the queue.
 
 The application enumerates physical cores and selects at most `floor(core count / 2)`, using one logical processor per selected physical core and respecting inherited affinity restrictions. WPF, the coordinator, inference, native indexing, and extraction all use the same allowed set. A 16-core machine therefore permits at most eight cores, not eight cores per worker. On the tested 12-core machine, the set contains six cores and two model workers use three compute threads each.
 
 The pool targets two inference workers when at least four processors are available inside that set and memory permits, otherwise one. Startup budgets 3 GiB per worker plus a 2 GiB reserve, based on the current model/runtime footprint. This is a conservative planning estimate, not a hard memory quota. A single-worker plan uses the full eligible compute-thread budget. Additional threads cannot escape the affinity restriction. On multi-processor-group systems, selection is conservative and stays within the primary group. This is a limit on eligible cores, not a promise of a specific Task Manager percentage or throughput.
+
+In this paragraph, a model worker is a model **process**, not a file pipeline or a physical CPU core. The status payload separately reports `file_worker_count`, ready model-process count, compute threads, and inference-batch statistics. Memory bandwidth, file I/O, and workload size can leave eligible cores idle; increasing thread counts alone is not proof of increased throughput.
 
 ### Startup and readiness
 
@@ -555,7 +562,9 @@ Build definitions enable nullable reference types, deterministic compilation, an
 | Engine/storage regression | `.\.runtime\python.exe tests\test_engine.py` | DiskANN, ownership, fingerprints, USN, durable claims/passages, cancellation, revisions, delta work, metadata, and both reset modes |
 | CPU/concurrency regression | `.\.runtime\python.exe tests\test_cpu_pool.py` | Physical-core selection, inherited restrictions, child affinity, parallel batches, and worker replacement |
 | Startup regression | `.\.runtime\python.exe tests\test_startup.py` | Primary readiness, memory planning, percentage checkpoints, secondary warmup, deadlines, and cancellation |
+| File concurrency and batching | `.\.runtime\python.exe tests\test_inference_batches.py` | Six-reader operation with one model, cross-file result mapping, batch bounds, padding avoidance, failures, and cancellation |
 | Real startup integration | `.\.runtime\python.exe tests\startup_integration.py` | Real-model percentage events, first-worker readiness, search, and prompt shutdown; temporary data, no WPF launch |
+| Warm queue throughput | `.\.runtime\python.exe tests\throughput_benchmark.py` | One versus multiple file pipelines using the same warmed model, with active-file, batch-size, CPU-time, and throughput measurements |
 | Logging regression | `.\.runtime\python.exe tests\test_logging.py` | XML settings, outcomes, disable/switch behavior, rotation, failures, and indexing within a log directory |
 | IFilter regression | `.\.runtime\python.exe tests\test_ifilters.py` | Real filter activation, content errors, format routing, cancellation, timeouts, and document batching |
 | End-to-end pipeline | `.\.runtime\python.exe tests\integration.py` | Real model, supported test documents/images, live changes, search, and process restart |

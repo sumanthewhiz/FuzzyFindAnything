@@ -308,7 +308,8 @@ public sealed record StartupStatus(
 
 public sealed record LoggingStatus(bool Enabled, string Directory, string Error);
 
-public sealed record CpuStatus(int TotalCores, int CoreLimit, int WorkerCount, int ThreadsPerWorker);
+public sealed record CpuStatus(int TotalCores, int CoreLimit, int WorkerCount, int ThreadsPerWorker,
+    int FileWorkerCount = 0, int LastBatchSize = 0);
 
 public sealed record IndexActivity(string Path, string Stage, int CompletedPassages, int TotalPassages);
 

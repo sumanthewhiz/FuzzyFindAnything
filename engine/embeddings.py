@@ -6,6 +6,7 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
 
+from inference_batches import IMAGE_BATCH_SIZE, TEXT_BATCH_SIZE
 os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 os.environ["DO_NOT_TRACK"] = "1"
 os.environ["HF_HUB_OFFLINE"] = "1"
@@ -89,10 +90,12 @@ class EmbeddingModel:
     def encode_documents(self, texts: list[str]) -> list[np.ndarray]:
         if not texts:
             return []
+        if len(texts) > TEXT_BATCH_SIZE:
+            raise ValueError("The document inference batch exceeds its memory bound.")
         with self._slot():
             values = self.model.encode(
                 texts, normalize_embeddings=True, convert_to_numpy=True,
-                show_progress_bar=False, batch_size=min(4, len(texts)),
+                show_progress_bar=False, batch_size=len(texts),
             )
             return [normalized(value) for value in values]
 
@@ -124,14 +127,30 @@ class EmbeddingModel:
                     break
             return passages
 
-    def image(self, path: Path) -> list[tuple[str, np.ndarray]]:
+    def encode_images(self, paths: list[Path]) -> list[np.ndarray]:
         from PIL import Image, ImageOps
 
+        if not 1 <= len(paths) <= IMAGE_BATCH_SIZE:
+            raise ValueError("The image inference batch exceeds its memory bound.")
+        images = []
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
-            with Image.open(path) as original:
-                original.seek(0)
-                image = ImageOps.exif_transpose(original).convert("RGB")
-                image.thumbnail((2048, 2048))
-                vector = self._encode({"image": image})
-        return [("Visual content indexed with EmbeddingGemma 2.", vector)]
+            try:
+                for path in paths:
+                    with Image.open(path) as original:
+                        original.seek(0)
+                        image = ImageOps.exif_transpose(original).convert("RGB")
+                        image.thumbnail((2048, 2048))
+                        images.append(image)
+                with self._slot():
+                    values = self.model.encode(
+                        [{"image": image} for image in images], normalize_embeddings=True, convert_to_numpy=True,
+                        show_progress_bar=False, batch_size=len(images),
+                    )
+                return [normalized(value) for value in values]
+            finally:
+                for image in images:
+                    image.close()
+
+    def image(self, path: Path) -> list[tuple[str, np.ndarray]]:
+        return [("Visual content indexed with EmbeddingGemma 2.", self.encode_images([path])[0])]
