@@ -61,7 +61,7 @@ These boundaries are relevant to deployment planning. Process isolation improves
 | Application Python | Provisioned separately by `Setup.ps1`: private CPython 3.11 x64 under `.runtime` |
 | Document extraction | Installed Windows/Office/PDF IFilters compatible with the x64 extractor |
 | Model assets | Downloaded separately from Hugging Face; approximately 1.5 GB for the model checkpoint, plus tokenizer and configuration assets |
-| Hardware capacity | At least two physical CPU cores; plan for roughly 8 GB of available memory when using two model workers, plus storage for runtime, model, catalog, and snapshots |
+| Hardware capacity | At least two physical CPU cores; startup requires 5 GiB available RAM for one worker or 8 GiB for two, plus storage for runtime, model, catalog, and snapshots |
 
 The UI is published for the host OS architecture. On ARM64 Windows, the WPF application is native ARM64, while the Python workers and IFilter helper use x64 compatibility. This split follows the architecture supported by the published `diskannpy` Windows package.
 
@@ -248,7 +248,15 @@ PyTorch and DiskANN run in separate processes to avoid interaction between their
 
 The application enumerates physical cores and selects at most `floor(core count / 2)`, using one logical processor per selected physical core and respecting inherited affinity restrictions. WPF, the coordinator, inference, native indexing, and extraction all use the same allowed set. A 16-core machine therefore permits at most eight cores, not eight cores per worker. On the tested 12-core machine, the set contains six cores and two model workers use three compute threads each.
 
-The pool uses two inference workers when at least four processors are available inside that set, otherwise one. Additional threads cannot escape the affinity restriction. On multi-processor-group systems, selection is conservative and stays within the primary group. This is a limit on eligible cores, not a promise of a specific Task Manager percentage or throughput; other workloads can contend for the same cores. Two workers also require additional model memory.
+The pool targets two inference workers when at least four processors are available inside that set and memory permits, otherwise one. Startup budgets 3 GiB per worker plus a 2 GiB reserve, based on the current model/runtime footprint. This is a conservative planning estimate, not a hard memory quota. A single-worker plan uses the full eligible compute-thread budget. Additional threads cannot escape the affinity restriction. On multi-processor-group systems, selection is conservative and stays within the primary group. This is a limit on eligible cores, not a promise of a specific Task Manager percentage or throughput.
+
+### Startup and readiness
+
+Only the first fully initialized model gates search readiness. Optional additional capacity loads on a background thread, joins the same bounded pool when ready, and never postpones the primary `Ready` signal. Available memory is checked again before warming an additional worker. If secondary startup fails, the primary remains usable and the failure is reported; the UI does not claim that both workers are ready.
+
+Startup progress is based on nine completed checkpoints: catalog recovery, monitoring setup, six primary-model checkpoints (worker bootstrap, numerical runtime import, embedding-library import, CPU configuration, model/tokenizer loading, and finalization), and service readiness. The UI displays their percentage and the current phase. It is not a time-remaining estimate, and it never reaches 100% before the primary model and service are ready.
+
+Progress and readiness have a dedicated IPC event rather than waiting for a full folder-statistics refresh. Sequence numbers prevent a delayed `Loading` snapshot from reverting a ready UI. Model-client progress messages are consumed separately from inference responses and do not extend the overall startup timeout. Cancelling startup stops the partially initialized worker; stopping the application also cancels secondary warmup.
 
 The coordinator serializes store mutations and graph access. This simplifies consistency between file ownership, persisted vectors, and graph generations. Native checkpoints can temporarily hold store access while rebuilding and publishing a snapshot.
 
@@ -546,6 +554,8 @@ Build definitions enable nullable reference types, deterministic compilation, an
 | Model acquisition readiness | `.\.runtime\python.exe tests\test_model_acquisition.py` | Missing/invalid assets and read-only verification |
 | Engine/storage regression | `.\.runtime\python.exe tests\test_engine.py` | DiskANN, ownership, fingerprints, USN, durable claims/passages, cancellation, revisions, delta work, metadata, and both reset modes |
 | CPU/concurrency regression | `.\.runtime\python.exe tests\test_cpu_pool.py` | Physical-core selection, inherited restrictions, child affinity, parallel batches, and worker replacement |
+| Startup regression | `.\.runtime\python.exe tests\test_startup.py` | Primary readiness, memory planning, percentage checkpoints, secondary warmup, deadlines, and cancellation |
+| Real startup integration | `.\.runtime\python.exe tests\startup_integration.py` | Real-model percentage events, first-worker readiness, search, and prompt shutdown; temporary data, no WPF launch |
 | Logging regression | `.\.runtime\python.exe tests\test_logging.py` | XML settings, outcomes, disable/switch behavior, rotation, failures, and indexing within a log directory |
 | IFilter regression | `.\.runtime\python.exe tests\test_ifilters.py` | Real filter activation, content errors, format routing, cancellation, timeouts, and document batching |
 | End-to-end pipeline | `.\.runtime\python.exe tests\integration.py` | Real model, supported test documents/images, live changes, search, and process restart |

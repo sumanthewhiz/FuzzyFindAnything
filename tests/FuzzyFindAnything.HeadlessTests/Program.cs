@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.IO;
+using System.Text.Json;
 using System.Xml.Linq;
 using FuzzyFindAnything.App.Services;
 using FuzzyFindAnything.App.ViewModels;
@@ -153,6 +154,19 @@ internal static class Program
         Require(!model.IsEngineLoading && model.ShowEngineState, "Progress must stop once the engine is ready.");
         model.ModelState = "Error";
         Require(!model.IsEngineLoading && model.ShowEngineState, "Startup failures must not leave endless progress.");
+        var loading = JsonSerializer.Deserialize<StartupStatus>(
+            """{"sequence":1,"percent":44,"completed_steps":4,"total_steps":9,"stage":"Importing embedding libraries","state":"Loading","error":""}""",
+            EngineClient.JsonOptions) ?? throw new InvalidDataException("Startup IPC could not be decoded.");
+        model.ApplyStartup(loading);
+        Require(model.IsEngineLoading && model.StartupPercent == 44 && model.StartupLabel.Contains("44%"),
+            "The UI must display the reported percentage and phase.");
+        Require(model.StartupStage == loading.Stage, "The current startup phase was lost.");
+        model.ApplyStartup(new StartupStatus(2, 100, 9, 9, "Search engine ready", "Ready", ""));
+        model.Apply(new EngineStatus("Loading", "Old loading status", "", [], 0, 0, "", "",
+            new IndexMetadata("DiskANN", @"C:\fixtures", 0, 0, 0, 0, null),
+            new CpuStatus(12, 6, 1, 3), 0, 0, [], new LoggingStatus(false, "", ""), loading));
+        Require(model.CanSearch && !model.IsEngineLoading && model.StartupPercent == 100,
+            "A delayed status snapshot must not return a ready engine to the loading state.");
     }
 
     private static void LayoutContracts(string root)
@@ -173,5 +187,8 @@ internal static class Program
                 codePane?.Parent == Find("ImageGallery").Parent?.Parent,
             "Code, document and image sections must share the results pane.");
         Require(Find("StartupProgress").Name == presentation + "ProgressBar", "Startup is missing a progress control.");
+        Require((string?)Find("StartupProgress").Attribute("IsIndeterminate") == "False" &&
+                ((string?)Find("StartupProgress").Attribute("Value"))?.Contains("StartupPercent") == true,
+            "Startup progress must be determinate and driven by loader progress.");
     }
 }

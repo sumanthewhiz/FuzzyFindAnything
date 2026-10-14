@@ -62,11 +62,16 @@
           <TextBlock Text="Fuzzy Find Anything" FontSize="24" FontWeight="SemiBold" />
           <TextBlock Text="Semantic file search" Foreground="{DynamicResource Muted}" Margin="0,3,0,0" FontSize="13" />
         </StackPanel>
-        <StackPanel Grid.Column="2" Width="170" Margin="16,0,24,0" VerticalAlignment="Center"
+        <StackPanel Grid.Column="2" Width="200" Margin="16,0,24,0" VerticalAlignment="Center"
+                    ToolTip="Percentage of completed startup checkpoints, not an estimate of time remaining."
                     Visibility="{Binding IsEngineLoading, Converter={StaticResource BoolToVisibility}}">
-          <TextBlock Text="Loading search engine..." FontSize="12" Foreground="{DynamicResource Muted}" />
-          <ProgressBar x:Name="StartupProgress" IsIndeterminate="True" Height="4" Margin="0,8,0,0"
+          <TextBlock Text="{Binding StartupLabel}" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource Ink}"
+                     AutomationProperties.AutomationId="StartupPercentage" />
+          <ProgressBar x:Name="StartupProgress" IsIndeterminate="False" Minimum="0" Maximum="100"
+                       Value="{Binding StartupPercent, Mode=OneWay}" Height="4" Margin="0,6,0,0"
                        AutomationProperties.AutomationId="StartupProgress" AutomationProperties.Name="Loading search engine" />
+          <TextBlock Text="{Binding StartupStage}" FontSize="11" Foreground="{DynamicResource Muted}" Margin="0,6,0,0"
+                     TextTrimming="CharacterEllipsis" ToolTip="{Binding StartupStage}" />
         </StackPanel>
         <Border Grid.Column="2" CornerRadius="12" Padding="12,6" Margin="16,0,24,0" VerticalAlignment="Center"
                 Visibility="{Binding ShowEngineState, Converter={StaticResource BoolToVisibility}}">

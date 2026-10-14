@@ -64,6 +64,9 @@ public sealed class MainViewModel : ObservableObject
     private string error = "";
     private string engineMessage = "Starting the local indexing engine...";
     private string modelState = "Starting";
+    private int startupSequence = -1;
+    private int startupPercent;
+    private string startupStage = "Starting local engine";
     private string monitor = "Watching begins when you add a folder.";
     private string counts = "0 files / 0 passages";
     private string resultSummary = "Enter a search phrase to begin.";
@@ -145,6 +148,9 @@ public sealed class MainViewModel : ObservableObject
     }
     public bool IsEngineLoading => ModelState is "Starting" or "Loading";
     public bool ShowEngineState => !IsEngineLoading;
+    public int StartupPercent { get => startupPercent; private set { Set(ref startupPercent, value); Changed(nameof(StartupLabel)); } }
+    public string StartupLabel => $"{StartupPercent:0}% loaded";
+    public string StartupStage { get => startupStage; private set => Set(ref startupStage, value); }
     public string Monitor { get => monitor; set => Set(ref monitor, value); }
     public string Counts { get => counts; set => Set(ref counts, value); }
     public string ResultSummary { get => resultSummary; set => Set(ref resultSummary, value); }
@@ -157,18 +163,23 @@ public sealed class MainViewModel : ObservableObject
     public void Apply(EngineStatus status)
     {
         IsConnected = true;
-        ready = status.ModelState == "Ready";
-        ModelState = status.ModelState;
-        EngineMessage = status.Activities.Count > 0
+        if (status.Startup is not null)
+            ApplyStartup(status.Startup);
+        else if (startupSequence < 0)
+        {
+            ready = status.ModelState == "Ready";
+            ModelState = status.ModelState;
+        }
+        EngineMessage = IsEngineLoading ? StartupStage : status.Activities.Count > 0
             ? string.Join("  |  ", status.Activities.Select(item =>
                 $"{item.Stage}: {Path.GetFileName(item.Path)}" +
                 (item.TotalPassages > 0 ? $" ({item.CompletedPassages:N0}/{item.TotalPassages:N0} passages)" : "")))
-            : status.QueueCount > 0 && ready ? $"{status.QueueCount:N0} files queued" : status.Message;
+            : status.QueueCount > 0 && ready ? $"{status.QueueCount:N0} files queued" : ready ? "Search engine ready" : status.Message;
         Monitor = status.Monitor;
         Counts = $"{status.FileCount:N0} files | {status.VectorCount:N0} passages";
         CpuSummary = $"CPU limit: {status.Cpu.CoreLimit}/{status.Cpu.TotalCores}";
         CpuDetail = $"Maximum {status.Cpu.CoreLimit} of {status.Cpu.TotalCores} physical cores across the application and all workers. " +
-            $"{status.Cpu.WorkerCount} inference workers, {status.Cpu.ThreadsPerWorker} compute threads each.";
+            $"{status.Cpu.WorkerCount} ready inference workers, {status.Cpu.ThreadsPerWorker} compute threads each.";
         indexInfo = status.IndexInfo;
         foreach (string property in new[] { nameof(IndexType), nameof(IndexLocation), nameof(TotalFiles),
                      nameof(TotalDocuments), nameof(TotalCodeFiles), nameof(TotalImages), nameof(DatabaseSize), nameof(LastRefreshed), nameof(RefreshTimestamp) })
@@ -209,6 +220,22 @@ public sealed class MainViewModel : ObservableObject
         LoggingEnabled = settings.LoggingEnabled;
         LogDirectory = settings.LogDirectory;
         SettingsPath = path;
+    }
+
+    public void ApplyStartup(StartupStatus status)
+    {
+        if (status.Sequence < startupSequence)
+            return;
+        startupSequence = status.Sequence;
+        StartupPercent = status.Percent;
+        StartupStage = status.Stage;
+        ModelState = status.State;
+        ready = status.State == "Ready";
+        IsConnected = true;
+        EngineMessage = status.Stage;
+        if (!string.IsNullOrEmpty(status.Error))
+            Error = status.Error;
+        Changed(nameof(CanSearch));
     }
 
     private void FolderChanged(object? sender, PropertyChangedEventArgs args)

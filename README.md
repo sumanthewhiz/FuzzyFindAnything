@@ -37,6 +37,7 @@ See the [quickstart](QUICKSTART.md) for exact commands, hardware requirements, m
 | Background updates | USN journal and directory notifications, with periodic reconciliation where needed |
 | Parallel processing | Concurrent file/passage work within a hard, shared limit of half the physical CPU cores |
 | Durable progress | Persistent file jobs and saved passage batches resume after an exit or interruption |
+| Startup readiness | Percentage and current phase; search becomes ready after the first complete model, with optional worker capacity warmed in the background |
 | Index information | Live file/document/code/image counts, database size, location, backend version, and refresh timestamp |
 | Application settings | Light/dark appearance, XML-persisted preferences, configurable per-file logging, and search clearing |
 
@@ -118,7 +119,7 @@ Packages are currently **unsigned**. Checksums detect a changed download but do 
 
 ## Requirements and limitations
 
-- Windows 11 x64 or ARM64, at least two physical CPU cores, and several GB of free RAM. For the two-worker configuration, plan for roughly **8 GB of available memory**; large indexes require more.
+- Windows 11 x64 or ARM64 and at least two physical CPU cores. Startup reserves memory conservatively: at least **5 GiB available** for one model worker and **8 GiB available** for two; large indexes require more. Low-memory systems use one worker rather than loading two at once.
 - CPU inference can take substantial time for large workbooks or image collections. Throughput depends on content, hardware, and memory pressure.
 - Scanned PDFs require an OCR-capable installed IFilter. Encrypted documents are not decrypted.
 - Online-only files must be made available locally. Symbolic links and junctions are not traversed.

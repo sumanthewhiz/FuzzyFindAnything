@@ -19,6 +19,7 @@ public partial class MainWindow : Window
     private bool quitting;
     private bool updatingAppearance;
     private bool updatingSimilarity;
+    private bool engineStarted;
     private CancellationTokenSource thumbnailLifetime = new();
     private CancellationTokenSource? searchLifetime;
     private long searchGeneration;
@@ -33,6 +34,7 @@ public partial class MainWindow : Window
         DataContext = viewModel;
         engine = new EngineClient(dataDirectory, settings.Current);
         engine.StatusChanged += status => Dispatcher.InvokeAsync(() => viewModel.Apply(status));
+        engine.StartupChanged += status => Dispatcher.InvokeAsync(() => viewModel.ApplyStartup(status));
         engine.Warning += message => Dispatcher.InvokeAsync(() => viewModel.Error = message);
         engine.Failed += message => Dispatcher.InvokeAsync(() =>
         {
@@ -43,12 +45,14 @@ public partial class MainWindow : Window
         });
     }
 
-    private async void Window_Loaded(object sender, RoutedEventArgs args)
+    private void Window_Loaded(object sender, RoutedEventArgs args)
     {
+        if (engineStarted)
+            return;
+        engineStarted = true;
         try
         {
             engine.Start();
-            viewModel.Apply(await engine.RequestAsync<EngineStatus>("status"));
             SearchInput.Focus();
         }
         catch (Exception exception)

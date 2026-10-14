@@ -22,6 +22,7 @@ REQUIRED = {
     ".runtime/python.exe", ".runtime/python311._pth", ".runtime/python311.zip", ".runtime/LICENSE.txt",
     "engine/worker.py", "engine/model_worker.py", "engine/download_model.py", "engine/work_queue.py",
     "engine/indexer_logging.py", "extractor/FuzzyFindAnything.Extractor.exe",
+    "engine/startup.py",
 }
 
 

@@ -12,6 +12,7 @@ from extraction import ExtractionError, TextExtractor
 from model_pool import EmbeddingPool
 from paths import file_kind, fingerprint, is_within, path_key
 from store import VectorStore
+from startup import StartupProgress
 from windows_changes import ChangeMonitor
 from work_queue import WorkQueue
 
@@ -35,9 +36,13 @@ class IndexingEngine:
         self, data_path: Path, model_path: Path, extractor_path: Path, app_path: Path,
         *, model_factory=EmbeddingPool, watch_changes: bool = True,
         outcome_log=None,
+        startup=None,
     ):
+        self.startup = startup or StartupProgress()
+        self.startup.update(0, "Opening the saved index")
         self.store = VectorStore(data_path)
         self.queue = WorkQueue(self.store)
+        self.startup.update(1, "Preparing change monitoring")
         self.outcome_log = outcome_log
         self.model_path = model_path
         self.model_factory = model_factory
@@ -67,6 +72,7 @@ class IndexingEngine:
             self.monitor.start()
         for folder in folders:
             self.schedule(folder["id"], immediate=True)
+        self.startup.update(2, "Starting the search model")
         self.thread.start()
         self.loader.start()
 
@@ -122,16 +128,18 @@ class IndexingEngine:
                 folder["status"] = "In Progress"
         queue_counts = self.queue.counts()
         return {
-            "model_state": self.model_state, "message": self.message, "error": self.error,
+            "model_state": self.model_state, "message": self.message,
+            "error": self.error or getattr(self.model, "warmup_error", ""),
             "folders": folders, "file_count": files, "vector_count": vectors,
             "monitor": self.monitor.description if self.monitor else "Monitoring disabled",
             "recovery": self.store.recovery_message, "index_info": self.store.metadata(),
             "cpu": {"total_cores": self.cpu_budget.total_cores, "core_limit": self.cpu_budget.processors,
-                    "worker_count": getattr(self.model, "worker_count", self.cpu_budget.workers),
-                    "threads_per_worker": self.cpu_budget.threads_per_worker},
+                    "worker_count": getattr(self.model, "ready_worker_count", getattr(self.model, "worker_count", 0)),
+                    "threads_per_worker": getattr(self.model, "threads_per_worker", self.cpu_budget.threads_per_worker)},
             "queue_count": sum(queue_counts.values()), "active_count": queue_counts.get("active", 0),
             "activities": activities,
             "logging": self.outcome_log.status() if self.outcome_log else {"enabled": False, "directory": "", "error": ""},
+            "startup": self.startup.snapshot(),
         }
 
     def search(self, text: str, threshold=0.6, limit=50):
@@ -142,20 +150,36 @@ class IndexingEngine:
 
     def _load_model(self):
         try:
-            self.model = self.model_factory(self.model_path)
+            self.model = self.model_factory(self.model_path, progress=self.startup.model_progress,
+                                            is_cancelled=self.stop_event.is_set)
+            if self.stop_event.is_set():
+                if hasattr(self.model, "close"): self.model.close()
+                self.model = None
+                return
             self.model_state = "Ready"
             self.message = "Search engine ready"
-            log.info("Inference ready: workers=%s core_limit=%s total_cores=%s",
-                     getattr(self.model, "worker_count", 1), self.cpu_budget.processors, self.cpu_budget.total_cores)
+            log.info("Primary inference ready: available_workers=%s planned_workers=%s core_limit=%s total_cores=%s",
+                     getattr(self.model, "ready_worker_count", 1), getattr(self.model, "worker_count", 1),
+                     self.cpu_budget.processors, self.cpu_budget.total_cores)
             for index in range(getattr(self.model, "worker_count", 1)):
                 worker = threading.Thread(target=self._work_loop, name=f"Index worker {index + 1}", daemon=True)
                 self.workers.append(worker)
                 worker.start()
+            self.startup.ready()
+        except InterruptedError:
+            if not self.stop_event.is_set():
+                self.model_state = "Error"
+                self.error = "Inference startup was interrupted."
+                self.startup.fail(self.error)
+                log.exception(self.error)
+            else:
+                log.info("Inference startup cancelled during shutdown.")
         except Exception as error:
             log.exception("Inference startup failed")
             self.model_state = "Error"
             self.error = str(error)
             self.message = "Search engine unavailable"
+            self.startup.fail(error)
 
     def _run(self):
         checkpoint_at = time.monotonic()

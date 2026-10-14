@@ -7,19 +7,22 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 
+from startup import MODEL_STEPS
 from vectors import normalized
 
 log = logging.getLogger(__name__)
 
 
 class EmbeddingClient:
-    def __init__(self, model_path: Path, threads: int | None = None):
+    def __init__(self, model_path: Path, threads: int | None = None, *, progress=None, is_cancelled=lambda: False):
         self.condition = threading.Condition()
         self.busy = False
         self.waiting_queries = 0
         self.closed = False
         self.messages = queue.Queue()
+        self.last_startup_stage = "Starting inference worker"
         environment = {**os.environ, "PYTHONUTF8": "1", "HF_HUB_DISABLE_TELEMETRY": "1"}
         if threads:
             environment["FFA_INFERENCE_THREADS"] = str(threads)
@@ -46,22 +49,44 @@ class EmbeddingClient:
         self.reader = threading.Thread(target=read, name="Inference responses", daemon=True)
         self.reader.start()
         try:
-            if self._receive(300) != "ready":
+            if self._receive(300, progress=progress, is_cancelled=is_cancelled) != "ready":
                 raise RuntimeError("The inference worker did not finish initializing.")
         except Exception:
             if self.process.poll() is None:
                 self.process.kill()
                 self.process.wait()
+            self.reader.join(timeout=3)
+            self.process.stdin.close()
+            self.process.stdout.close()
+            self.closed = True
             raise
 
-    def _receive(self, timeout=180):
-        try:
-            response = self.messages.get(timeout=timeout)
-        except queue.Empty as exc:
-            raise TimeoutError("Local inference timed out; the worker will be replaced before the next request.") from exc
-        if not response["ok"]:
-            raise RuntimeError(response["error"])
-        return response["result"]
+    def _receive(self, timeout=180, *, progress=None, is_cancelled=lambda: False):
+        deadline = time.monotonic() + timeout
+        while True:
+            if is_cancelled():
+                raise InterruptedError("Inference startup was cancelled.")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f"Local inference timed out during {self.last_startup_stage}. Close other applications and retry.")
+            try:
+                response = self.messages.get(timeout=min(0.2, remaining))
+            except queue.Empty:
+                continue
+            if not isinstance(response, dict):
+                raise RuntimeError("The inference worker returned an invalid response.")
+            if response.get("event") == "startup":
+                completed = response.get("completed")
+                stage = response.get("stage")
+                if (type(completed) is not int or not 0 <= completed <= MODEL_STEPS
+                        or response.get("total") != MODEL_STEPS or not isinstance(stage, str) or not stage):
+                    raise RuntimeError("The inference worker returned invalid startup progress.")
+                self.last_startup_stage = stage
+                if progress: progress(completed, stage)
+                continue
+            if not response.get("ok"):
+                raise RuntimeError(response.get("error", "The inference worker failed."))
+            return response["result"]
 
     @contextmanager
     def _slot(self, query=False):
@@ -88,6 +113,7 @@ class EmbeddingClient:
             self.process.stdin.write(json.dumps({"operation": operation, "args": arguments}, ensure_ascii=True) + "\n")
             self.process.stdin.flush()
             try:
+                self.last_startup_stage = f"{operation} inference"
                 return self._receive()
             except TimeoutError:
                 self.process.kill()

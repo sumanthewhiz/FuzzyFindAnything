@@ -21,17 +21,20 @@ log = logging.getLogger(__name__)
 
 
 class EmbeddingModel:
-    def __init__(self, model_path: Path):
+    def __init__(self, model_path: Path, *, progress=None):
         if not (model_path / "model.safetensors").is_file():
             raise FileNotFoundError(
-                "EmbeddingGemma 2 is not downloaded. Run Setup.ps1 in the project folder, then restart the app."
+                "EmbeddingGemma 2 is not downloaded. Run Get-Model.ps1, then restart the app."
             )
+        if progress: progress(2, "Importing embedding libraries")
         log.info("Importing the local sentence-transformers runtime.")
         from sentence_transformers import SentenceTransformer
 
+        if progress: progress(3, "Configuring CPU inference")
         log.info("Configuring CPU inference threads.")
         torch.set_num_threads(max(1, int(os.environ.get("FFA_INFERENCE_THREADS", os.environ.get("FFA_CPU_LIMIT", "2")))))
         torch.set_num_interop_threads(1)
+        if progress: progress(4, "Loading model weights and tokenizer")
         log.info("Loading the local model weights.")
         self.model = SentenceTransformer(
             str(model_path),
@@ -41,10 +44,12 @@ class EmbeddingModel:
             config_kwargs={"audio_config": None},
             model_kwargs={"torch_dtype": torch.float32},
         )
+        if progress: progress(5, "Finalizing text and vision inference")
         self.model.eval()
         self.condition = threading.Condition()
         self.busy = False
         self.waiting_queries = 0
+        if progress: progress(6, "Search model loaded")
 
     @contextmanager
     def _slot(self, query: bool = False):

@@ -30,6 +30,7 @@ public sealed class EngineClient : IAsyncDisposable
     private string? lastModelState;
 
     public event Action<EngineStatus>? StatusChanged;
+    public event Action<StartupStatus>? StartupChanged;
     public event Action<string>? Failed;
     public event Action<string>? Warning;
 
@@ -44,6 +45,8 @@ public sealed class EngineClient : IAsyncDisposable
 
     public void Start()
     {
+        if (process is not null)
+            throw new InvalidOperationException("The local engine has already been started.");
         CpuBudget budget = CpuBudget.Apply();
         string appDirectory = AppContext.BaseDirectory;
         string configurationPath = Path.Combine(appDirectory, "runtime.json");
@@ -147,7 +150,17 @@ public sealed class EngineClient : IAsyncDisposable
                 JsonElement root = document.RootElement;
                 if (root.TryGetProperty("event", out JsonElement eventName))
                 {
-                    if (eventName.GetString() == "status")
+                    if (eventName.GetString() == "startup")
+                    {
+                        var startup = root.GetProperty("data").Deserialize<StartupStatus>(JsonOptions)
+                            ?? throw new InvalidDataException("The engine returned empty startup progress.");
+                        if (startup.Sequence < 0 || startup.Percent is < 0 or > 100 ||
+                            startup.State is not ("Loading" or "Ready" or "Error") ||
+                            (startup.State == "Ready" && startup.Percent != 100))
+                            throw new InvalidDataException("The engine returned invalid startup progress.");
+                        StartupChanged?.Invoke(startup);
+                    }
+                    else if (eventName.GetString() == "status")
                     {
                         var status = root.GetProperty("data").Deserialize<EngineStatus>(JsonOptions)
                             ?? throw new InvalidDataException("The engine returned an empty status.");
@@ -287,7 +300,11 @@ public sealed class EngineClient : IAsyncDisposable
 public sealed record EngineStatus(
     string ModelState, string Message, string Error, List<FolderStatus> Folders,
     long FileCount, long VectorCount, string Monitor, string Recovery, IndexMetadata IndexInfo,
-    CpuStatus Cpu, int QueueCount, int ActiveCount, List<IndexActivity> Activities, LoggingStatus Logging);
+    CpuStatus Cpu, int QueueCount, int ActiveCount, List<IndexActivity> Activities, LoggingStatus Logging,
+    StartupStatus? Startup = null);
+
+public sealed record StartupStatus(
+    int Sequence, int Percent, int CompletedSteps, int TotalSteps, string Stage, string State, string Error);
 
 public sealed record LoggingStatus(bool Enabled, string Directory, string Error);
 

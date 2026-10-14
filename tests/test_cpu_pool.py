@@ -5,10 +5,11 @@ import sys
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "engine"))
-from cpu_budget import get_budget, select_mask
+from cpu_budget import CpuBudget, get_budget, select_mask
 from model_pool import EmbeddingPool
 from vectors import DIMENSIONS
 
@@ -45,8 +46,11 @@ class FakeClient:
     maximum = 0
     lock = threading.Lock()
 
-    def __init__(self, path, threads):
+    def __init__(self, path, threads, *, progress=None, is_cancelled=lambda: False):
         self.threads = threads
+        self.closed = False
+        if is_cancelled(): raise InterruptedError()
+        if progress: progress(6, "Test model ready")
 
     def _request(self, operation, args):
         if operation == "split": return [f"passage {i}" for i in range(12)]
@@ -60,15 +64,21 @@ class FakeClient:
             with self.lock: FakeClient.active -= 1
 
     def close(self):
-        pass
+        self.closed = True
 
 
 class PoolTests(unittest.TestCase):
+    def setUp(self):
+        budget = patch("model_pool.get_budget", return_value=CpuBudget(8, 4, 15, 2, 2))
+        budget.start()
+        self.addCleanup(budget.stop)
+
     def test_parallel_batches_preserve_order_and_progress(self):
         FakeClient.maximum = 0
-        pool = EmbeddingPool(None, client_factory=FakeClient, workers=2)
+        pool = EmbeddingPool(None, client_factory=FakeClient, workers=2, memory_available=lambda: 16 * 1024**3)
         updates = []
         try:
+            self.assertTrue(pool.warmup_complete.wait(2))
             values = pool.document("title", "text", lambda: False, lambda done, total: updates.append((done, total)))
             self.assertEqual([f"passage {i}" for i in range(12)], [item[0] for item in values])
             self.assertEqual(2, FakeClient.maximum)
@@ -76,7 +86,7 @@ class PoolTests(unittest.TestCase):
         finally: pool.close()
 
     def test_unavailable_worker_is_replaced_before_reuse(self):
-        pool = EmbeddingPool(None, client_factory=FakeClient, workers=1)
+        pool = EmbeddingPool(None, client_factory=FakeClient, workers=1, memory_available=lambda: 16 * 1024**3)
         original = pool.clients[0]
         original.closed = True
         try:

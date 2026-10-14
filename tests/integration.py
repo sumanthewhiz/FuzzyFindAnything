@@ -36,11 +36,16 @@ class Worker:
         )
         self.messages = queue.Queue()
         self.status = {}
+        self.started_at = time.monotonic()
+        self.startup_updates = []
 
         def read():
             for line in self.process.stdout:
                 try:
-                    self.messages.put(json.loads(line))
+                    message = json.loads(line)
+                    if message.get("event") == "startup":
+                        self.startup_updates.append({"elapsed_seconds": time.monotonic() - self.started_at, **message["data"]})
+                    self.messages.put(message)
                 except ValueError:
                     self.messages.put({"event": "fatal", "error": f"Non-JSON output on IPC: {line}"})
             self.messages.put({"event": "fatal", "error": "Worker pipe closed"})

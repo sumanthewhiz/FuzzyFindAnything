@@ -14,7 +14,7 @@ Download the application, acquire its model, and index a small folder. You do **
 |---|---|
 | Windows | Windows 11 on x64 (Intel/AMD) or ARM64 |
 | Processor | At least two physical cores; the app uses no more than half of them |
-| Memory | Plan for roughly 8 GB available for the two-worker configuration, in addition to other applications |
+| Memory | On `dev`, at least 5 GiB available for one worker or 8 GiB for two; the app adapts to available RAM |
 | Storage | Allow at least 5 GB for the extracted application, downloads, and model; your file index needs additional space |
 | Network | Needed to download the ZIP and model; normal indexing/search then works offline |
 | Documents | Office/PDF formats need compatible installed IFilters; `.txt` and images are a useful first test |
@@ -94,7 +94,9 @@ Double-click **`FuzzyFindAnything.exe`**, or run:
 & .\FuzzyFindAnything.exe
 ```
 
-Wait for the engine status to show **Ready**. The first model load can take a minute or more.
+Wait for the engine status to show **Ready**. The first model load can take a minute or more. On `dev`, startup shows a percentage and current phase. The percentage counts completed startup checkpoints, not elapsed time; a slow import can remain at one percentage while it finishes.
+
+Search is enabled when the first complete text/vision model is ready. A second worker, when memory permits, warms in the background without delaying readiness. The CPU-status tooltip reports ready workers. If startup reports insufficient available RAM, close other applications and retry; your index and queued work remain intact.
 
 1. Open **Indexed folders** and select **Add folder**.
 2. Choose a small local folder containing a few `.txt` files and photos. Start small rather than selecting an entire drive.

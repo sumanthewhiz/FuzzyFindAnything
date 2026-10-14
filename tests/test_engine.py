@@ -231,8 +231,9 @@ class StoreTests(unittest.TestCase):
 
 
 class FakeModel:
-    def __init__(self, _):
-        pass
+    def __init__(self, _, *, progress=None, is_cancelled=lambda: False):
+        if is_cancelled(): raise InterruptedError()
+        if progress: progress(6, "Test model ready")
 
     def document(self, title, text, cancelled, progress=None):
         if progress:

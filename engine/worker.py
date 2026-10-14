@@ -17,8 +17,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from cpu_budget import get_budget
 CPU_BUDGET = get_budget(apply=True)
 
-from indexer import IndexingEngine
 from indexer_logging import IndexerLogging, load_logging_settings
+from startup import StartupProgress
 
 output_lock = threading.Lock()
 
@@ -59,7 +59,10 @@ def main() -> int:
     try:
         logs = IndexerLogging(*load_logging_settings(args.data_dir))
         logging.basicConfig(level=logging.INFO, handlers=[logs], force=True)
-        engine = IndexingEngine(args.data_dir, args.model, args.extractor, args.app_dir, outcome_log=logs)
+        startup = StartupProgress(lambda value: send({"event": "startup", "data": value}))
+        startup.update(0, "Starting the local indexing runtime")
+        from indexer import IndexingEngine
+        engine = IndexingEngine(args.data_dir, args.model, args.extractor, args.app_dir, outcome_log=logs, startup=startup)
         engine.start()
 
         def report():

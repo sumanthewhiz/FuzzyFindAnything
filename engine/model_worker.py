@@ -3,28 +3,46 @@
 import argparse
 import contextlib
 import json
+import logging
+import os
 from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from cpu_budget import get_budget
-get_budget(apply=True)
+budget = get_budget(apply=True)
+threads = int(os.environ.get("FFA_INFERENCE_THREADS", budget.threads_per_worker))
+if not 1 <= threads <= budget.processors:
+    raise ValueError("Inference thread count exceeds the inherited CPU budget.")
+for variable in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+    os.environ[variable] = str(threads)
+protocol = sys.stdout
+
+from startup import MODEL_STEPS
 
 
 def send(message):
-    sys.stdout.write(json.dumps(message, ensure_ascii=True, allow_nan=False) + "\n")
-    sys.stdout.flush()
+    protocol.write(json.dumps(message, ensure_ascii=True, allow_nan=False) + "\n")
+    protocol.flush()
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True, type=Path)
     args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, stream=sys.stderr,
+                        format="%(asctime)s %(levelname)s model-worker[%(process)d] %(message)s")
+
+    def progress(completed, stage):
+        logging.info("Startup checkpoint %s/%s: %s", completed, MODEL_STEPS, stage)
+        send({"event": "startup", "completed": completed, "total": MODEL_STEPS, "stage": stage})
+
     try:
+        progress(1, "Importing numerical inference runtime")
         with contextlib.redirect_stdout(sys.stderr):
             from embeddings import EmbeddingModel
-            model = EmbeddingModel(args.model)
+            model = EmbeddingModel(args.model, progress=progress)
         send({"ok": True, "result": "ready"})
     except Exception as exc:
         send({"ok": False, "error": str(exc)})
