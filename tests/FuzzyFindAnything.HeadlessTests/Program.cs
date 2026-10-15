@@ -12,6 +12,7 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.Length == 3 && args[0] == "render") { VisualChecks.Render(args[1], args[2]); return 0; }
         if (args.Length != 1)
             throw new ArgumentException("Pass the repository root. This test executable never starts the application.");
         Run("XML search defaults and persistence", SettingsRoundTrip);

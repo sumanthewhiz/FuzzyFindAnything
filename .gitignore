@@ -106,6 +106,7 @@ indexer.jsonl.*
 # Model payloads must be acquired separately, never committed through Git/LFS.
 *.safetensors
 *.onnx
+*.onnx.data
 *.gguf
 *.pt
 *.pth

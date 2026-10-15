@@ -1,13 +1,15 @@
 [CmdletBinding()]
 param(
     [switch]$Enhanced,
-    [switch]$Diagnose
+    [switch]$Diagnose,
+    [string]$ApplicationDirectory
 )
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-$app = Join-Path $root 'artifacts\FuzzyFindAnything\FuzzyFindAnything.exe'
-$python = Join-Path $root '.runtime\python.exe'
+if (-not $ApplicationDirectory) { $ApplicationDirectory = Join-Path $root 'artifacts\FuzzyFindAnything' }
+$app = Join-Path $ApplicationDirectory 'FuzzyFindAnything.exe'
+$fixtureTool = Join-Path $root 'tests\FuzzyFindAnything.NativeTests\bin\Release\net10.0-windows\win-x64\FuzzyFindAnything.NativeTests.exe'
 $work = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) ('ffa-ui-' + [Guid]::NewGuid().ToString('N'))))
 $data = Join-Path $work 'index'
 $corpus = Join-Path $work 'files'
@@ -127,24 +129,8 @@ function Toggle-Control([string]$id) {
 $process = $null
 $window = $null
 try {
-    if ($Diagnose) { $env:FFA_TRACE_HANGS = '1' }
     New-Item -ItemType Directory -Path $work, $corpus | Out-Null
-    @'
-import sys
-from pathlib import Path
-root=Path(sys.argv[1]); work=Path(sys.argv[2])
-sys.path.insert(0,str(root/'engine'))
-from store import VectorStore
-from PIL import Image,ImageDraw
-corpus=work/'files'
-(corpus/'Shape guide.txt').write_text('Geometry notes: a red circle is a round shape. This document describes a red circle on a white background.',encoding='utf-8')
-image=Image.new('RGB',(256,256),'white')
-ImageDraw.Draw(image).ellipse((40,40,216,216),fill='red')
-image.save(corpus/'Red circle.png')
-store=VectorStore(work/'index')
-store.add_folder(corpus)
-store.close()
-'@ | & $python - $root $work
+    & $fixtureTool ui-fixture $work
     if ($LASTEXITCODE -ne 0) { throw 'Could not prepare the isolated UI test corpus.' }
     $process = Start-Process -FilePath $app -ArgumentList @('--data-dir', "`"$data`"") -PassThru
     Wait-Check {
@@ -194,7 +180,7 @@ store.close()
     } 'configured folder indexing' 240
     Write-Output 'PASS configured folders and live indexing status'
     if ($Enhanced) {
-        if ((Find-Id 'FolderIndexingDetails').Current.Name -ne '2 succeeded  |  0 failed') { throw 'Folder details are not concise outcome counts.' }
+        if ((Find-Id 'FolderIndexingDetails').Current.Name -ne '3 succeeded  |  0 failed') { throw 'Folder details are not concise outcome counts.' }
         [FfaUiChecks]::Capture($mainHandle, (Join-Path $root '.downloads\ui-folders-light.png'))
         Toggle-Control 'ThemeToggle'
         Wait-Check { (Find-Id 'ThemeToggle').Current.ItemStatus -eq 'Dark' } 'dark appearance'
@@ -216,6 +202,9 @@ store.close()
     Write-Output 'PASS native folder browser'
 
     Select-Tab 'SearchTab'
+    $similarity = [System.Windows.Automation.RangeValuePattern](Find-Id 'MinimumSimilarity').GetCurrentPattern([System.Windows.Automation.RangeValuePattern]::Pattern)
+    if ([Math]::Abs($similarity.Current.Value - 0.60) -gt 0.001) { throw 'The first-time similarity is not 0.60.' }
+    $similarity.SetValue(0.35)
     $query = [System.Windows.Automation.ValuePattern](Find-Id 'SearchInput').GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
     $query.SetValue('a red circle on a white background')
     Invoke-Button 'SearchButton'
@@ -227,7 +216,11 @@ store.close()
         $window.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
             (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Red circle.png'))) -ne $null
     } 'real image search result'
-    Write-Output 'PASS WPF-to-engine real document and image search'
+    Wait-Check {
+        $window.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
+            (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Draw circle.py'))) -ne $null
+    } 'real code search result'
+    Write-Output 'PASS WPF-to-native-engine real document, code and image search'
     if ($Enhanced) {
         if (-not (Find-Id 'DocumentResults') -or -not (Find-Id 'CodeResults') -or -not (Find-Id 'ImageGallery')) { throw 'Missing separated result sections.' }
         Wait-Check {
@@ -242,18 +235,18 @@ store.close()
         Toggle-Control 'ThemeToggle'
         Select-Tab 'IndexInfoTab'
         if (-not (Find-Id 'IndexMetadataPanel')) { throw 'Missing index metadata panel.' }
-        Wait-Check { (Find-Id 'TotalFilesValue').Current.Name -eq '2' } 'initial metadata counts'
-        if ((Find-Id 'TotalDocumentsValue').Current.Name -ne '1' -or (Find-Id 'TotalCodeFilesValue').Current.Name -ne '0' -or (Find-Id 'TotalImagesValue').Current.Name -ne '1') {
+        Wait-Check { (Find-Id 'TotalFilesValue').Current.Name -eq '3' } 'initial metadata counts'
+        if ((Find-Id 'TotalDocumentsValue').Current.Name -ne '1' -or (Find-Id 'TotalCodeFilesValue').Current.Name -ne '1' -or (Find-Id 'TotalImagesValue').Current.Name -ne '1') {
             throw 'Document/code/image metadata counts are incorrect.'
         }
         if ((Find-Id 'IndexTypeValue').Current.Name -notlike 'DiskANN (*') { throw 'DiskANN version is missing.' }
         if ((Find-Id 'LastRefreshedValue').Current.Name -eq 'Not refreshed yet') { throw 'Refresh timestamp is missing.' }
         $liveFile = Join-Path $corpus 'Live update.txt'
         [IO.File]::WriteAllText($liveFile, 'A new document to verify live index statistics.', [Text.Encoding]::UTF8)
-        Wait-Check { (Find-Id 'TotalFilesValue').Current.Name -eq '3' -and (Find-Id 'TotalDocumentsValue').Current.Name -eq '2' } 'live metadata update'
+        Wait-Check { (Find-Id 'TotalFilesValue').Current.Name -eq '4' -and (Find-Id 'TotalDocumentsValue').Current.Name -eq '2' } 'live metadata update'
         [FfaUiChecks]::Capture($mainHandle, (Join-Path $root '.downloads\ui-index.png'))
         [IO.File]::Delete($liveFile)
-        Wait-Check { (Find-Id 'TotalFilesValue').Current.Name -eq '2' } 'live metadata deletion'
+        Wait-Check { (Find-Id 'TotalFilesValue').Current.Name -eq '3' } 'live metadata deletion'
         Write-Output 'PASS actual image thumbnail and live metadata counts, version and refresh timestamp'
     } else {
         [FfaUiChecks]::Capture($mainHandle, (Join-Path $root '.downloads\ui-search.png'))
@@ -287,7 +280,7 @@ store.close()
         $logSizes = @{}
         Get-ChildItem -LiteralPath $defaultLogs -File | ForEach-Object { $logSizes[$_.Name] = $_.Length }
         [IO.File]::WriteAllText((Join-Path $corpus 'Not logged.txt'), 'A file indexed while diagnostic logging is disabled.', [Text.Encoding]::UTF8)
-        Wait-Check { (Find-Id 'IndexCounts').Current.Name -eq '3 files | 3 passages' } 'indexing while logging disabled'
+        Wait-Check { (Find-Id 'IndexCounts').Current.Name -eq '4 files | 4 passages' } 'indexing while logging disabled'
         foreach ($name in $logSizes.Keys) {
             if ((Get-Item -LiteralPath (Join-Path $defaultLogs $name)).Length -ne $logSizes[$name]) { throw "Disabled logging still wrote $name" }
         }
@@ -389,9 +382,11 @@ store.close()
         }
         Select-Tab 'SearchTab'
         Wait-Check { (Find-Id 'SearchButton').Current.IsEnabled } 'restart model ready' 180
+        $similarity = [System.Windows.Automation.RangeValuePattern](Find-Id 'MinimumSimilarity').GetCurrentPattern([System.Windows.Automation.RangeValuePattern]::Pattern)
+        if ([Math]::Abs($similarity.Current.Value - 0.35) -gt 0.001) { throw 'Similarity did not survive restart, appearance and logging changes.' }
         Invoke-Button 'QuitButton'
         if (-not $process.WaitForExit(50000)) { throw 'Restarted test application did not quit.' }
-        Write-Output 'PASS appearance and logging retained after a complete restart'
+        Write-Output 'PASS appearance, similarity and logging retained after a complete restart'
     }
     Write-Output 'ALL NATIVE UI CHECKS PASSED'
 } finally {

@@ -1,0 +1,102 @@
+using System.Text;
+using System.Text.Json;
+using FuzzyFindAnything.Core;
+
+namespace FuzzyFindAnything.Engine;
+
+internal static class Program
+{
+    private static readonly object outputGate = new();
+    private static void Send(object value) { lock (outputGate) Console.WriteLine(JsonSerializer.Serialize(value, Protocol.Json)); }
+    private static async Task<int> Main(string[] args)
+    {
+        Console.InputEncoding = new UTF8Encoding(false);
+        Console.OutputEncoding = new UTF8Encoding(false);
+        IndexingEngine? engine = null;
+        EngineLease? lease = null;
+        EngineLog? log = null;
+        using var reporting = new CancellationTokenSource();
+        Task? reporter = null;
+        try
+        {
+            var options = new Dictionary<string, string>();
+            if (args.Length % 2 != 0) throw new ArgumentException("Engine arguments require name/value pairs.");
+            for (int i = 0; i < args.Length; i += 2) options.Add(args[i], args[i + 1]);
+            string data = Path.GetFullPath(options["--data-dir"]);
+            string model = Path.GetFullPath(options["--model"]);
+            string helper = Path.GetFullPath(options["--extractor"]);
+            string inference = Path.GetFullPath(options["--inference"]);
+            string app = Path.GetFullPath(options["--app-dir"]);
+            CpuBudget budget = CpuBudget.Apply();
+            Directory.CreateDirectory(data);
+            lease = new EngineLease(data);
+            log = new EngineLog(data);
+            var startup = new StartupProgress(value => Send(new { @event = "startup", data = value }));
+            var pool = new ModelPool(inference, model, budget, message => log.Write("inference", message));
+            engine = new IndexingEngine(data, model, helper, app, budget, pool, log, startup);
+            engine.Start();
+            reporter = Task.Run(async () =>
+            {
+                try
+                {
+                    while (!reporting.IsCancellationRequested)
+                    {
+                        Send(new { @event = "status", data = engine.Status() });
+                        await Task.Delay(1000, reporting.Token);
+                    }
+                }
+                catch (OperationCanceledException) when (reporting.IsCancellationRequested) { }
+                catch (Exception error) { log.Write("status", error.ToString()); Send(new { @event = "fatal", error = error.Message }); }
+            });
+            string? line;
+            while ((line = await Console.In.ReadLineAsync()) is not null)
+            {
+                string? id = null;
+                try
+                {
+                    using var document = JsonDocument.Parse(line);
+                    var request = document.RootElement;
+                    id = request.GetProperty("id").GetString();
+                    string command = request.GetProperty("command").GetString() ?? "";
+                    var arguments = request.TryGetProperty("args", out var value) ? value : default;
+                    object? result;
+                    switch (command)
+                    {
+                        case "status": result = engine.Status(); break;
+                        case "add_folder": result = new { id = engine.AddFolder(arguments.GetProperty("path").GetString()!) }; break;
+                        case "remove_folders":
+                            engine.RemoveFolders(arguments.GetProperty("ids").Deserialize<int[]>()!); result = engine.Status(); break;
+                        case "search":
+                            result = await engine.SearchAsync(arguments.GetProperty("query").GetString()!,
+                                arguments.TryGetProperty("threshold", out var threshold) ? threshold.GetDouble() : 0.6,
+                                arguments.TryGetProperty("limit", out var limit) ? limit.GetInt32() : 50); break;
+                        case "rescan": engine.Rescan(); result = engine.Status(); break;
+                        case "reload_configuration": log.Reload(); result = engine.Status(); break;
+                        case "shutdown": Send(new { id, ok = true, result = (object?)null }); return 0;
+                        default: throw new ArgumentException("Unknown engine command: " + command);
+                    }
+                    Send(new { id, ok = true, result });
+                }
+                catch (Exception error)
+                {
+                    log.Write("request", error.ToString());
+                    Send(new { id, ok = false, error = error.Message });
+                }
+            }
+            return 0;
+        }
+        catch (Exception error)
+        {
+            log?.Write("fatal", error.ToString());
+            Send(new { @event = "fatal", error = error.Message });
+            return 1;
+        }
+        finally
+        {
+            reporting.Cancel();
+            if (reporter is not null) await reporter;
+            try { if (engine is not null) await engine.DisposeAsync(); }
+            finally { lease?.Dispose(); }
+        }
+    }
+}

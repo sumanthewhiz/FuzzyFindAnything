@@ -1,8 +1,8 @@
+#requires -Version 7.0
 [CmdletBinding()]
 param(
     [switch]$SkipSetup,
     [switch]$SkipModel,
-    [string]$PackageIndex,
     [ValidateSet('win-x64', 'win-arm64')][string]$RuntimeIdentifier,
     [string]$OutputDirectory,
     [ValidatePattern('^\d+\.\d+\.\d+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$')][string]$Version
@@ -11,7 +11,12 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 if (-not $SkipSetup) {
-    & (Join-Path $root 'Setup.ps1') -SkipModel:$SkipModel -PackageIndex $PackageIndex
+    & (Join-Path $root 'Setup.ps1') -SkipModel
+}
+foreach ($name in @('ffa_diskann.dll', 'libiomp5md.dll')) {
+    if (-not (Test-Path -LiteralPath (Join-Path $root "artifacts\native\$name"))) {
+        throw 'The native DiskANN build is missing. Run Setup.ps1 before publishing.'
+    }
 }
 
 $output = if ($OutputDirectory) { $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDirectory) } else { Join-Path $root 'artifacts\FuzzyFindAnything' }
@@ -28,8 +33,8 @@ if (-not $RuntimeIdentifier) {
     $RuntimeIdentifier = if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') { 'win-arm64' } else { 'win-x64' }
 }
 $uiArchitecture = if ($RuntimeIdentifier -eq 'win-arm64') { 'ARM64' } else { 'x64' }
-[string[]]$versionArguments = @()
-if ($Version) { $versionArguments = @("-p:Version=$Version") }
+[string[]]$versionArguments = @('-p:DebugType=None', '-p:DebugSymbols=false')
+if ($Version) { $versionArguments += "-p:Version=$Version" }
 $executable = Join-Path $output 'FuzzyFindAnything.exe'
 if (Get-CimInstance Win32_Process -Filter "Name='FuzzyFindAnything.exe'" | Where-Object { $_.ExecutablePath -eq $executable }) {
     throw 'The output application is running. Quit it or choose a separate -OutputDirectory.'
@@ -41,16 +46,37 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'The WPF publish failed.' }
     dotnet publish (Join-Path $root 'src\FuzzyFindAnything.Extractor\FuzzyFindAnything.Extractor.csproj') -c Release -r win-x64 @versionArguments --self-contained true -o (Join-Path $staging 'extractor') --nologo
     if ($LASTEXITCODE -ne 0) { throw 'The IFilter extractor publish failed.' }
+    dotnet publish (Join-Path $root 'src\FuzzyFindAnything.Engine\FuzzyFindAnything.Engine.csproj') -c Release -r win-x64 -p:PlatformTarget=x64 @versionArguments --self-contained true -o (Join-Path $staging 'engine') --nologo
+    if ($LASTEXITCODE -ne 0) { throw 'The native coordinator publish failed.' }
+    dotnet publish (Join-Path $root 'src\FuzzyFindAnything.Inference\FuzzyFindAnything.Inference.csproj') -c Release -r $RuntimeIdentifier "-p:PlatformTarget=$uiArchitecture" @versionArguments --self-contained true -o (Join-Path $staging 'inference') --nologo
+    if ($LASTEXITCODE -ne 0) { throw 'The native inference host publish failed.' }
+    dotnet publish (Join-Path $root 'src\FuzzyFindAnything.Tools\FuzzyFindAnything.Tools.csproj') -c Release -r win-x64 -p:PlatformTarget=x64 @versionArguments --self-contained true -o (Join-Path $staging 'tools') --nologo
+    if ($LASTEXITCODE -ne 0) { throw 'The model/maintenance tools publish failed.' }
+    foreach ($directory in @('engine', 'tools')) {
+        foreach ($name in @('ffa_diskann.dll', 'libiomp5md.dll')) {
+            Copy-Item -LiteralPath (Join-Path $root "artifacts\native\$name") -Destination (Join-Path $staging $directory)
+        }
+    }
+    foreach ($component in @(
+        @{ Directory = ''; Architecture = $uiArchitecture.ToLowerInvariant() },
+        @{ Directory = 'inference'; Architecture = $uiArchitecture.ToLowerInvariant() },
+        @{ Directory = 'engine'; Architecture = 'x64' },
+        @{ Directory = 'extractor'; Architecture = 'x64' },
+        @{ Directory = 'tools'; Architecture = 'x64' }
+    )) {
+        $crt = Join-Path $root "artifacts\native\crt\$($component.Architecture)"
+        if (-not (Test-Path -LiteralPath (Join-Path $crt 'msvcp140.dll'))) {
+            throw "The $($component.Architecture) app-local CRT is missing. Install the matching MSVC tools and rerun Setup.ps1."
+        }
+        Get-ChildItem -LiteralPath $crt -File -Filter '*.dll' |
+            Copy-Item -Destination (Join-Path $staging $component.Directory) -Force
+    }
 
-    New-Item -ItemType Directory -Force -Path (Join-Path $staging 'engine') | Out-Null
-    Get-ChildItem -LiteralPath (Join-Path $root 'engine') -File | Where-Object { $_.Extension -eq '.py' -or $_.Name -eq 'requirements.txt' } |
-        Copy-Item -Destination (Join-Path $staging 'engine') -Force
-
-    # Keep the multi-gigabyte runtime/model in one place beside the project, not in every build.
     @{
-        python = (Join-Path $root '.runtime\python.exe')
-        model = (Join-Path $root 'models\embeddinggemma-2')
-        extractor = (Join-Path $output 'extractor\FuzzyFindAnything.Extractor.exe')
+        engine = 'engine\FuzzyFindAnything.Engine.exe'
+        inference = 'inference\FuzzyFindAnything.Inference.exe'
+        model = (Join-Path $root 'models\embeddinggemma-2-onnx')
+        extractor = 'extractor\FuzzyFindAnything.Extractor.exe'
     } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $staging 'runtime.json') -Encoding utf8
 
     if (Test-Path $output) {

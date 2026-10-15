@@ -1,0 +1,19 @@
+{
+  "asset_id": "embeddinggemma-2-onnx-v1",
+  "source_model": "google/embeddinggemma-2",
+  "revision": "914f7f89142e33e77833254d9c9b90c3cef7303b",
+  "dimensions": 768,
+  "precision": "float32",
+  "onnx_runtime": "1.31.0",
+  "opset": 23,
+  "files": [
+    {"name":"config.json","bytes":4455,"sha256":"b8f1e9931b57fbc054acdb445c41765d55b0074c58d145fa82839941ad1b5bb3"},
+    {"name":"language.onnx","bytes":4977129,"sha256":"acbbc9e4bf61f1f06e4516560815452d93e69a6f7c5351921af399a26f3cb7a6"},
+    {"name":"language.onnx.data","bytes":1084030976,"sha256":"f82d953a62bda4f24ec9d5de9bc2577daf534d04e04a3611153392ee2daafbaf"},
+    {"name":"README.md","bytes":21730,"sha256":"b677a0ee2818c36f091b65fd3d9b4baea9f04d53b02b49cae916c74bf9682037"},
+    {"name":"tokenizer.json","bytes":32170510,"sha256":"4d777ef5bdc1aa36227abdfb77c3e49e7b9c892d16e1b6bda41c393504828be4"},
+    {"name":"tokenizer.model","bytes":4689013,"sha256":"e594c8a90eb08d8bda498ff4747977dc827ae0c3c56b5c0d41a605a22d02ef03"},
+    {"name":"vision.onnx","bytes":3654665,"sha256":"aa32b6c269ae5969b853dc10d6623419f3ab2a85111aca865e7ee2333b01a7b1"},
+    {"name":"vision.onnx.data","bytes":671088640,"sha256":"491ecc06981b56f25ca1dcaf4ce88f1d0d3df915dd531ba987d9cb233703c3e7"}
+  ]
+}

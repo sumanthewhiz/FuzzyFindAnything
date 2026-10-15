@@ -1,0 +1,129 @@
+# Native validation
+
+[Overview](../README.md) · [Architecture](ARCHITECTURE.md) · [Migration](MIGRATION.md)
+
+## Acceptance layers
+
+Validation uses temporary catalogs and synthetic fixtures. It does not launch the production deployment, clear configured folders or reset the live index.
+
+| Layer | Command / entry point | Coverage |
+|---|---|---|
+| Native core | `.\tests\RunChecks.ps1` | Real DiskANN, SQL transactions, ownership, revisions, recovery, batching, CPU plans, process lifecycle, USN, extraction supervision, acquisition and logging |
+| Managed UI contracts | Included in `RunChecks.ps1` | XML defaults/persistence, invalid values, document/code/image grouping, search clearing, startup sequencing and footer/layout |
+| Model acceptance | `.\tests\RunChecks.ps1 -WithModel` | Exact tokenization/chunking, text/image embeddings, mixed batches, norm/similarity gates and retrieval |
+| Packaged integration | `.\tests\RunChecks.ps1 -Integration -ApplicationDirectory <published-folder>` | Real model, real DiskANN, installed IFilters, live deltas, queries and abrupt-exit resume |
+| Private-desktop UI | `.\tests\RunUiSmoke.ps1 -Enhanced -ApplicationDirectory <published-folder>` | Native WPF controls, themes, three result sections, thumbnails, metadata, logging, settings and window lifecycle |
+| Release acceptance | `Build-Release.ps1` | Exact inventory/hashes, PE architecture, relative paths, payload exclusions and relocated runtime smoke |
+| Publication safety | `.\tests\PublishSafety.ps1` | Locked directory refusal without partial replacement, followed by successful unlocked publication |
+| Formatting/build | `dotnet build` and `dotnet format --verify-no-changes` | Nullable/warnings-as-errors compilation and repository formatting |
+
+Build dependencies first with `Setup.ps1 -SkipModel`. Model acceptance requires the approved native asset bundle. Real document integration requires installed PDF/Office IFilters; portable core tests use isolated helper fixtures and do not install filters.
+
+The native core executable accepts `core --require-usn` to require an active local journal. Without that option it explicitly reports a skipped live USN test on unsupported/inactive volumes; parser and directory-notification regressions still run. The migration acceptance host exercised the live USN-only path, not just directory notifications.
+
+## Numerical evidence
+
+The committed `tests\Fixtures\goldens.json` and small synthetic images/Office files are frozen reference data, not model weights. They were captured independently from the pinned reference pipeline. Native tests consume them directly; fixture creation or Python is not a test prerequisite.
+
+The production native implementation is checked against:
+
+- The original 15 text and 8 image cases.
+- 250 tokenizer stress inputs.
+- 16 exact chunk/decode cases covering boundaries, overlap, whitespace, special tokens, Unicode and multiline code.
+- Nine additional text inputs and eight additional image cases, for **40 embedding cases** in total.
+- Mixed-length text batches of **1, 2, 4, 6 and 8**, including long passages, Unicode titles and the query-length boundary.
+- Eight two-image scheduling pairs, including different formats and geometries.
+- Unit normalization, pairwise similarity drift and clearly separated retrieval winners.
+
+| Gate | Required |
+|---|---|
+| Token IDs / chunk boundaries and decoded passages | Exact |
+| Text embeddings | Cosine >= 0.99999; maximum absolute difference <= 0.0002 |
+| Fully native image embeddings | Cosine >= 0.999 |
+| Unit-norm error | <= 0.00001 |
+| Pairwise cosine drift | <= 0.005 |
+| Clearly separated top result | Same winner; near ties recorded separately |
+
+Both ARM64 and x64 inference passed the numerical matrix. The ARM64 acceptance run recorded minimum embedding cosine **0.999942543**, maximum unit-norm error **1.58e-8**, and maximum pairwise drift **0.001227515**. All exact tokenizer/chunk cases and batch gates passed. Ten query-ranking comparisons included three explicitly recorded near ties.
+
+Expanded codec coverage includes DIB-encoded 24/32-bit ICO, grayscale PNG/JPEG, JPEG profiles, palette transparency, BMP, odd large dimensions and extreme aspect ratios. Small lossless RGB decoding is checked against reference bytes; codec/resampling numerical differences remain subject to the image and retrieval gates.
+
+Two migration defects were found through these checks and corrected before acceptance: ordinary newline tokens were being dropped by generic passage decoding, and unprivileged USN records with redacted names needed parent-directory reconciliation.
+
+## Native desktop evidence
+
+The relocated ARM64 package passed private-desktop UI Automation with Python absent from `PATH`: maximized startup, attribution links, all four tabs, light/dark switching, native folder selection, real document/code/image retrieval, gallery thumbnails, live metadata, clearing completed/in-flight searches, logging changes, XML persistence, scope removal, close-to-taskbar, single-instance restoration and Quit. A complete restart retained theme, logging and the changed similarity value.
+
+Private-desktop compositor captures were not usable as visual evidence. Separate offscreen renders of the actual XAML/resources, with synthetic data and no application window or engine, were inspected in both themes. Those renders are the documentation previews; they are not screenshots of personal search results.
+
+## Durability and functional evidence
+
+Core regression cases cover real native graph insertion/search/deletion, uint32 tags, capacity growth, Unicode paths, packed save/load, missing/corrupted snapshots and interrupted checkpoint publication. SQL tests cover file deduplication, stale revisions, overlapping ownership, fair claims, transient/permanent errors, reset modes and active-engine lease refusal.
+
+Process tests verify startup deadlines that cannot be extended by progress messages, first-model readiness, optional-warmup cancellation/failure, worker replacement, malformed IPC cleanup, query priority and inherited CPU masks. Batching tests exercise bounded producers, request/result ownership, incompatible-length separation, incomplete responses, failure isolation and shutdown.
+
+A six-reader test retains **six simultaneous file pipelines with one model**. Separate abrupt-termination fixtures preserve a committed member of a combined batch while recovering its uncommitted neighbor. User-exit tests retain saved passages without recording cancellation as a retry failure.
+
+Live USN-only tests disable directory notifications and exercise creation, preserved-timestamp edits, rename, deletion and cursor ordering. A cursor cannot advance while delivery is blocked before durable queue publication.
+
+Both extracted native packages indexed **nine successful files** (six documents, one source file and two images), classified two permanent errors, and searched all three result kinds. Real installed `.pdf`, `.rtf`, `.docx`, `.pptx` and `.xlsx` filters were exercised without modifying the input files. Their captured process/module trees used the package's own ONNX Runtime, DiskANN and C++ runtimes, with a shared affinity mask and no interpreter.
+
+The real crash test interrupted a 47-passage file after eight passages committed. Restart retained those eight and computed **only the remaining 39**. Unrelated completed vector IDs remained unchanged.
+
+A separate numeric workbook (512 rows by 12 columns) produced **36,445 extracted characters and 80 distinct passages**. All 80 were indexed, searchable and retained after checkpoint/reload; the original fixture hash was unchanged. This verifies full workbook processing rather than a sampled or truncated proxy. The previously mentioned `3d_model.xls` was not present in the retained catalog or searched local locations, so this run does not claim to have retested that specific historical file.
+
+## Existing-data compatibility
+
+A read-only SQLite backup and copied native snapshot of the existing application catalog were opened in the native implementation:
+
+| Item | Result |
+|---|---|
+| Existing file records | 158 retained |
+| Existing vectors | 1,956 retained |
+| Existing graph | Loaded directly without a recovery rebuild |
+| Folder identities / vector blobs / staged passages | Unchanged digests |
+| XML preferences | Unchanged digest |
+
+The source catalog, snapshots and configuration were not reset or migrated in place. Synthetic tests separately cover an active durable queue, since this copied real catalog had no pending jobs.
+
+## Performance interpretation
+
+On the acceptance machine (Windows 11 ARM64, 12 physical cores, shared six-core affinity), final extracted-package runs reported:
+
+| Measurement | ARM64 package | x64 package under Windows compatibility |
+|---|---:|---:|
+| First-model service readiness | 15.03 s | 24.88 s |
+| Nine-file mixed-format corpus | 44.20 s | 80.42 s |
+| Maximum active files | 6 | 6 |
+| Representative document query | 380.6 ms | 515.0 ms |
+| Coordinator peak working set | 108.2 MiB | 133.7 MiB |
+| Largest inference-process peak working set | 2,193.4 MiB | 2,288.0 MiB |
+
+These are workload-specific measurements, not guarantees or a controlled speedup claim against another release. Images, document passage counts, memory pressure and warm caches strongly affect results. A native model process is not a file pipeline; CPU eligibility is a ceiling rather than a utilization target.
+
+### Controlled warm text workload
+
+A separate sequential comparison used the same 18 source files, one warmed model, six eligible cores and six model compute threads on the same host. The earlier `dev` implementation was run read-only with temporary catalogs as an engineering reference, not as a native-product dependency.
+
+| Implementation | One file pipeline | Six file pipelines |
+|---|---:|---:|
+| Reviewed Python-backed `dev` | 12.437 s | 7.875 s |
+| Native, cooperative ONNX workers | 4.556 s | 3.571 s |
+
+The native six-pipeline run processed three batches of six, reached six active files and was approximately **2.2x faster** than the reviewed dev six-pipeline run on this workload. Before disabling idle ONNX spin waits, the native result was slower; the accepted setting removes that shared-core contention. This does not imply the same speedup for image or workbook workloads.
+
+The native benchmark captured its process/module tree: affinity mask `0x3f` throughout, no Python modules/processes, and approximately **1,595 MiB peak working set** for the inference process. The 3 GiB-per-model planning estimate therefore remains conservative for this measured text workload; larger batches and images can use more.
+
+The benchmark is reproducible with the native test executable's `benchmark <application-directory> <model-directory> <output-directory>` command. `verify-files <application-directory> <model-directory> <output-directory> <file>...` performs explicit full-file extraction, passage-count, search, checkpoint/reload and source-integrity checks using copies. It never alters the supplied originals.
+
+Machine-readable run output is written under ignored `.test-data` directories. Personal corpus paths, indexes, model payloads and runtime logs are not committed as evidence.
+
+## Distribution and clean-runtime checks
+
+Native releases retain the x64/ARM64 process boundary, include app-local C++ runtimes, and contain no interpreter executables, Python DLLs/packages, model payloads or user data. The ZIP's relative configuration and every inventoried file hash are checked before publication.
+
+Relocated probes execute the native DiskANN/SQLite utility and ONNX Runtime CPU-provider host with `PATH` restricted to Windows system binaries. Missing-model verification is read-only. These checks do not uninstall software or change the shared host.
+
+Package validation caught an x64-only companion DLL in Microsoft's ARM64 CRT redistribution directory; staging now filters CRT files by their actual PE architecture. The publication regression uses a real directory-read sharing lock, confirms that a failed move leaves the original output intact, then verifies a complete replacement after the lock is released.
+
+The workflow is configured for architecture-matched Windows runners and was checked with actionlint. Local x64 execution was under Windows ARM64 compatibility, not a separate Intel/AMD machine; a remote CI run is not claimed by these local results. An approved `NATIVE_MODEL_BASE_URI` enables numerical acceptance in CI and is required for native tagged releases. Public model hosting is a separately approved release operation; package builds never upload model files automatically.

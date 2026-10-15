@@ -13,6 +13,7 @@
 
   <ItemGroup>
     <Resource Include="Assets\app.ico" />
+    <ProjectReference Include="..\FuzzyFindAnything.Core\FuzzyFindAnything.Core.csproj" />
   </ItemGroup>
 
 </Project>

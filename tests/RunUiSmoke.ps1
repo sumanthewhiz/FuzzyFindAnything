@@ -2,6 +2,7 @@
 param(
     [switch]$Enhanced,
     [switch]$Diagnose,
+    [string]$ApplicationDirectory,
     [ValidateRange(60, 1800)][int]$TimeoutSeconds = 900
 )
 
@@ -119,6 +120,10 @@ $executable = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powersh
 $script = (Join-Path $PSScriptRoot 'UiSmoke.ps1').Replace("'", "''")
 $log = $output.Replace("'", "''")
 $options = $(if ($Enhanced) { ' -Enhanced' }) + $(if ($Diagnose) { ' -Diagnose' })
+if ($ApplicationDirectory) {
+    $ApplicationDirectory = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($ApplicationDirectory)
+    $options += " -ApplicationDirectory '" + $ApplicationDirectory.Replace("'", "''") + "'"
+}
 $command = "`"$executable`" -NoProfile -Command `"& { try { & '$script'$options } catch { Write-Output (`$_ | Out-String); Write-Output `$_.ScriptStackTrace; Write-Output `$_.Exception.ToString(); exit 1 } } *> '$log'`""
 $run = $null
 try {

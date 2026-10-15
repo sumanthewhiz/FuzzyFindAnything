@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Windows;
 using FuzzyFindAnything.App.Services;
+using FuzzyFindAnything.Core;
 
 namespace FuzzyFindAnything.App;
 

@@ -1,0 +1,31 @@
+{
+  "diskann": {
+    "repository": "https://github.com/microsoft/DiskANN.git",
+    "tag": "0.7.0",
+    "commit": "df225d32da81db87596a3ce7c040ad0f78709a7c",
+    "abi": 1,
+    "architecture": "x64"
+  },
+  "packages": [
+    {
+      "id": "boost",
+      "version": "1.78.0",
+      "sha256": "db8920e982cccf0ecc0fc3e0aa32333180bd403a80ec6b402df7e8f20468d1c2"
+    },
+    {
+      "id": "intelopenmp.devel.win",
+      "version": "2022.0.3.3747",
+      "sha256": "f8a71931d05f64336a2e7ae3f556033cc17f0f2c22300458d4e58e639c6ca1f8"
+    },
+    {
+      "id": "intelopenmp.redist.win",
+      "version": "2022.0.3.3747",
+      "sha256": "57c89d1d0dfe79bfd17a0bb86fa5fe7a5c16e34c54b3a55313a7a67da2964899"
+    },
+    {
+      "id": "intelmkl.static.win-x64",
+      "version": "2022.0.3.171",
+      "sha256": "37016d1f7887e1923906da7d1188085ca5ce0a8e5f0f1fe15f260cc4f015d212"
+    }
+  ]
+}

@@ -1,390 +1,145 @@
 # Architecture and operations
 
-[Project overview](../README.md) | [Download and quickstart](../QUICKSTART.md)
+[Overview](../README.md) · [Quickstart](../QUICKSTART.md) · [Migration](MIGRATION.md) · [Validation](VALIDATION.md)
 
-Fuzzy Find Anything is a Windows desktop application for semantic discovery of documents, code and images across explicitly configured folders. It combines a native WPF interface, local multimodal inference, Windows document filters, and a persistent DiskANN index.
+## Design boundaries
 
-The application is intended for users who know what a file contains but do not remember its name or location. Documents, code and images share one embedding space, allowing natural-language queries to retrieve written content, source behavior and visual material. Code is indexed as text; the engine does not execute it or provide compiler/symbol-navigation semantics.
+Fuzzy Find Anything is a per-user desktop search application, not a Windows service, system-index replacement, hosted search service or file-management tool. The configured folder list is its scope authority. Source content is read-only; removing a root removes search ownership, not the underlying files.
 
-## Contents
+The native implementation uses .NET for orchestration and native libraries for inference, graph search, SQLite, imaging and document filters. **Python is absent from normal setup, acquisition, builds, tests and runtime.** Optional model export belongs to a separate engineering/release environment, not an end-user installation.
 
-- [Design objectives and boundaries](#design-objectives-and-boundaries)
-- [Platform and prerequisites](#platform-and-prerequisites)
-- [Getting started](#getting-started)
-- [Model acquisition and lifecycle](#model-acquisition-and-lifecycle)
-- [Architecture](#architecture)
-- [Indexing and search workflow](#indexing-and-search-workflow)
-- [Persistence and recovery](#persistence-and-recovery)
-- [Supported content and extraction policy](#supported-content-and-extraction-policy)
-- [Operation and maintenance](#operation-and-maintenance)
-- [Development and verification](#development-and-verification)
-- [Repository policy](#repository-policy)
-- [Dependencies and licensing](#dependencies-and-licensing)
+The active DiskANN graph resides in RAM. Persistence and recovery do not make it an out-of-core graph. Process isolation contains crashes and hangs but is not a security sandbox.
 
-## Design objectives and boundaries
-
-| Objective | Implementation |
-|---|---|
-| Keep content processing local | Text, images, queries, and embeddings are processed on the device. Model inference has no hosted-service dependency. |
-| Make indexing scope explicit | The persisted folder list is the authority for crawling, monitoring, ownership, and removal. |
-| Preserve original files | Indexing reads source files; removing a folder removes search data, not the original files. |
-| Resume interrupted work | SQLite records queued files, prepared passages, completed embedding batches, and published vectors; restart resumes the remaining work. |
-| Keep the interface responsive | Inference and extraction run outside the UI process; queries receive priority between document batches. |
-| Bound resource consumption | All application workers share an affinity set containing at most half of the physical CPU cores. |
-| Make failures actionable | Invalid content, missing filters, temporary I/O failures, and processing limits have distinct diagnostics and retry behavior. |
-
-### Scope
-
-- Four-tab native Windows UI with document results, an image gallery, folder management, live index metadata, and logging configuration.
-- Consistent light/dark appearance, persisted preferences, and keyboard-accessible controls.
-- Recursive indexing of supported, locally available files in configured folders.
-- Incremental updates using the USN journal and directory notifications, supplemented by reconciliation.
-- A per-user background application that remains active when its window is dismissed.
-
-### Non-goals
-
-- A Windows service, automatic sign-in agent, or replacement for the Windows Search system catalog.
-- A backup, synchronization, document-conversion, or file-management system.
-- A hosted vector database, multi-user authorization service, or retrieval-augmented chat interface.
-- Automatic decryption of protected documents, universal OCR, or guaranteed extraction from every file carrying a supported extension.
-- An out-of-core graph implementation: the active mutable DiskANN graph resides in RAM.
-
-These boundaries are relevant to deployment planning. Process isolation improves fault containment but is not a security sandbox. Local storage is not independently encrypted by the application.
-
-## Platform and prerequisites
-
-| Component | Requirement |
-|---|---|
-| Operating system | Windows 11 on x64 or ARM64 |
-| Build tools | .NET 10 SDK and PowerShell; PowerShell 7 is recommended for setup and publishing |
-| Bootstrap Python | An existing Python installation with pip supporting `--python` (pip 22.3 or later) |
-| Application Python | Provisioned separately by `Setup.ps1`: private CPython 3.11 x64 under `.runtime` |
-| Document extraction | Installed Windows/Office/PDF IFilters compatible with the x64 extractor |
-| Model assets | Downloaded separately from Hugging Face; approximately 1.5 GB for the model checkpoint, plus tokenizer and configuration assets |
-| Hardware capacity | At least two physical CPU cores; startup requires 5 GiB available RAM for one worker or 8 GiB for two, plus storage for runtime, model, catalog, and snapshots |
-
-The UI is published for the host OS architecture. On ARM64 Windows, the WPF application is native ARM64, while the Python workers and IFilter helper use x64 compatibility. This split follows the architecture supported by the published `diskannpy` Windows package.
-
-The published .NET applications are self-contained. A recipient does not need a separately installed .NET runtime, but must retain the configured Python runtime and model directories.
-
-## Getting started
-
-Run the following commands from the repository root in PowerShell. Dependency setup, model acquisition, and application publishing are separate steps in the recommended workflow.
-
-### 1. Provision the private runtime
-
-```powershell
-.\Setup.ps1 -SkipModel
-```
-
-This downloads the embedded Python runtime, checks its Python Software Foundation signature on initial installation, configures its private import paths, and installs `engine\requirements.txt`. It does not install packages into the bootstrap Python environment.
-
-The pinned Transformers dependency is built from source. Setup first installs the declared `engine\build-requirements.txt` backend into the private runtime, then builds without pip's temporary build-isolation environment, which embedded Python's `._pth` isolation does not import. This does not change the bootstrap interpreter or disable the application's own runtime isolation.
-
-Where an organization requires an approved package index:
-
-```powershell
-.\Setup.ps1 -SkipModel -PackageIndex 'https://your-approved-package-index.example/simple/'
-```
-
-The explicit package-index option overrides pip configuration for that setup invocation. Do not put credentials in the URL, a committed script, or a repository configuration file.
-
-### 2. Acquire the model
-
-```powershell
-.\Get-Model.ps1
-```
-
-The model is not included in Git. Acquisition is pinned to the revision documented in [Model acquisition and lifecycle](#model-acquisition-and-lifecycle).
-
-Check local asset readiness without downloading or modifying model files:
-
-```powershell
-.\Get-Model.ps1 -VerifyOnly
-```
-
-### 3. Publish the application
-
-```powershell
-.\Build.ps1 -SkipSetup
-```
-
-Output:
-
-```text
-artifacts\FuzzyFindAnything\FuzzyFindAnything.exe
-```
-
-Launch:
-
-```powershell
-& .\artifacts\FuzzyFindAnything\FuzzyFindAnything.exe
-```
-
-For compatibility, `Setup.ps1` without `-SkipModel` also acquires the model, and `Build.ps1` without `-SkipSetup` invokes setup. Use the explicit three-step sequence above for controlled, repeatable provisioning.
-
-### Development deployment layout
-
-`Build.ps1` creates `artifacts\FuzzyFindAnything\runtime.json` with absolute paths to:
-
-- `.runtime\python.exe`;
-- `models\embeddinggemma-2`;
-- the published IFilter extractor.
-
-These paths avoid copying the runtime and model into every build. Keep the repository/deployment directory in place; the executable is not a single-file portable distribution. After relocating the directory, republish with `Build.ps1 -SkipSetup` or update the generated path configuration while the application is stopped.
-
-Publishing uses a fresh staging directory before replacing the previous output. This prevents architecture-specific runtime DLLs from being mixed by incremental copying. Publishing does **not** stop a running application: use **Quit** before replacing its executable directory.
-
-### Downloadable releases
-
-`Build-Release.ps1` publishes into its own temporary directory rather than replacing the normal application output. It bundles the private x64 Python runtime, self-contained .NET UI and extractor, engine, model-acquisition script, quickstart, component notices, and a versioned dependency inventory. Model assets and user data are never bundled.
-
-The release ZIP's `runtime.json` uses paths relative to the extracted application directory, so moving the complete directory does not require a rebuild. `Get-Model.ps1` downloads assets into its `models\embeddinggemma-2` directory using the bundled interpreter. End users do not need Python, pip, Git, an SDK, or a separate .NET runtime.
-
-```powershell
-.\Build-Release.ps1 -RuntimeIdentifier win-x64 -Version 1.0.0
-.\Build-Release.ps1 -RuntimeIdentifier win-arm64 -Version 1.0.0 -SkipSetup
-```
-
-Builds produce ZIP and SHA-256 sidecar files under `artifacts\releases`. Release validation checks executable architectures, relative runtime paths, archive integrity, required files, and absence of models/configured folders/index data. The smoke mode extracts to a different directory and loads inference dependencies and DiskANN separately, without downloading the model or launching the UI.
-
-The [build workflow](../.github/workflows/build.yml) runs regression checks and produces both architecture packages. A `vMAJOR.MINOR.PATCH` tag publishes those verified archives to GitHub Releases. Pull requests and main-branch builds expose temporary Actions artifacts; tagged releases provide stable, public download links. No code-signing certificate is configured, so packages are unsigned.
-
-## Model acquisition and lifecycle
-
-### Model contract
-
-| Property | Value |
-|---|---|
-| Model | [Google EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2) |
-| Source identifier | `google/embeddinggemma-2` |
-| Pinned revision | `914f7f89142e33e77833254d9c9b90c3cef7303b` |
-| Acquisition entry point | `Get-Model.ps1` |
-| Acquisition implementation | `engine\download_model.py` |
-| Default destination | `models\embeddinggemma-2` |
-| Inference | CPU, float32 |
-| Active encoders | Text and vision; audio is disabled |
-| Vector representation | 768-dimensional, L2-normalized float32 |
-| Query instruction | `SearchQuery` |
-| Document representation | `title: <filename> \| text: <passage>` |
-
-The downloader retrieves the pinned public model snapshot, not the latest moving branch. The downloaded model card is retained with the assets. Consult the [official model card](https://ai.google.dev/gemma/docs/embeddinggemma/model_card_2) for model capabilities, training information, and usage guidance.
-
-### Acquisition controls
-
-Preview the download action:
-
-```powershell
-.\Get-Model.ps1 -WhatIf
-```
-
-Use a different asset directory:
-
-```powershell
-.\Get-Model.ps1 -Destination 'D:\LocalModels\embeddinggemma-2'
-.\Get-Model.ps1 -Destination 'D:\LocalModels\embeddinggemma-2' -VerifyOnly
-```
-
-A custom destination does not automatically change application configuration. Before launching, set the `model` entry in the generated `runtime.json` to that directory. A later build recreates `runtime.json` with the default repository paths.
-
-`-VerifyOnly` performs a read-only readiness check: required files must be present and nonempty, and the model/module configuration must be compatible. It is **not** a cryptographic weight-integrity check or an inference test. Acquisition through the pinned Hugging Face snapshot is the supported provisioning path; the integration suite exercises actual inference.
-
-Downloads can be resumed by rerunning `Get-Model.ps1`. The acquisition process needs network access to the model host. The application subsequently loads local assets with offline settings and `local_files_only=True`, with remote model code disabled.
-
-### Offline provisioning
-
-On a network-connected Windows machine, run dependency setup and model acquisition first. Transfer the complete private runtime and model directory, including tokenizer, processor, pooling, normalization, and configuration files, through the approved artifact-distribution mechanism. Configure the destination's `runtime.json` accordingly.
-
-Copying only `model.safetensors` is insufficient. The runtime also requires the model-specific processing and SentenceTransformers configuration.
-
-### Updating the model
-
-Treat a model change as an index compatibility change:
-
-1. Review the model revision, license, runtime compatibility, and retrieval behavior.
-2. Update the acquisition pin in `engine\download_model.py` and the model fingerprint in `engine\vectors.py` together.
-3. Acquire the new assets into a separate directory; do not overwrite assets used by a running worker.
-4. Run the model and retrieval verification suites.
-5. Stop the application and perform a controlled index reset before using the new embedding space.
-
-Query vectors and stored vectors must use the same model contract. Changing a path in configuration alone does not migrate an existing index.
-
-## Architecture
-
-```mermaid
-flowchart LR
-    UI["Native WPF application"] <-->|"JSON process pipes"| Engine["Indexing coordinator"]
-    Engine <-->|"Bounded parallel batches"| Model["Local inference worker pool"]
-    Engine -->|"Per-document process"| Filters["Windows IFilter extractor"]
-    Events["USN journal and directory notifications"] --> Engine
-    Engine <--> Catalog[("SQLite catalog, durable jobs, passage checkpoints")]
-    Engine <--> Graph["Mutable DiskANN graph and snapshots"]
-    Folders["Configured source folders"] --> Filters
-    Folders -->|"Image input"| Model
-    UI --> Shell["Windows Shell thumbnails and file associations"]
-    UI --> Preferences["Versioned XML preferences"]
-    Engine --> Logs["Rotating per-file and diagnostic logs"]
-```
-
-### Component responsibilities
+## Components and architecture boundaries
 
 | Component | Source | Responsibility |
 |---|---|---|
-| Desktop application | `src\FuzzyFindAnything.App` | Window lifecycle, themed presentation, search cancellation, thumbnails, statistics, XML preferences, and worker supervision |
-| Indexing coordinator | `engine\worker.py`, `engine\indexer.py` | Separate discovery and concurrent file processing, scoped deltas, status publication, and retry policy |
-| Durable work queue | `engine\work_queue.py` | File claims, owner roots, source revisions, prepared passages, batch commits, recovery, and fair rescheduling |
-| Inference pool | `engine\model_pool.py`, `engine\model_worker.py`, `engine\model_client.py`, `engine\embeddings.py` | Reused model processes, tokenization, embeddings, bounded batches, worker replacement, and query priority |
-| Cross-file batching | `engine\inference_batches.py` | Bounded text/image request aggregation, result demultiplexing, size bucketing, error isolation, and cancellation |
-| CPU budget | `engine\cpu_budget.py`, `Services\CpuBudget.cs` | Physical-core discovery, restricted affinity, inherited thread limits, and job-object enforcement |
-| Extraction process | `src\FuzzyFindAnything.Extractor` | Content-format detection, COM filter activation, stream/file initialization, bounded text extraction, and structured failure reporting |
-| Persistent store | `engine\store.py` | SQLite transactions, native graph mutations, snapshot generation, recovery, search-result resolution, and metadata |
-| Change monitoring | `engine\windows_changes.py` | USN replay, directory notifications, cursor handling, and reconciliation triggers |
-| Logging | `engine\indexer_logging.py`, `Services\DiagnosticLog.cs` | Rotating per-file JSONL outcomes, diagnostics, live destination switching, and visible storage failures |
+| WPF desktop | `src\FuzzyFindAnything.App` | Window lifecycle, themes, three result sections, thumbnails, settings and supervision |
+| Coordinator executable | `src\FuzzyFindAnything.Engine` | Exclusive data-directory lease, local JSON IPC, startup/status and shutdown |
+| Engine library | `src\FuzzyFindAnything.Core` | Catalog, durable queue, discovery, monitoring, concurrency, extraction client and logs |
+| Inference host | `src\FuzzyFindAnything.Inference` | Exact tokenization/decoding, image preprocessing and reusable ONNX sessions |
+| IFilter helper | `src\FuzzyFindAnything.Extractor` | Isolated COM activation, content detection, bounded extraction and classified errors |
+| Native DiskANN bridge | `native` | Pinned C++ implementation, versioned C ABI, caller-owned buffers and packed snapshots |
+| Utilities | `src\FuzzyFindAnything.Tools` | Native model acquisition/verification, offline maintenance and package verification |
 
-### Process and concurrency model
+| Package | UI / inference | Coordinator / DiskANN / extractor / utilities |
+|---|---|---|
+| `win-x64` | x64 | x64 |
+| `win-arm64` | ARM64 | x64 |
 
-The WPF process does not execute model inference or third-party document filters in its UI thread. It supervises a long-lived indexing coordinator with separate discovery and file-worker threads, a bounded inference-process pool, and short-lived extraction helpers.
+The current DiskANN C++/MKL backend requires x64. On ARM64, inference remains native while the smaller coordination/index/helper processes use Windows x64 compatibility. Each process loads only architecture-compatible native dependencies. App-local C++ runtimes and self-contained .NET runtimes are packaged with their notices.
 
-PyTorch and DiskANN run in separate processes to avoid interaction between their native runtimes. File concurrency is independent of the number of model copies: the engine starts up to one file worker per eligible core, capped at eight concurrent file pipelines. On a 12-core machine this permits six simultaneous file jobs even when memory planning selects one model process.
+The UI communicates through redirected process pipes, not an HTTP listener. A Windows job object supplies shared affinity and lifetime containment. A per-index byte-range lease prevents concurrent writers, including the older coordinator. A data-directory-specific mutex and activation pipe restore an existing UI instance maximized.
 
-File workers overlap extraction and preparation, then submit bounded inference requests. A short coalescing window combines requests from multiple files into up to eight text passages or two images. Text requests use approximate length buckets to avoid padding tiny files to a much larger passage. Each model process handles one native request at a time; different model processes can process batches concurrently. Queries retain priority when an inference slot becomes available.
+## Model contract
 
-Completed results are mapped back to their originating requests before their existing passage checkpoints are committed. If a combined request fails, its constituent requests are retried individually to identify the failing file rather than incorrectly failing healthy neighbors. Cancellation releases pending requests without marking them as successful. Durable passage commits remain in groups of up to four, and a file yields after up to sixteen passages so a large workbook does not monopolize the queue.
+| Property | Value |
+|---|---|
+| Source model | `google/embeddinggemma-2` |
+| Source revision | `914f7f89142e33e77833254d9c9b90c3cef7303b` |
+| Native asset identifier | `embeddinggemma-2-onnx-v1` |
+| Manifest | `model-assets\embeddinggemma-2.json`, embedded in the utilities/runtime |
+| Backend | ONNX Runtime 1.31.0, CPU provider, float32 |
+| Tokenizer | Microsoft.ML.Tokenizers 2.0.0 plus the pinned model's explicit decoder |
+| Representation | 768-dimensional, unit-normalized float32 |
+| Query format | `task: search result \| query: <text>` |
+| Document/code format | `title: <filename> \| text: <passage>` |
+| Passages | 512 tokens, stride 448; whitespace-canonical duplicate suppression |
+| Title / preview limits | 160 / 400 Unicode scalars |
 
-The application enumerates physical cores and selects at most `floor(core count / 2)`, using one logical processor per selected physical core and respecting inherited affinity restrictions. WPF, the coordinator, inference, native indexing, and extraction all use the same allowed set. A 16-core machine therefore permits at most eight cores, not eight cores per worker. On the tested 12-core machine, the set contains six cores and two model workers use three compute threads each.
+The managed SentencePiece encoder matches the reference token IDs. Passage decoding explicitly follows `tokenizer.json`'s replacement, byte-fallback and concatenation operations; the generic decoder would drop the model's ordinary newline token. Code previews preserve line breaks and indentation. Document previews collapse whitespace.
 
-The pool targets two inference workers when at least four processors are available inside that set and memory permits, otherwise one. Startup budgets 3 GiB per worker plus a 2 GiB reserve, based on the current model/runtime footprint. This is a conservative planning estimate, not a hard memory quota. A single-worker plan uses the full eligible compute-thread budget. Additional threads cannot escape the affinity restriction. On multi-processor-group systems, selection is conservative and stays within the primary group. This is a limit on eligible cores, not a promise of a specific Task Manager percentage or throughput.
+The language graph supports dynamic batches and sequence lengths and outputs projected 768-dimensional token states. Pooling is attention-mask-aware and includes prompt tokens. Non-finite, zero-length and dimensionally invalid embeddings are rejected. The export explicitly expands position IDs per batch to preserve padded-batch RoPE behavior.
 
-In this paragraph, a model worker is a model **process**, not a file pipeline or a physical CPU core. The status payload separately reports `file_worker_count`, ready model-process count, compute threads, and inference-batch statistics. Memory bandwidth, file I/O, and workload size can leave eligible cores idle; increasing thread counts alone is not proof of increased throughput.
+The vision graph has a **single-image** input shape: pixels `[1,2520,768]` and positions `[1,2520,2]`. A two-image request makes two valid vision calls, aligns their soft-token features, then batches language processing. This is not a one-image-at-a-time application restriction.
 
-### Startup and readiness
+Image preprocessing handles RGB conversion, EXIF orientation, first-frame GIF, largest supported ICO frame, a 2,048-pixel preparation limit, bicubic resizing, 16-pixel patches, pooling factor 3 and up to 280 soft tokens. Decoded dimensions and allocations are bounded. Filename vectors are never substituted for failed image decoding.
 
-Only the first fully initialized model gates search readiness. Optional additional capacity loads on a background thread, joins the same bounded pool when ready, and never postpones the primary `Ready` signal. Available memory is checked again before warming an additional worker. If secondary startup fails, the primary remains usable and the failure is reported; the UI does not claim that both workers are ready.
+### Acquisition
 
-Startup progress is based on nine completed checkpoints: catalog recovery, monitoring setup, six primary-model checkpoints (worker bootstrap, numerical runtime import, embedding-library import, CPU configuration, model/tokenizer loading, and finalization), and service readiness. The UI displays their percentage and the current phase. It is not a time-remaining estimate, and it never reaches 100% before the primary model and service are ready.
+`Get-Model.ps1` invokes a self-contained .NET utility. It accepts an approved source directory or HTTPS base directory; no public native-model URL is hard-coded. Files are pinned by name, size and SHA-256. `.partial` files support resume, range responses are checked, and downloads cannot exceed the manifest's declared sizes.
 
-Progress and readiness have a dedicated IPC event rather than waiting for a full folder-statistics refresh. Sequence numbers prevent a delayed `Loading` snapshot from reverting a ready UI. Model-client progress messages are consumed separately from inference responses and do not extend the overall startup timeout. Cancelling startup stops the partially initialized worker; stopping the application also cancels secondary warmup.
+Verified assets are atomically promoted. Inference holds read leases that prevent replacement of active model files. `-VerifyOnly` checks every asset without creating files, modifying contents or contacting a host. Model acquisition is separate from application packages and Git.
 
-The coordinator serializes store mutations and graph access. This simplifies consistency between file ownership, persisted vectors, and graph generations. Native checkpoints can temporarily hold store access while rebuilding and publishing a snapshot.
+A custom `-Destination` does not automatically change `runtime.json`; update its `model` path while the application is stopped. Export changes, precision changes and tokenizer/preprocessing changes require new parity evidence and an explicit embedding-space compatibility decision.
 
-Communication uses local process pipes rather than an HTTP listener. A Windows job object associates workers with the application lifetime. A per-index lock prevents concurrent engine processes from writing the same catalog. A per-user, data-directory-specific mutex and named pipe implement single-instance activation.
+## Startup and resource budgeting
 
-## Indexing and search workflow
+Readiness follows nine checkpoints: catalog, monitoring, six primary-model phases and service readiness. Startup events carry monotonic sequence numbers, completed/total steps, percentage, phase, state and error. The UI cannot regress from Ready to a stale Loading snapshot. Percentages describe checkpoints, not elapsed time or an ETA.
 
-### Folder configuration
+The first complete text/vision model enables search. A second model, when resources permit, warms asynchronously and cannot block primary readiness. Its failure leaves the primary usable with a visible warning. Initialization has a five-minute deadline; progress messages do not extend it. Native operations have a three-minute deadline. Shutdown cancels and reaps partially initialized workers.
 
-The `folders` table is the single persistent source of truth. Adding a folder commits the configuration and schedules a crawl. Ordinary subfolders are included.
+The shared CPU set contains at most `floor(physical cores / 2)`, selecting one logical processor per chosen physical core and respecting inherited restrictions. Multi-group systems conservatively use the primary group. WPF, coordinator, model hosts, IFilters and native graph work inherit the same set.
 
-Files can belong to more than one configured root. Shared ownership prevents removal of a parent folder from discarding content still covered by a configured child. Removing a root is checked again after inference so an in-flight operation cannot restore content that no longer belongs to the search scope.
+| Independent bound | Current value |
+|---|---|
+| File pipelines | `min(8, eligible processors)` |
+| Model processes | Up to 2 when at least 4 eligible processors and memory permit |
+| Planning memory | 3 GiB per model plus 2 GiB reserve; not a hard quota |
+| Text inference batch | Up to 8 passages |
+| Image request | Up to 2 images |
+| Pending inference requests | 64, with producer backpressure |
+| Coalescing window | 20 ms |
+| Durable constituent request | Up to 4 passages |
+| File scheduling slice | Up to 16 passages before yielding |
 
-### Initial and incremental indexing
+Text requests use Unicode-scalar length buckets to avoid excessive padding. Results retain per-request ownership and order after aggregation. Failed combined requests are isolated so one bad file does not fail healthy neighbors. Queries take priority at available model slots. Cancelling pending producers or shutdown releases waits explicitly; it does not generate success-shaped placeholder vectors.
 
-1. Discover supported files and collect path, size, modification time, and file identity. Exclude application-owned data, symbolic links, and junctions.
-2. Reuse completed files and queued work whose fingerprints/content hashes are unchanged. New or changed files become durable jobs before inference begins.
-3. Claim jobs exclusively, initially favoring smaller files. Verify local availability; online-only placeholders are deferred with an explicit retryable error rather than downloaded.
-4. Extract document text through the appropriate path, or use the image encoder. Prepare distinct 512-token passages with 64-token overlap and persist them.
-5. Generate normalized embeddings in bounded parallel batches. Commit every completed batch to the queue and publish current file/stage/passage progress.
-6. Yield large jobs after their scheduling slice. Preserve saved batches and elapsed processing time when another worker resumes the job.
-7. Recheck the source fingerprint and content hash before publication. A changed revision invalidates only that file's staged work.
-8. Atomically commit the complete file/vectors and dequeue its job. Apply native graph mutations and publish a checkpoint when required.
-9. Remove deleted paths and corresponding queue entries. A failed directory enumeration is not treated as evidence that its contents were deleted.
+ONNX worker pools yield rather than spin between operations. With a hard shared affinity set, idle spinning can starve the coordinator and extraction/preparation work; the cooperative configuration was selected using measured end-to-end throughput, not thread count alone.
 
-The folder table shows succeeded/failed counts. Current extraction, preparation, embedding, and persistence activity appears separately in the status bar. A large spreadsheet may expose hundreds of passages even if extraction finishes quickly; processing time depends on extracted content and token count, not just file size.
+Model copies and file pipelines are separate. One available model does not reduce six eligible file pipelines to one. The status payload reports each count independently. I/O, memory bandwidth and batch sizes can leave eligible cores idle.
 
-### Change tracking
+## Discovery, indexing and retrieval
 
-On supported local volumes, the coordinator reads USN v2/v3 records using a root-directory handle and the unprivileged journal API. File identities and parent identities associate changes with configured roots. Recursive `ReadDirectoryChangesW` notifications provide a complementary low-latency path.
+1. Persist configured roots and discover supported files recursively, initially favoring smaller files.
+2. Resolve canonical Windows paths, file identities, modification time, size and content hashes. Exclude name-surrogate reparse points, application-owned paths and owned log files.
+3. Reuse unchanged published content and queued revisions. Commit new/changed jobs before inference.
+4. Extract text, prepare distinct passages and persist preparation once per source revision.
+5. Generate embeddings and commit each constituent batch as it returns. Yield large jobs fairly.
+6. Recheck scope, file identity, timestamps, size and content hash. A changed file invalidates only its own staged revision.
+7. Atomically publish complete file metadata/vectors and dequeue its job. Update the native graph.
+8. Prune deleted paths only after successful enumeration. Permission/enumeration failures are not evidence of deletion.
 
-Events are debounced. A file event schedules that file; a directory event discovers/prunes that subtree. Parent notifications and duplicate events do not reset existing jobs or re-embed unchanged content. Content hashes distinguish actual preserved-timestamp edits from repeated notifications.
+`folders`, `folder_files` and `job_folders` preserve overlapping-root ownership. Removing a parent retains files and pending work still owned by a configured child. Completed files and saved passages do not re-enter work just because startup or a parent notification triggers enumeration.
 
-Reconciliation runs at startup and periodically, including recovery from journal wrap/recreation and notification gaps. Re-enumerating metadata is not the same as restarting indexing: completed files and saved passage batches are retained. Journal cursors advance only after observed changes have durable queue entries or completed catalog deletions, without waiting for every embedding to finish.
+USN v2/v3 replay tracks file and parent identities. **Unprivileged records may omit names**; those events reconcile the known parent directory without resetting unchanged work. Rename handling reconciles both old and new paths when available. Identity maps are prepared before replay so startup cannot discard relevant records prematurely.
 
-Volumes or shares without a usable USN journal use directory notifications and reconciliation. The selected monitoring mode and limitations are reported in the UI and diagnostics.
+Directory notifications provide a complementary low-latency path. Overflow, journal identity/cursor gaps and unknown record versions trigger conservative reconciliation. Metadata reconciliation also runs periodically. Durable journal cursors advance only after detected changes have been represented by queued work or completed deletions, not before callback delivery.
 
-### Retrieval
-
-1. Validate the query and generate a `SearchQuery` embedding.
-2. Retrieve approximate nearest-neighbor candidates from the native DiskANN graph.
-3. Resolve candidate IDs against the current catalog and configured scope.
-4. Exclude unavailable files, compute exact cosine similarity for retrieved candidates, and apply the selected threshold.
-5. Deduplicate passages by file and return ranked files.
-6. Present documents as openable list items and images as clickable thumbnail tiles.
-
-The similarity value is a cosine similarity, not a confidence probability. The default UI result limit is 50 files. Empty results are presented explicitly.
-
-**Clear** (or Escape in the search field) resets the phrase and all three result sections immediately. Pending response waits and thumbnails are cancelled; generation checks prevent a late result from repopulating a cleared search. An already-running native query may finish, but its obsolete response is ignored.
+Search validates the query, produces a query embedding, retrieves DiskANN candidates, resolves their current ownership, filters missing files, reranks by cosine similarity and deduplicates by file. The default limit is 50 files. A selected similarity is a score, not a probability.
 
 ## Persistence and recovery
 
-### Storage model
+SQLite uses **WAL + FULL synchronization** and retains the schema-4 catalog contract:
 
-| Data | Purpose |
+| Table | Durable responsibility |
 |---|---|
-| `settings` | Internal schema/model identity, graph generation, refresh timestamp, monitoring cursors, and discovery diagnostics; distinct from XML preferences |
-| `folders` | Configured roots and their indexing status |
-| `files` | File identity/fingerprint/content hash, kind, extraction warnings, failure classification, and retry state |
-| `folder_files` | Many-to-many ownership of files by configured roots |
-| `vectors` | Passage metadata, stable identifiers, and durable embedding payloads |
-| `index_jobs` | Source fingerprint/hash, revision, state, preparation flag, retry/scheduling information, and processing duration |
-| `job_folders` | Many-to-many ownership of pending work |
-| `job_passages` | Ordered prepared content and committed passage embeddings |
+| `settings` | Model/schema identity, graph generation, refresh timestamp and monitoring/discovery state |
+| `folders` | Configured roots |
+| `files`, `folder_files` | Completed metadata, failures and ownership |
+| `vectors` | Stable uint32-compatible IDs, ordered snippets and embedding blobs |
+| `index_jobs`, `job_folders` | Fingerprints, hashes, revisions, claims, retries, elapsed time and ownership |
+| `job_passages` | Prepared content and individually committed embedding batches |
 
-SQLite uses WAL mode and full synchronization for committed state. The persisted embeddings are the recovery source for the native graph.
+Interrupted active jobs return to pending without losing prepared content or committed embeddings. Publication and dequeue share a transaction. A crash after SQL commit but before graph mutation is recovered from stored vectors; a crash before publication leaves a resumable job.
 
-### Restart and queue recovery
+The native graph uses Microsoft's C++ DiskANN **0.7.0**, commit `df225d32da81db87596a3ce7c040ad0f78709a7c`, with L2 distance on normalized vectors. `native\dependencies.json` pins its build inputs. The ABI catches native exceptions, uses explicit handles/dimensions/uint32 tags and caller-owned result buffers; catalog access serializes mutations/search.
 
-Catalog schema version 4 includes the durable work queue. On startup, interrupted active jobs return to pending without discarding prepared passages or their saved embeddings. Completed files do not re-enter the queue merely because the process restarted.
+Packed tagged bulk-build snapshots avoid sparse-slot corruption in the dynamic-save path. Snapshot files have SHA-256 digests, model identity and catalog generation in an atomically replaced manifest. Missing, stale or corrupted snapshots rebuild from SQLite, not a full-scan substitute for DiskANN. Replacement graphs are installed only after successful construction/loading. Graph/storage failures are visible; committed state is not silently discarded.
 
-Publication and dequeue share one transaction and validate both source revision and remaining folder ownership. A crash after that commit but before native graph mutation is recovered from SQLite. A crash before it leaves a resumable job. Removal of an overlapping root preserves work owned by another configured root.
+Exact resume means **completed files and committed passage batches do not repeat**. Computation interrupted before its durable commit may repeat; the middle of a matrix operation is not checkpointed.
 
-The durability boundary is a committed batch: completed files and committed passage batches are not repeated. Computation interrupted before its commit may run again; the application does not checkpoint the middle of a native inference operation. Permanent content failures leave a classified file record and exit the queue. Retryable failures retain pending work with backoff.
+## Supported content
 
-### Graph lifecycle
-
-The active search structure is Microsoft's `diskannpy` `DynamicMemoryIndex`, using a mutable Vamana graph with normalized vectors and L2 search. It is checkpointed to local storage; it is not the immutable `StaticDiskIndex` configuration intended for datasets larger than RAM.
-
-Snapshot files are checksummed and published through an atomically replaced manifest. The manifest identifies the model contract and catalog generation. A missing, stale, or damaged snapshot is rebuilt from committed embeddings.
-
-The packaged DiskANN version requires special care when persisting dynamically inserted points: its dynamic-save path can serialize sparse insertion slots incorrectly. Checkpoints therefore use the native tagged bulk builder to create packed graph files and then reload the resulting mutable index. This is a deliberate correctness/performance trade-off; checkpoint cost increases with index size.
-
-### Data location
-
-The default data directory is:
-
-```text
-%LOCALAPPDATA%\FuzzyFindAnything
-```
-
-| Path | Contents |
+| Kind | Formats |
 |---|---|
-| `catalog.sqlite3`, `catalog.sqlite3-wal`, `catalog.sqlite3-shm` | Catalog and SQLite transactional state |
-| `diskann\current.json` | Active graph manifest |
-| `diskann\snapshot-<id>` | Native graph, vector, tag, and metadata files |
-| `engine.lock` | Exclusive engine lease |
-| `settings.xml` | Versioned appearance and logging preferences |
-| `Logs\indexer.jsonl` | Per-file outcomes at the default log location |
-| `Logs\engine.log`, `Logs\native-engine.log`, `Logs\app.log` | Default coordinator, native/inference, and UI diagnostics |
-| `configured-folders-*.json` | Folder configuration exported by maintenance operations |
-
-The live index-information tab reports the actual backend version, location, file/document/image counts, size, and last committed content-refresh time. Its size excludes model/runtime downloads, diagnostic logs, and Windows thumbnail caches.
-
-An alternate directory can be selected at launch:
-
-```powershell
-& .\artifacts\FuzzyFindAnything\FuzzyFindAnything.exe --data-dir 'D:\SearchData\FuzzyFindAnything'
-```
-
-## Supported content and extraction policy
-
-| Category | Extensions | Processing |
-|---|---|---|
-| Plain text | `.txt` | UTF-8, BOM-marked UTF-16/32, or Windows text encoding |
-| Documents | `.rtf`, `.pdf`, `.doc`, `.docx`, `.ppt`, `.pptx`, `.xls`, `.xlsx` | Windows COM IFilter |
-| Images | `.jpg`, `.jpeg`, `.png`, `.gif`, `.bmp`, `.ico` | Direct EmbeddingGemma 2 vision embeddings |
+| Plain text | `.txt` |
+| IFilter documents | `.rtf`, `.pdf`, `.doc`, `.docx`, `.ppt`, `.pptx`, `.xls`, `.xlsx` |
+| Images | `.jpg`, `.jpeg`, `.png`, `.gif`, `.bmp`, `.ico` |
 
 ### Source code formats
 
-| Language | Extensions / special filenames |
+| Language | Extensions / filenames |
 |---|---|
 | Python | `.py`, `.pyw`, `.pyi` |
 | JavaScript | `.js`, `.jsx`, `.mjs`, `.cjs` |
@@ -399,65 +154,24 @@ An alternate directory can be selected at launch:
 | Swift / Kotlin | `.swift`, `.kt`, `.kts` |
 | R | `.r`, `.Rprofile` |
 
-Filename matching is case-insensitive. Source is decoded directly as text using the existing encoding and size limits; it is not executed and does not require an IFilter. Binary/compiled outputs such as `.pyc`, `.class`, `.dll`, and `.jar` are not source formats. Code uses the same text embedding pipeline and durable passage queue as documents, but retains a distinct `Code` kind and code preview formatting.
+Matching is case-insensitive. Text/code support UTF-8, BOM-marked UTF-16/32 and explicit Windows-code-page fallback. Binary code without an appropriate Unicode BOM is rejected. Valid source mentioning document signatures is not routed through IFilter. Compiled artifacts are not source formats.
 
-This is an additive catalog change: the existing schema, model fingerprint, file/vector identities, and configured roots are retained. Startup discovery adds newly supported code files without re-embedding unchanged documents/images. Code counts are included in the total file count and separately exposed as `total_code_files`.
+The isolated extractor detects actual document formats, supports registered and Office Click-to-Run filters, and handles stream/file initialization. It does not rename source files or change registrations. Existing PDF activation and Office-content diagnostics are retained.
 
-### Filter selection
-
-The extractor inspects signatures and Office container contents before selecting a filter. Supported content with a mismatched filename extension is routed to the appropriate filter without renaming the source.
-
-Activation supports registered filters and installed Office Click-to-Run virtual registrations. Both stream- and file-initialized filters are supported, including the Windows PDF filter. The application does not install or redistribute Office filters and does not modify their registry entries.
-
-Filter availability is distinct from content validity. An empty file, an unrelated database with a document extension, or a damaged container must not be diagnosed as a missing IFilter.
-
-### Limits and retry policy
-
-| Condition | Behavior |
+| Condition | Policy |
 |---|---|
-| Empty, invalid, encrypted, or unsupported content | Explicit permanent error; unchanged content is not repeatedly processed |
-| File changes | Fingerprint invalidation allows another indexing attempt |
-| Temporary I/O/filter failure | Retry backoff from five minutes to one hour |
-| Native extraction exceeds its limit | Internal 55-second watchdog and external 60-second supervision stop the helper |
-| Folder removal or application shutdown | Cancel extraction promptly and stop further document batches |
-| Excessive extraction output | Reject output exceeding eight million characters or the chunk-count bound; `.txt` raw input is limited to 32 MB |
-| Unavailable embedded object | Preserve the main text and report an extraction warning |
+| Empty, invalid, unsupported or encrypted content | Permanent classified failure; retry after content changes |
+| Temporary access/filter/dependency failure | Retain resumable work; retry from 5 minutes up to 1 hour |
+| Hung IFilter | 55-second internal watchdog and 60-second external limit |
+| Oversized extraction | Reject over 8 million characters; direct text input limited to 32 MB |
+| Unavailable embedded content | Retain main text and report a warning |
+| Online-only file | Report availability error; do not silently hydrate it |
 
-Folders display **In Progress** while discovery or queued/retry work remains, and **Indexed** when that work is drained. An indexed folder may contain permanently failed files: **Indexing details** reports succeeded and failed counts without treating a permanent content error as endless progress. Per-file causes are recorded in the logs.
+Scanned PDFs need an OCR-capable filter. Some Excel IFilters omit inline-string cells. GIF uses its first frame; ICO chooses a supported largest frame. Large numeric workbooks are processed fully rather than sampled, within explicit safety limits.
 
-### Known content limitations
+## Settings, logs and data locations
 
-- Scanned PDFs need an installed OCR-capable IFilter.
-- Encrypted/protected Office content is not decrypted by the application.
-- Installed filters determine format coverage. Some Excel filters omit inline-string cells produced by spreadsheet libraries.
-- Animated images use their first frame; ICO files use their default image.
-- Online-only cloud files must be made locally available. Locally available cloud files can be indexed.
-- Symbolic links and junctions are not traversed.
-- Large numeric workbooks can require substantial CPU inference time. All distinct passages are processed rather than silently sampled or truncated.
-
-## Operation and maintenance
-
-### Normal use
-
-| Action | Result |
-|---|---|
-| Add a folder | Persist scope, start monitoring, and schedule indexing |
-| Remove checked folders | Remove their ownership/index entries; preserve original files |
-| Search | Retrieve local semantic matches and split document/image presentation |
-| Clear / Escape | Clear the phrase/results and invalidate outstanding search responses |
-| Dark mode toggle | Change all themed controls and save the appearance preference |
-| Configuration | Enable/disable logging or choose its destination without stopping indexing |
-| Click a result | Open the original file through its Windows association |
-| Close the window / Alt+F4 | Minimize to the taskbar; keep indexing active |
-| Launch another instance | Restore the existing instance maximized |
-| Quit | Stop workers and exit |
-| Footer profile icons | Open the author's LinkedIn or GitHub profile in the registered browser |
-
-The application does not register automatic startup at sign-in. Use **Quit**, not the window close button, before updating binaries, changing the runtime/model installation, or resetting an index.
-
-### Appearance and logging configuration
-
-Preferences are saved atomically to `settings.xml` in the selected data directory. Folder scope remains in SQLite, where it participates in queue/ownership transactions. The configuration file uses UTF-8 XML:
+Default data: `%LOCALAPPDATA%\FuzzyFindAnything`. Override it with `--data-dir <absolute-directory>`.
 
 ```xml
 <FuzzyFindAnythingConfiguration version="1">
@@ -467,183 +181,34 @@ Preferences are saved atomically to `settings.xml` in the selected data director
 </FuzzyFindAnythingConfiguration>
 ```
 
-Minimum similarity defaults to **0.60** when no search preference has been saved, including older XML files without a `Search` element. Slider changes are saved automatically and restored at startup. Values must be finite and within the slider's `0.00`-`0.90` range; parsing and serialization are culture-independent. Clearing results does not reset this preference.
+XML is bounded, DTDs/external entities are prohibited, values are validated and writes are atomic. Similarity defaults to 0.60, accepts finite values from 0.00 to 0.90 and uses culture-independent serialization. Clearing a search or changing theme/logging does not reset it. Failed preference saves restore the saved UI value.
 
-Logging is enabled by default. **Configuration > Change...** opens the native folder picker. New records use the selected destination; previous logs are retained, not moved or deleted. Disabling logging stops normal outcome and diagnostic file writes while indexing, search, and pipe draining continue. Records are not backfilled for disabled intervals.
+Logging starts enabled. Changing its directory affects new records; old logs are not moved. Disabled logging stops normal file writes while indexing and pipe draining continue. Owned log filenames are excluded without excluding unrelated documents in the same directory.
 
-`indexer.jsonl` contains one JSON object per file outcome: timestamp, fully qualified path, document/image kind, `Succeeded` or `Failed`, `duration_ms`, attempt/revision, passage count, warning, and error type/code/message/details where applicable. Duration accumulates processing time across file slices and retries, not time waiting in the queue. Normal cancellation preserves work rather than reporting a failed file.
+`indexer.jsonl` records timestamp, full path, kind, outcome, elapsed processing time, attempt/revision, passage count, warnings and classified exception details. Normal cancellation preserves work instead of recording a failed file. Outcome logs rotate at 8 MB; diagnostics at 4 MB; three backups are retained. Storage failures remain visible and do not turn successful indexing into a file failure.
 
-Outcome logs rotate at 8 MB with three backups. Each diagnostic stream rotates at 4 MB with three backups. An unwritable destination produces a visible error without converting indexing success into failure or leaving stderr unread. Correct the destination or re-enable logging to recover. Log paths may contain sensitive names; protect a custom log directory as carefully as the index.
+Index metadata includes SQLite/WAL/SHM and native snapshot sizes, excluding models, logs and thumbnail caches. Appearance/search/logging live in XML; folder scope remains in SQLite.
 
-The XML reader rejects unsupported versions and invalid values, bounds input size, and prohibits DTD/external-entity processing. Live changes validate the destination and roll back persisted preferences when application fails. If configuration cannot be read at startup, the error identifies the file requiring correction.
+## Build, packaging and maintenance
 
-### Rebuild an index while retaining scope
+Source builds require PowerShell 7, .NET 10 SDK, Git, MSVC desktop tools, CMake and a Windows SDK. `Setup.ps1 -SkipModel` builds the pinned native bridge and utilities. `Build.ps1` publishes native-architecture UI/inference and x64 helpers into a fresh staging directory.
 
-This operation is destructive to generated search data, not to original files. Stop the application first:
+Output replacement uses atomic same-volume directory moves and rollback, never a file-by-file deployment swap. It does not terminate a running application. A locked destination is retained; choose another output directory.
 
-```powershell
-.\.runtime\python.exe tools\reset_index.py --data-dir "$env:LOCALAPPDATA\FuzzyFindAnything"
-```
+`Build-Release.ps1` creates relocatable ZIPs, retained notices, exact component/file manifests and SHA-256 sidecars. It validates architecture, relative paths, every inventoried checksum and absence of interpreter/model/user data, then exercises native dependencies after relocation. `tools\Build-ModelBundle.ps1` separately verifies and packages model assets; it does not publish them.
 
-The reset acquires the engine lease, exports the folder configuration, preserves folder rows and IDs, clears file/vector/job/passage records and USN cursors, removes graph snapshots, and compacts SQLite. Relaunch the application to begin a fresh crawl.
-
-To explicitly clear the folder list as well:
+Offline maintenance requires a stopped application and acquires the same engine lease:
 
 ```powershell
-.\.runtime\python.exe tools\reset_index.py --data-dir "$env:LOCALAPPDATA\FuzzyFindAnything" --clear-folders
+# Destructive to generated search data; retains configured roots and exports a scope backup.
+.\Reset-Index.ps1 -DataDirectory "$env:LOCALAPPDATA\FuzzyFindAnything"
+
+# Also clears configured roots; source files, models, XML preferences and logs are retained.
+.\Reset-Index.ps1 -DataDirectory "$env:LOCALAPPDATA\FuzzyFindAnything" -ClearFolders
 ```
 
-This leaves an empty catalog/queue with no configured roots. Original files, model/runtime assets, XML preferences, and existing logs are preserved. The exported folder backup is archival, not an active configuration source, and is never imported automatically. The reset command does not launch the application.
+Neither command starts the application. Never delete an active catalog or WAL. Folder backups are archival and are not imported automatically.
 
-Do not manually delete an active catalog or its WAL files. They participate in the same transactional state.
+For troubleshooting, inspect the per-file error before assuming a filter is missing; inspect passage progress before attributing a long workbook to extraction. `FFA_IFILTER_TRACE=1` enables additional helper diagnostics. No interpreter thread-dump setting is required in the native engine.
 
-### Diagnostics
-
-| Symptom | Investigation |
-|---|---|
-| Model does not initialize | Run `Get-Model.ps1 -VerifyOnly`; inspect `native-engine.log` and `engine.log`; confirm runtime paths and available memory |
-| Document fails extraction | Read the specific content/activation error; confirm actual format, protection state, architecture, and installed filter |
-| A large workbook appears slow | Check the current extraction/embedding stage and passage counter before attributing the delay to IFilter |
-| Folder remains in progress | Review current activity, queued retries, source availability, and discovery/per-file log entries |
-| Logging is unavailable | Check the selected folder and its permissions/free space; use Configuration to choose a writable destination |
-| Incremental updates are delayed | Check the monitoring mode and source access; reconciliation remains the fallback |
-| Index cannot load | Review generation/checksum recovery diagnostics and available disk space |
-| Published app fails to start | Confirm a clean, architecture-consistent publish and that `runtime.json` paths still exist |
-
-`FFA_IFILTER_TRACE=1` enables detailed native-filter traces. `FFA_TRACE_HANGS=1` enables coordinator thread dumps. Use diagnostic switches deliberately; logs may contain local paths and document metadata.
-
-### Privacy and operational protection
-
-Runtime inference is offline, but local catalogs contain filenames, extracted snippets, and embeddings. Protect the data directory through Windows permissions and disk encryption. Do not treat embeddings as anonymized content.
-
-Initial package/model acquisition contacts the configured package and model hosts. Source documents and search queries are not part of those download requests. Document filters and registered viewers are separately installed components and remain part of the machine's trust boundary.
-
-## Development and verification
-
-### Repository layout
-
-```text
-FuzzyFindAnything.sln
-Directory.Build.props
-Setup.ps1
-Get-Model.ps1
-Build.ps1
-src\
-  FuzzyFindAnything.App\
-  FuzzyFindAnything.Extractor\
-engine\
-  worker.py
-  indexer.py
-  cpu_budget.py
-  work_queue.py
-  indexer_logging.py
-  store.py
-  model_pool.py
-  model_client.py
-  model_worker.py
-  embeddings.py
-  extraction.py
-  windows_changes.py
-  download_model.py
-  requirements.txt
-tests\
-tools\
-  make_icon.py
-  reset_index.py
-```
-
-Build definitions enable nullable reference types, deterministic compilation, and warnings as errors. `.editorconfig` defines formatting; `.gitattributes` defines source/binary treatment.
-
-### Verification layers
-
-| Layer | Command | Coverage |
-|---|---|---|
-| Model acquisition readiness | `.\.runtime\python.exe tests\test_model_acquisition.py` | Missing/invalid assets and read-only verification |
-| Engine/storage regression | `.\.runtime\python.exe tests\test_engine.py` | DiskANN, ownership, fingerprints, USN, durable claims/passages, cancellation, revisions, delta work, metadata, and both reset modes |
-| CPU/concurrency regression | `.\.runtime\python.exe tests\test_cpu_pool.py` | Physical-core selection, inherited restrictions, child affinity, parallel batches, and worker replacement |
-| Startup regression | `.\.runtime\python.exe tests\test_startup.py` | Primary readiness, memory planning, percentage checkpoints, secondary warmup, deadlines, and cancellation |
-| File concurrency and batching | `.\.runtime\python.exe tests\test_inference_batches.py` | Six-reader operation with one model, cross-file result mapping, batch bounds, padding avoidance, failures, and cancellation |
-| Real startup integration | `.\.runtime\python.exe tests\startup_integration.py` | Real-model percentage events, first-worker readiness, search, and prompt shutdown; temporary data, no WPF launch |
-| Warm queue throughput | `.\.runtime\python.exe tests\throughput_benchmark.py` | One versus multiple file pipelines using the same warmed model, with active-file, batch-size, CPU-time, and throughput measurements |
-| Logging regression | `.\.runtime\python.exe tests\test_logging.py` | XML settings, outcomes, disable/switch behavior, rotation, failures, and indexing within a log directory |
-| IFilter regression | `.\.runtime\python.exe tests\test_ifilters.py` | Real filter activation, content errors, format routing, cancellation, timeouts, and document batching |
-| End-to-end pipeline | `.\.runtime\python.exe tests\integration.py` | Real model, supported test documents/images, live changes, search, and process restart |
-| Native UI | See command below | Four tabs, both themes, search clearing, gallery, metadata, logging/pickers/XML persistence, attribution, and window lifecycle |
-
-Install the test-only fixture dependencies when running document integration tests:
-
-```powershell
-python -m pip --python .runtime\python.exe install -r tests\requirements.txt
-```
-
-Use the appropriate approved package index if required by the environment. Test fixture dependencies are separate from `engine\requirements.txt`.
-
-Run native UI verification on a private Windows desktop, without switching the user's active desktop:
-
-```powershell
-.\tests\RunUiSmoke.ps1 -Enhanced
-```
-
-The launcher uses Windows PowerShell for UI Automation and a job object to contain the test process tree. It creates isolated test data and disposes the private desktop afterward. Private-desktop automation does not guarantee useful compositor screenshots. For an interactive visual inspection, explicitly run `tests\UiSmoke.ps1 -Enhanced` under Windows PowerShell on a desktop reserved for testing.
-
-Compile and check formatting:
-
-```powershell
-dotnet build FuzzyFindAnything.sln -c Release
-dotnet format FuzzyFindAnything.sln --no-restore --verify-no-changes
-```
-
-The managed regression executable checks XML preference persistence, result partitioning, loading state, and footer/layout contracts **without creating an application window or starting the engine**:
-
-```powershell
-dotnet run --project .\tests\FuzzyFindAnything.HeadlessTests\FuzzyFindAnything.HeadlessTests.csproj -c Release -p:SelfContained=true -- .
-```
-
-Use the matching runtime/platform properties when running these tests natively on ARM64. The `dev` workflow runs this headless suite in addition to the engine regressions; pushing `dev` does not modify `main` or publish a tagged release.
-
-The integration/UI suites create their own temporary corpus and index. They do not operate against the normal per-user catalog, but do consume inference memory/CPU. The direct UI script opens test windows on its current desktop; the private-desktop launcher avoids disturbing the active desktop. Schedule resource-intensive suites appropriately.
-
-`tests\verify_reported_files.py` is an explicit, potentially long-running real-file regression. It accepts paths supplied by the operator, uses a temporary index, and verifies all generated passages and persistence. No private corpus is bundled in this repository.
-
-## Repository policy
-
-Git contains source, build/setup definitions, documentation, tests, and intentional source artwork. It does not contain:
-
-- Executables, assemblies, debug symbols, package archives, or published builds.
-- Acquired model weights, tokenizer/model caches, or private Python environments.
-- Search databases, graph snapshots, copied corpora, or exported folder configuration.
-- Diagnostic logs, crash dumps, test output, IDE state, credentials, or machine-local configuration.
-
-The application icon under `src\FuzzyFindAnything.App\Assets` is an intentional source asset, not a build artifact. Model payloads are excluded rather than stored in Git LFS.
-
-Before a check-in, review the candidate set:
-
-```powershell
-git status --short --untracked-files=all
-git add --dry-run .
-git check-ignore .runtime models artifacts
-```
-
-Review ignored artifacts separately when diagnosing local state. Do not use `git add -f` for model payloads, user catalogs, or credentials.
-
-Remote creation, account selection, staging, commits, and pushes are explicit owner actions; the project scripts do not perform them. Configure only the intended repository URL under the `sumanthewhiz` account, after confirming the repository name and authentication context:
-
-```powershell
-# Replace REPOSITORY with the approved repository name.
-git remote add origin 'https://github.com/sumanthewhiz/REPOSITORY.git'
-git remote -v
-```
-
-## Dependencies and licensing
-
-Key dependencies include WPF/.NET, Microsoft DiskANN (`diskannpy`), SQLite, PyTorch, SentenceTransformers, Transformers, and EmbeddingGemma 2. Runtime requirements and the pinned Transformers source revision are recorded in `engine\requirements.txt`.
-
-| Component | License/reference |
-|---|---|
-| DiskANN | [MIT](https://github.com/microsoft/DiskANN) |
-| EmbeddingGemma 2 | Apache-2.0; see the downloaded model card and upstream model repository |
-| Transformers / SentenceTransformers | Apache-2.0; see the installed distributions |
-| Other runtime packages | Retain and review notices from their installed distributions |
-| Office/PDF IFilters | Separately installed system/product components; not redistributed by this project |
-
-A license for the application's own source has not been selected. Establish that policy before external distribution; dependency licenses do not automatically license this application's source.
+See [validation](VALIDATION.md) for test commands and [migration](MIGRATION.md) for safe cutover. Binaries, model payloads, package caches, personal corpora, indexes, logs and credentials are excluded from Git. The application icon and small synthetic test fixtures are intentional source assets.

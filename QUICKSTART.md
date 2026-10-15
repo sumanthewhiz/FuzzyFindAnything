@@ -1,165 +1,161 @@
-# Quickstart: run Fuzzy Find Anything on your PC
+# Quickstart
 
-> This `dev` branch also supports source-code indexing and a saved minimum-similarity preference. These additions are not included in the unchanged `v1.0.0` stable download; use a `dev` build to try them.
+**Download the native application, provision its model, and search a small folder.**
 
-Download the application, acquire its model, and index a small folder. You do **not** need to install Python, pip, Git, Visual Studio, or .NET to use a release.
+This guide describes the Python-free **1.1.0 development line**, not the unchanged v1.0.0 release. A native package needs no separate Python, .NET, compiler or package manager.
 
-[Project](https://github.com/sumanthewhiz/FuzzyFindAnything) ·
-[Latest download](https://github.com/sumanthewhiz/FuzzyFindAnything/releases/latest) ·
-[Detailed documentation](https://github.com/sumanthewhiz/FuzzyFindAnything/blob/main/docs/ARCHITECTURE.md)
+[Project](README.md) · [Architecture](docs/ARCHITECTURE.md) · [Existing-user migration](docs/MIGRATION.md)
 
 ## Before you start
 
 | Requirement | Details |
 |---|---|
-| Windows | Windows 11 on x64 (Intel/AMD) or ARM64 |
-| Processor | At least two physical cores; the app uses no more than half of them |
-| Memory | On `dev`, at least 5 GiB available for one worker or 8 GiB for two; the app adapts to available RAM |
-| Storage | Allow at least 5 GB for the extracted application, downloads, and model; your file index needs additional space |
-| Network | Needed to download the ZIP and model; normal indexing/search then works offline |
-| Documents | Office/PDF formats need compatible installed IFilters; `.txt` and images are a useful first test |
+| Windows | Windows 11 x64, or ARM64 with AVX2-capable x64 emulation |
+| CPU | At least two physical cores; all app processes share at most half |
+| Memory | At least 5 GiB **available** for one model; 8 GiB permits an optional second model |
+| Storage | Allow 5 GB for application/model extraction and downloads, plus space for your index |
+| Documents | Compatible x64 Office/PDF IFilters must already be installed |
+| Network | Needed for downloads, not normal indexing or search |
 
-On ARM PCs, Windows x64 application compatibility must be available. The UI is native ARM64; the bundled engine and document helper are x64.
+The ARM64 package runs the UI and model inference natively. Its DiskANN coordinator and document helper run as x64 processes. The release includes the matching native runtimes.
 
-## 1. Download and extract
+## 1. Download the right package
 
-Open **[Latest release](https://github.com/sumanthewhiz/FuzzyFindAnything/releases/latest)** and expand **Assets**.
+For native previews, open **[Build and release](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml?query=branch%3Adev)**, select a successful **dev** run, and download the appropriate artifact. Actions downloads require GitHub sign-in and expire.
 
-| Your PC | Download |
+When a native tagged release is available, use its assets on the [Releases page](https://github.com/sumanthewhiz/FuzzyFindAnything/releases). **v1.0.0 is not Python-free.**
+
+| Your PC | Application ZIP |
 |---|---|
 | Intel or AMD | `FuzzyFindAnything-v<VERSION>-win-x64.zip` |
-| Windows on ARM, such as Snapdragon | `FuzzyFindAnything-v<VERSION>-win-arm64.zip` |
+| Snapdragon / Windows on ARM | `FuzzyFindAnything-v<VERSION>-win-arm64.zip` |
 
-Check **Settings > System > About > System type** if unsure. Download the application ZIP, **not** GitHub's automatically generated “Source code” ZIP.
-
-Extract **all files** to a writable local directory, for example:
+An Actions artifact may be an outer ZIP containing the application ZIP and checksum. Extract the inner application ZIP completely, for example to:
 
 ```text
 C:\Users\<you>\Apps\FuzzyFindAnything
 ```
 
-Do not run the executable from inside the ZIP or copy it out by itself. Keep the `.runtime`, `engine`, and `extractor` directories alongside it. Avoid `Program Files` for this first run because model acquisition writes beneath the extracted folder.
+Keep `engine`, `inference`, `extractor`, `tools`, `third-party`, and `runtime.json` beside the executable. Do not copy the executable out by itself or run it from inside an archive.
 
-**Optional integrity check:** download the matching `.zip.sha256` file and compare its hash with:
+Compare the downloaded file's SHA-256 with the matching `.zip.sha256`:
 
 ```powershell
-Get-FileHash .\FuzzyFindAnything-v<VERSION>-win-x64.zip -Algorithm SHA256
+Get-FileHash .\FuzzyFindAnything-v<VERSION>-win-arm64.zip -Algorithm SHA256
 ```
 
-Use the actual filename/version. Release packages are unsigned; a matching checksum confirms file integrity, not an Authenticode signature. Verify the download came from `github.com/sumanthewhiz/FuzzyFindAnything` and follow your organization's policies.
+Use the actual version/architecture. Packages are unsigned; verify their origin and follow your organization's application policy.
 
-## 2. Download the model
+## 2. Provision the native model
 
-Open PowerShell in the extracted application directory, or navigate there:
+The application uses the separately packaged **`embeddinggemma-2-onnx-v1`** export of `google/embeddinggemma-2`. The original Hugging Face `model.safetensors` file is **not** a substitute.
+
+**A public ONNX hosting URL has not been configured in this revision.** Obtain the approved native model bundle from the maintainer or your organization's artifact channel. The repository contains its immutable [file manifest](https://github.com/sumanthewhiz/FuzzyFindAnything/blob/dev/model-assets/embeddinggemma-2.json), also included as `model-manifest.json` in application packages, not the approximately 1.8 GB of model payload. End users do not export or convert the model.
+
+Extract the bundle into a separate directory containing these eight files:
+
+```text
+config.json
+language.onnx
+language.onnx.data
+vision.onnx
+vision.onnx.data
+tokenizer.json
+tokenizer.model
+README.md
+```
+
+From the extracted **application** directory:
 
 ```powershell
 Set-Location "$env:USERPROFILE\Apps\FuzzyFindAnything"
-```
-
-Run the included model-acquisition script:
-
-```powershell
-.\Get-Model.ps1
-```
-
-If local script policy blocks this unsigned script, and your device policy permits it, use a **single-process** override:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Get-Model.ps1
-```
-
-This does not permanently change your execution policy. Do not override organization-enforced restrictions; contact your administrator instead.
-
-The script uses the **bundled interpreter** to download the pinned `google/embeddinggemma-2` model into:
-
-```text
-models\embeddinggemma-2
-```
-
-Expect approximately **1.5 GB** for the model checkpoint, plus tokenizer/configuration files. Download time depends on your connection. If interrupted, rerun the same command to resume. Keep the complete model directory; the weight file alone is insufficient.
-
-To check already-downloaded assets without network access:
-
-```powershell
+.\Get-Model.ps1 -SourceDirectory 'D:\ApprovedModels\embeddinggemma-2-onnx-v1'
 .\Get-Model.ps1 -VerifyOnly
 ```
 
-This checks required files and configuration; it is not an embedding/inference test. The script prints **“Model assets ready”** when the check succeeds.
+The first command copies verified assets to `models\embeddinggemma-2-onnx` beside the application. The second performs a **read-only size and SHA-256 check of every asset**. Neither requires an interpreter or an SDK.
 
-## 3. Launch and try a small folder
+If an approved HTTPS directory hosting the manifest's individual files is available, use its base URL instead:
 
-Double-click **`FuzzyFindAnything.exe`**, or run:
+```powershell
+.\Get-Model.ps1 -BaseUri 'https://YOUR-APPROVED-HOST/embeddinggemma-2-onnx-v1/'
+```
+
+Replace the example host with an actual approved location. Rerun the same command after an interruption to resume. Downloads are size-bounded, checksummed and staged before replacement; assets in use by native inference cannot be overwritten.
+
+If script policy blocks an unsigned script, follow your device's application policy. Do not disable organization-enforced controls. Model acquisition errors are reported explicitly; a missing bundle is not downloaded from an unverified alternative.
+
+## 3. Launch and index a small folder
 
 ```powershell
 & .\FuzzyFindAnything.exe
 ```
 
-Wait for the engine status to show **Ready**. The first model load can take a minute or more. On `dev`, startup shows a percentage and current phase. The percentage counts completed startup checkpoints, not elapsed time; a slow import can remain at one percentage while it finishes.
+For a separate trial without using an existing index:
 
-Search is enabled when the first complete text/vision model is ready. A second worker, when memory permits, warms in the background without delaying readiness. The CPU-status tooltip reports ready workers. If startup reports insufficient available RAM, close other applications and retry; your index and queued work remain intact.
+```powershell
+& .\FuzzyFindAnything.exe --data-dir "$env:LOCALAPPDATA\FuzzyFindAnything-NativeTrial"
+```
 
-The number of loaded model processes is not the number of files processed concurrently. On `dev`, a 12-core PC can run six file pipelines even with one model copy, grouping pending content into inference batches. Hover over the CPU status to inspect file workers, model processes, compute threads, and recent batch size.
+Wait for **Ready**. The progress bar shows completed startup checkpoints and the current phase, not a time-based estimate. Search becomes usable after the first complete model; optional additional capacity loads in the background.
 
-1. Open **Indexed folders** and select **Add folder**.
-2. Choose a small local folder containing a few `.txt` files and photos. Start small rather than selecting an entire drive.
-3. Wait for the status to become **Indexed**. The details show succeeded/failed counts; current processing appears in the status bar.
-4. Open **Search**, describe something in those files, and select **Search**.
-5. Click a document, code result, or image tile to open the original file in its usual application.
+1. Open **Indexed folders**, select **Add folder**, and choose a small local folder containing a few `.txt` files, source files and photos.
+2. Wait for **Indexed**. The details show succeeded/failed totals; the footer shows current processing.
+3. Open **Search**, enter a natural-language phrase, and select **Search**.
+4. Open a document/code result or an image tile in its usual Windows viewer/editor.
 
-For a predictable text test, save a `.txt` file containing:
+For a predictable first test, save this text in `budget.txt`:
 
 > The team is preparing next quarter's budget, including travel expenses, equipment purchases, and the annual conference.
 
-Index its folder, then search for **“planning spending for travel and equipment”**. Try a photo query such as **“mountains beside a lake”** using your own matching images.
+Search for **planning spending for travel and equipment**. For code, try **function that reads a CSV file** against a matching source file. For photos, describe visible content such as **mountains beside a lake**.
 
-If results are too narrow, reduce **Minimum similarity**. Similarity is a ranking score, not a probability.
-
-On `dev`, the initial minimum similarity is **0.60**, and changes are retained in the configuration XML across restarts. Code results appear in their own section. Supported source languages include Python, JavaScript/TypeScript, Java, C/C++, Go, Rust, SQL, Bash, C#, PHP, Ruby, Swift, Kotlin and R; source files are read as text, not executed.
+Minimum similarity starts at **0.60**, and slider changes survive restarts. Lower it if results are too narrow. Similarity is a ranking score, not a probability.
 
 ## Everyday controls
 
-| Action | Where / behavior |
+| Action | Behavior |
 |---|---|
-| Clear a search | **Clear**, or Escape in the search field, removes the phrase and all result sections |
-| Remove a folder | Check it in **Indexed folders**, then **Remove selected**; original files are not deleted |
-| Inspect the index | **Index information** shows live counts, size, location, and refresh time |
-| Change appearance | Use the **Dark mode** toggle |
-| Configure logs | **Configuration** enables/disables logging and chooses a log folder; enabled by default |
-| Keep indexing in the background | Close the window; it minimizes to the taskbar |
-| Stop the application | Select **Quit**; saved file/passage progress resumes next launch |
+| **Clear** / Escape in the search field | Clears the phrase and all three result sections; ignores late responses |
+| Check folders, then **Remove selected** | Removes indexing ownership, never original files |
+| **Index information** | Shows live counts, backend version, location, size and refresh time |
+| **Dark mode** | Switches and saves appearance |
+| **Configuration** | Enables/disables logging and selects a log directory |
+| Close / Alt+F4 | Minimizes to the taskbar; indexing continues |
+| **Quit** | Stops the process tree; committed file/passage progress resumes next time |
 
-Adding, modifying, or deleting files in configured folders updates the index automatically. The application does not register automatic startup at sign-in.
+The application does not register automatic startup at sign-in. Model-process count is not file-worker count: a 12-core PC can run six file pipelines with one model copy. Hover over CPU status for the separate values.
 
-## Where data is stored
+## Storage
 
 | Data | Default location |
 |---|---|
-| Downloaded model | `models\embeddinggemma-2` beside the executable |
-| Folder configuration, queued work, and index | `%LOCALAPPDATA%\FuzzyFindAnything` |
-| Appearance and logging preferences | `%LOCALAPPDATA%\FuzzyFindAnything\settings.xml` |
-| Per-file outcomes and diagnostics | `%LOCALAPPDATA%\FuzzyFindAnything\Logs`, unless changed in Configuration |
+| Native model | `models\embeddinggemma-2-onnx` beside the application |
+| Folders, durable queue and index | `%LOCALAPPDATA%\FuzzyFindAnything` |
+| Appearance, similarity and logging preferences | `settings.xml` in the data directory |
+| Per-file outcomes and diagnostics | `Logs` in the data directory, unless changed |
 
-Source files are read, not moved or modified. The catalog contains filenames, snippets, and embeddings; logs may contain file paths. Keep both private.
+The catalog contains paths, snippets and embeddings. Logs can contain filenames and errors. Keep them private.
 
-## Common first-run problems
+## Troubleshooting
 
-| Problem | What to check |
+| Problem | Action |
 |---|---|
-| The download page has no application ZIP | Use a completed tagged release, not an in-progress Actions run or the source archive |
-| “Runtime configuration is missing” or missing DLLs | Extract the complete release again; retain every folder and `runtime.json` |
-| Model unavailable | Run `Get-Model.ps1` from the extracted directory, then `-VerifyOnly`; restart after acquisition |
-| Native library / Visual C++ runtime error | Install or repair Microsoft's [latest supported Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist). The engine requires x64 libraries; on ARM64 follow Microsoft's ARM64/x64 guidance |
-| Office or PDF file fails | Inspect `indexer.jsonl` in the configured log folder. Check that the document opens normally and a compatible x64 IFilter is installed |
-| Scanned or protected document has no content | Scanned PDFs need an OCR-capable IFilter; encrypted documents are not decrypted |
-| Cloud files do not index | Make them available on this device first |
-| Large file seems slow | Check the current passage counter. Large workbooks can require many embedding batches; already-committed batches are retained |
-| No search matches | Confirm successful indexing, try a different phrase, or lower minimum similarity |
-| Windows warns about an unsigned download | Verify the source and checksum. Do not bypass your organization's application-control policies |
+| No native application ZIP | Use a completed dev Actions run or a native tagged release, not a source-code archive or v1.0.0 |
+| Missing runtime configuration/DLL | Re-extract the entire package; its native runtime folders must remain together |
+| Missing or mismatched model asset | Use the approved ONNX bundle and rerun `Get-Model.ps1 -VerifyOnly` |
+| Model asset cannot be replaced | Quit applications using that model; check destination permissions |
+| Insufficient memory | Close memory-intensive applications and retry; the index and queue remain intact |
+| Office/PDF extraction fails | Read the classified error in `indexer.jsonl`; check file readability and installed x64 IFilters |
+| Scanned or protected content | OCR-capable IFilter required for scanned PDFs; encrypted files are not decrypted |
+| Online-only cloud file | Make it available locally before indexing |
+| Large file seems slow | Check passage progress; saved batches are retained and the full supported content is processed |
+| No matches | Confirm successful indexing, change the phrase, or lower similarity |
 
-For error details, use **Configuration > Open folder**. Never post private documents, credentials, unredacted logs, or your index database in a public issue.
+Use **Configuration > Open folder** for logs. Do not post documents, credentials, unredacted logs or the catalog in public issues.
 
 ## Update safely
 
-Select **Quit** before updating. Extract the new release to a separate folder, keep its bundled runtime intact, and either download the model again or copy your complete existing `models\embeddinggemma-2` directory while the app is stopped.
+Use **Quit**, not Close. Extract new binaries into a **separate** folder. Never overwrite an active deployment, remove an active SQLite WAL, or replace model files mapped by a worker.
 
-Read the release notes before launching against an existing index. Normal updates use the same per-user data directory; a model or catalog compatibility change may require documented migration steps. Do not delete an active catalog or its WAL files.
+For migration from the earlier Python-backed version, follow [the upgrade and rollback runbook](docs/MIGRATION.md). It preserves configured folders, vectors, queued passages and XML preferences and keeps a recoverable original deployment.

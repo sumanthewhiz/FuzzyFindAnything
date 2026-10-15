@@ -6,6 +6,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Win32.SafeHandles;
+using FuzzyFindAnything.Core;
 
 namespace FuzzyFindAnything.App.Services;
 
@@ -55,13 +56,14 @@ public sealed class EngineClient : IAsyncDisposable
         var configuration = JsonSerializer.Deserialize<RuntimeConfiguration>(File.ReadAllText(configurationPath), JsonOptions)
             ?? throw new InvalidDataException("runtime.json is empty.");
         string Resolve(string path) => Path.GetFullPath(path, appDirectory);
-        string python = Resolve(configuration.Python);
+        string engine = Resolve(configuration.Engine);
+        string inference = Resolve(configuration.Inference);
         string model = Resolve(configuration.Model);
         string extractor = Resolve(configuration.Extractor);
-        if (!File.Exists(python) || !File.Exists(extractor))
-            throw new FileNotFoundException("The local Python runtime or IFilter helper is missing. Run Build.ps1 again.");
+        if (!File.Exists(engine) || !File.Exists(inference) || !File.Exists(extractor))
+            throw new FileNotFoundException("The native engine, inference host, or IFilter helper is missing. Extract the complete application package.");
         Directory.CreateDirectory(dataDirectory);
-        var start = new ProcessStartInfo(python)
+        var start = new ProcessStartInfo(engine)
         {
             UseShellExecute = false,
             CreateNoWindow = true,
@@ -75,12 +77,10 @@ public sealed class EngineClient : IAsyncDisposable
         };
         foreach (string argument in new[]
         {
-            "-u", Path.Combine(appDirectory, "engine", "worker.py"),
-            "--data-dir", dataDirectory, "--model", model, "--extractor", extractor, "--app-dir", appDirectory
+            "--data-dir", dataDirectory, "--model", model, "--extractor", extractor,
+            "--inference", inference, "--app-dir", appDirectory
         })
             start.ArgumentList.Add(argument);
-        start.Environment["PYTHONUTF8"] = "1";
-        start.Environment["HF_HUB_DISABLE_TELEMETRY"] = "1";
         process = Process.Start(start) ?? throw new InvalidOperationException("Could not start the local indexing engine.");
         try
         {
@@ -253,7 +253,7 @@ public sealed class EngineClient : IAsyncDisposable
         writeLock.Dispose();
     }
 
-    private sealed record RuntimeConfiguration(string Python, string Model, string Extractor);
+    private sealed record RuntimeConfiguration(string Engine, string Inference, string Model, string Extractor);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct BasicLimitInformation

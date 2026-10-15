@@ -17,19 +17,22 @@ concurrency:
 jobs:
   build:
     name: Build ${{ matrix.runtime }}
-    runs-on: windows-2025
-    timeout-minutes: 45
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        runtime: [win-x64, win-arm64]
+        include:
+          - runtime: win-x64
+            runner: windows-2025
+          - runtime: win-arm64
+            runner: windows-11-arm
     defaults:
       run:
         shell: pwsh
     env:
       DOTNET_CLI_TELEMETRY_OPTOUT: '1'
-      HF_HUB_DISABLE_TELEMETRY: '1'
-      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+      NATIVE_MODEL_BASE_URI: ${{ vars.NATIVE_MODEL_BASE_URI }}
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -40,12 +43,6 @@ jobs:
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: '10.0.x'
-
-      - name: Set up bootstrap Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.11'
-          architecture: x64
 
       - name: Resolve and validate version
         id: version
@@ -58,13 +55,20 @@ jobs:
           if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -cne "v$version") {
             throw "Release tag must match Directory.Build.props: v$version."
           }
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and -not $env:NATIVE_MODEL_BASE_URI) {
+            throw 'Tagged native releases require an approved NATIVE_MODEL_BASE_URI for model parity validation.'
+          }
           "value=$version" >> $env:GITHUB_OUTPUT
 
-      - name: Provision private runtime without the model
+      - name: Build pinned native dependencies and utilities
         run: .\Setup.ps1 -SkipModel
 
-      - name: Run engine and packaging regressions
+      - name: Run native engine and headless UI regressions
         run: .\tests\RunChecks.ps1
+
+      - name: Verify locked-output publication safety
+        if: matrix.runtime == 'win-x64'
+        run: .\tests\PublishSafety.ps1 -RuntimeIdentifier win-x64
 
       - name: Check .NET build and formatting
         run: |
@@ -73,10 +77,16 @@ jobs:
           dotnet format .\FuzzyFindAnything.sln --no-restore --verify-no-changes --verbosity quiet
           if ($LASTEXITCODE -ne 0) { throw 'Formatting checks failed.' }
 
-      - name: Run headless UI and settings checks
+      - name: Acquire approved native model and validate parity
+        if: env.NATIVE_MODEL_BASE_URI != ''
         run: |
-          dotnet run --project .\tests\FuzzyFindAnything.HeadlessTests\FuzzyFindAnything.HeadlessTests.csproj -c Release -r win-x64 -p:PlatformTarget=x64 -p:SelfContained=true -- $env:GITHUB_WORKSPACE
-          if ($LASTEXITCODE -ne 0) { throw 'Headless UI/settings checks failed.' }
+          .\Get-Model.ps1 -BaseUri $env:NATIVE_MODEL_BASE_URI
+          $runtime = '${{ matrix.runtime }}'
+          $platform = if ($runtime -eq 'win-arm64') { 'ARM64' } else { 'x64' }
+          dotnet run --project .\tests\FuzzyFindAnything.NativeTests\FuzzyFindAnything.NativeTests.csproj -c Release `
+            -r $runtime "-p:PlatformTarget=$platform" -p:SelfContained=true -- product-parity `
+            .\models\embeddinggemma-2-onnx .\tests\Fixtures ".\.test-data\parity-$runtime"
+          if ($LASTEXITCODE -ne 0) { throw 'Native model parity failed.' }
 
       - name: Create relocatable package
         env:
@@ -90,7 +100,7 @@ jobs:
           RELEASE_RUNTIME: ${{ matrix.runtime }}
         run: |
           $archive = ".\artifacts\releases\FuzzyFindAnything-v$env:RELEASE_VERSION-$env:RELEASE_RUNTIME.zip"
-          & .\.runtime\python.exe .\tools\verify_release.py --archive $archive --runtime-id $env:RELEASE_RUNTIME --version $env:RELEASE_VERSION --smoke
+          & .\artifacts\tools\FuzzyFindAnything.Tools.exe verify-release --archive $archive --runtime-id $env:RELEASE_RUNTIME --version $env:RELEASE_VERSION --smoke
           if ($LASTEXITCODE -ne 0) { throw 'Relocated runtime verification failed.' }
 
       - name: Upload packages and checksums
@@ -135,15 +145,19 @@ jobs:
           ## Download and run
 
           Choose **win-x64** for Intel/AMD or **win-arm64** for Windows on ARM.
-          Extract the complete ZIP, run the included **Get-Model.ps1**, then open
-          **FuzzyFindAnything.exe**. No separate Python or .NET installation is required.
+          Extract the complete ZIP and provision the separately approved
+          **embeddinggemma-2-onnx-v1** model bundle using **Get-Model.ps1**.
+          Then open **FuzzyFindAnything.exe**. This application is Python-free;
+          .NET and native runtimes are included.
 
-          The model is downloaded separately (approximately 1.5 GB plus configuration).
+          Native ONNX model assets are approximately 1.8 GB uncompressed.
+          Use the approved bundle/base URI, not the earlier safetensors layout.
           Packages are unsigned. Check the matching SHA-256 file and follow your
           organization's application policy.
 
-          [Quickstart](https://github.com/sumanthewhiz/FuzzyFindAnything/blob/main/QUICKSTART.md)
-          | [Architecture and limitations](https://github.com/sumanthewhiz/FuzzyFindAnything/blob/main/docs/ARCHITECTURE.md)
+          See the included QUICKSTART.md and docs/MIGRATION.md before upgrading.
+          ARM64 UI and inference are native; the DiskANN coordinator and IFilter
+          helper deliberately use x64 compatibility.
 
           This release contains the application/runtime only, not personal indexes,
           folder configuration, or model weights. See bundled notices for component
