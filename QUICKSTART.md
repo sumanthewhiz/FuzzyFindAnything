@@ -2,7 +2,7 @@
 
 **Download the native application, provision its model, and search a small folder.**
 
-This guide describes the Python-free **1.1.0 development line**, not the unchanged v1.0.0 release. A native package needs no separate Python, .NET, compiler or package manager.
+Release packages include the .NET and native runtimes. No separate Python, .NET, compiler or package manager is required.
 
 [Project](README.md) · [Architecture](docs/ARCHITECTURE.md) · [Existing-user migration](docs/MIGRATION.md)
 
@@ -21,9 +21,9 @@ The ARM64 package runs the UI and model inference natively. Its DiskANN coordina
 
 ## 1. Download the right package
 
-For native previews, open **[Build and release](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml?query=branch%3Adev)**, select a successful **dev** run, and download the appropriate artifact. Actions downloads require GitHub sign-in and expire.
+Open **[Build and release](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml?query=branch%3Amain)**, select a successful **main** run for version **1.1.0**, and download the appropriate artifact. Actions downloads require GitHub sign-in and expire.
 
-When a native tagged release is available, use its assets on the [Releases page](https://github.com/sumanthewhiz/FuzzyFindAnything/releases). **v1.0.0 is not Python-free.**
+Published versioned downloads are also listed on the [Releases page](https://github.com/sumanthewhiz/FuzzyFindAnything/releases). Use the application ZIP and quickstart belonging to the same version.
 
 | Your PC | Application ZIP |
 |---|---|
@@ -50,7 +50,7 @@ Use the actual version/architecture. Packages are unsigned; verify their origin 
 
 The application uses the separately packaged **`embeddinggemma-2-onnx-v1`** export of `google/embeddinggemma-2`. The original Hugging Face `model.safetensors` file is **not** a substitute.
 
-**A public ONNX hosting URL has not been configured in this revision.** Obtain the approved native model bundle from the maintainer or your organization's artifact channel. The repository contains its immutable [file manifest](https://github.com/sumanthewhiz/FuzzyFindAnything/blob/dev/model-assets/embeddinggemma-2.json), also included as `model-manifest.json` in application packages, not the approximately 1.8 GB of model payload. End users do not export or convert the model.
+**A public ONNX hosting URL is not configured by default.** Obtain the approved native model bundle from the maintainer or your organization's artifact channel. The repository contains its immutable [file manifest](https://github.com/sumanthewhiz/FuzzyFindAnything/blob/main/model-assets/embeddinggemma-2.json), also included as `model-manifest.json` in application packages, not the approximately 1.8 GB of model payload. End users do not export or convert the model.
 
 Extract the bundle into a separate directory containing these eight files:
 
@@ -141,7 +141,7 @@ The catalog contains paths, snippets and embeddings. Logs can contain filenames 
 
 | Problem | Action |
 |---|---|
-| No native application ZIP | Use a completed dev Actions run or a native tagged release, not a source-code archive or v1.0.0 |
+| No application ZIP | Use a successful main build's artifact or the matching versioned release, not GitHub's source-code archive |
 | Missing runtime configuration/DLL | Re-extract the entire package; its native runtime folders must remain together |
 | Missing or mismatched model asset | Use the approved ONNX bundle and rerun `Get-Model.ps1 -VerifyOnly` |
 | Model asset cannot be replaced | Quit applications using that model; check destination permissions |

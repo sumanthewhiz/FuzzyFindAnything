@@ -2,21 +2,19 @@
 
 **Find documents, source code and images by meaning, on your Windows PC.**
 
-[![Build and release](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml/badge.svg?branch=dev)](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml)
+[![Build and release](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml)
 ![Windows 11](https://img.shields.io/badge/platform-Windows%2011-0078D4)
 ![.NET 10](https://img.shields.io/badge/runtime-.NET%2010-512BD4)
 
 [**Quickstart**](QUICKSTART.md) ·
-[**Native builds**](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml?query=branch%3Adev) ·
+[**Download builds**](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml?query=branch%3Amain) ·
 [Architecture](docs/ARCHITECTURE.md) ·
 [Upgrade and rollback](docs/MIGRATION.md) ·
 [Report an issue](https://github.com/sumanthewhiz/FuzzyFindAnything/issues)
 
 Fuzzy Find Anything is a native WPF desktop application for finding files when you remember their contents rather than their names. Describe a topic, code behavior or image in natural language, search a persistent local vector index, and open matches in their registered Windows applications.
 
-**The `dev` line is Python-free.** The UI, coordinator, inference host, document helper, acquisition tools and tests use .NET and native Windows libraries. EmbeddingGemma 2 runs through ONNX Runtime; Microsoft DiskANN provides vector search through a native C ABI. There is no interpreter, embedded Python runtime or Python bootstrap step.
-
-> The published **v1.0.0** release is the earlier Python-backed application and is unchanged. Use a native `dev` build or a release explicitly identified as **1.1.0 or later**. Native ONNX model assets are a separate download; see the [model provisioning instructions](QUICKSTART.md#2-provision-the-native-model).
+The application uses .NET and native Windows libraries, with ONNX Runtime for local EmbeddingGemma 2 inference and Microsoft DiskANN for vector search. Model assets are acquired separately; see the [model provisioning instructions](QUICKSTART.md#2-provision-the-native-model).
 
 ## What it provides
 
@@ -106,7 +104,7 @@ Process isolation is fault containment, not a security sandbox. Installed IFilte
 Use **PowerShell 7**, Windows 11, the **.NET 10 SDK**, Git and Visual Studio 2022 or later with **Desktop development with C++**, CMake and a Windows SDK. ARM64 packages also need the ARM64 C++ redistributable files supplied with the corresponding MSVC tools.
 
 ```powershell
-git clone --branch dev https://github.com/sumanthewhiz/FuzzyFindAnything.git
+git clone --branch main https://github.com/sumanthewhiz/FuzzyFindAnything.git
 Set-Location .\FuzzyFindAnything
 .\Setup.ps1 -SkipModel
 .\Get-Model.ps1 -SourceDirectory 'D:\ApprovedModels\embeddinggemma-2-onnx-v1'
@@ -126,7 +124,7 @@ Setup builds the pinned DiskANN source and native utilities; NuGet restores mana
 
 The [build workflow](.github/workflows/build.yml) produces self-contained architecture-specific ZIPs and SHA-256 sidecars. Release verification checks the complete file inventory, architecture boundaries, relative runtime paths, model/user-data exclusion, and absence of interpreter payloads. Relocated native smoke tests run with Python absent from `PATH`.
 
-Pull requests and branch builds produce temporary Actions artifacts. A matching version tag publishes release downloads; a `dev` push does not modify `main` or publish a stable release. Model bundles are prepared separately and are **not automatically uploaded**.
+Pull requests and branch builds produce temporary Actions artifacts. A matching version tag publishes release downloads. Model bundles are prepared separately and are **not automatically uploaded**.
 
 Packages are unsigned. Checksums detect altered downloads but do not replace code signing or publisher verification.
 

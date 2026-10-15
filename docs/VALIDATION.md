@@ -2,6 +2,20 @@
 
 [Overview](../README.md) · [Architecture](ARCHITECTURE.md) · [Migration](MIGRATION.md)
 
+## Release 1.1.0 acceptance
+
+Version **1.1.0** was rebuilt from `main` after consolidating the application changes. The runtime, native bridge, model contract and build implementation match the validated native baseline at `33c3635`; this promotion changes release metadata and documentation, not indexing behavior.
+
+Fresh acceptance covered:
+
+- A clean native DiskANN build, the .NET solution, formatting, workflow lint, native core regressions and headless UI/settings checks.
+- Both self-contained release packages, their complete checksum inventories, PE architecture boundaries and relocated runtime smoke tests.
+- The full numerical matrix on each architecture: 40 embedding cases, 250 tokenizer cases, 16 chunk/decode fixtures, text batches through eight inputs and two-image scheduling.
+- Real document/code/image search, installed IFilters, live updates and abrupt-exit recovery in each extracted package. Both retained eight committed passages and computed only the remaining 39.
+- Model acquisition/verification and the complete private-desktop UI suite, including both themes, gallery thumbnails, clearing, folder management, logging, saved preferences and window lifecycle.
+
+These runs used isolated data directories and did not reset or launch against the existing production index. Detailed machine-readable results are retained in the release workspace's ignored `.test-data` directory. The sections below describe the acceptance contract and prior migration evidence.
+
 ## Acceptance layers
 
 Validation uses temporary catalogs and synthetic fixtures. It does not launch the production deployment, clear configured folders or reset the live index.
@@ -103,14 +117,14 @@ These are workload-specific measurements, not guarantees or a controlled speedup
 
 ### Controlled warm text workload
 
-A separate sequential comparison used the same 18 source files, one warmed model, six eligible cores and six model compute threads on the same host. The earlier `dev` implementation was run read-only with temporary catalogs as an engineering reference, not as a native-product dependency.
+A separate sequential comparison used the same 18 source files, one warmed model, six eligible cores and six model compute threads on the same host. The earlier Python-backed implementation at commit `db527d1` was run read-only with temporary catalogs as an engineering reference, not as a native-product dependency.
 
 | Implementation | One file pipeline | Six file pipelines |
 |---|---:|---:|
-| Reviewed Python-backed `dev` | 12.437 s | 7.875 s |
+| Python-backed baseline (`db527d1`) | 12.437 s | 7.875 s |
 | Native, cooperative ONNX workers | 4.556 s | 3.571 s |
 
-The native six-pipeline run processed three batches of six, reached six active files and was approximately **2.2x faster** than the reviewed dev six-pipeline run on this workload. Before disabling idle ONNX spin waits, the native result was slower; the accepted setting removes that shared-core contention. This does not imply the same speedup for image or workbook workloads.
+The native six-pipeline run processed three batches of six, reached six active files and was approximately **2.2x faster** than the earlier six-pipeline baseline on this workload. Before disabling idle ONNX spin waits, the native result was slower; the accepted setting removes that shared-core contention. This does not imply the same speedup for image or workbook workloads.
 
 The native benchmark captured its process/module tree: affinity mask `0x3f` throughout, no Python modules/processes, and approximately **1,595 MiB peak working set** for the inference process. The 3 GiB-per-model planning estimate therefore remains conservative for this measured text workload; larger batches and images can use more.
 

@@ -4,7 +4,7 @@
 
 ## Compatibility policy
 
-The native application retains the reviewed `dev` model fingerprint, schema-4 catalog, folder ownership, file/vector identifiers, prepared passages and committed embedding batches. Tokenization, chunk decoding, embeddings and retrieval have explicit parity gates; matching dimensions alone is not treated as compatibility proof.
+The application retains the established model fingerprint, schema-4 catalog, folder ownership, file/vector identifiers, prepared passages and committed embedding batches. Tokenization, chunk decoding, embeddings and retrieval have explicit parity gates; matching dimensions alone is not treated as compatibility proof.
 
 Native graph loading is attempted only after checksums, model identity and generation agree. A missing, incompatible or damaged graph is reconstructed from SQLite vectors without re-embedding completed content. The native graph format is not a reason to clear the catalog or folder list.
 
@@ -62,4 +62,4 @@ Native writes should not be assumed backward-compatible with every older binary,
 
 Application ZIPs contain the native runtimes but no weights or personal data. The approved native model bundle is separately checksummed. Public hosting/publishing of that bundle is not automatic and requires the owner's release-channel approval.
 
-The existing `main` branch and v1.0.0 release are not changed by developing or building this native line.
+Use versioned package checksums and complete data backups to identify a rollback point. Branch names alone do not establish binary or catalog compatibility.

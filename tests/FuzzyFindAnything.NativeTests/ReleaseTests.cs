@@ -11,7 +11,7 @@ namespace FuzzyFindAnything.NativeTests;
 
 internal static class ReleaseTests
 {
-    private const string Version = "1.1.0-dev.1";
+    private const string Version = "1.1.0";
     private static readonly string[] Names =
     [
         "FuzzyFindAnything.exe", "FuzzyFindAnything.dll", "FuzzyFindAnything.runtimeconfig.json",
