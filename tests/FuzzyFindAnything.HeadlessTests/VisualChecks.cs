@@ -1,5 +1,6 @@
 using System.IO;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Markup;
@@ -59,14 +60,37 @@ internal static class VisualChecks
             TextElement.SetFontSize(grid, 14);
             TextElement.SetForeground(grid, (Brush)application.FindResource("Ink"));
             grid.DataContext = model;
-            grid.Measure(new Size(1600, 950)); grid.Arrange(new Rect(0, 0, 1600, 950)); grid.UpdateLayout();
-            Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.Render);
-            var bitmap = new RenderTargetBitmap(1600, 950, 96, 96, PixelFormats.Pbgra32);
-            bitmap.Render(grid);
-            var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
-            using var stream = File.Create(Path.Combine(output, $"search-{theme.ToLowerInvariant()}.png"));
-            encoder.Save(stream);
+            Save(grid, Path.Combine(output, $"search-{theme.ToLowerInvariant()}.png"));
+
+            var tabs = grid.Children.OfType<TabControl>().Single();
+            var models = tabs.Items.OfType<TabItem>().Single(tab => AutomationProperties.GetAutomationId(tab) == "ModelsTab");
+            tabs.SelectedItem = models;
+            Save(grid, Path.Combine(output, $"models-{theme.ToLowerInvariant()}.png"));
+            var header = models.Header as StackPanel;
+            var icon = header?.Children.OfType<TextBlock>().FirstOrDefault();
+            if (icon is null || icon.Text.Length != 1 || icon.Text[0] is < '\uE000' or > '\uF8FF' ||
+                ((SolidColorBrush)icon.Foreground).Color != ((SolidColorBrush)models.Foreground).Color)
+                throw new InvalidOperationException($"The model tab needs a visible, theme-aware icon in {theme} mode.");
+            var panel = (StackPanel)((ScrollViewer)models.Content).Content;
+            var card = panel.Children.OfType<Border>().First();
+            var messages = ((StackPanel)card.Child).Children.OfType<TextBlock>().TakeLast(3).ToArray();
+            if (messages.Select(message => ((SolidColorBrush)message.Foreground).Color).Distinct().Count() != 1 ||
+                messages.Select(message => message.FontSize).Distinct().Count() != 1 ||
+                messages.Select(message => message.FontFamily.Source).Distinct().Count() != 1)
+                throw new InvalidOperationException($"Model guidance typography differs in {theme} mode.");
+            Console.WriteLine($"PASS model tab icon and matching guidance typography in {theme} mode.");
         }
         Console.WriteLine("Rendered the actual XAML/resources with synthetic data; no application window, engine or live settings were started.");
+    }
+
+    private static void Save(Grid grid, string path)
+    {
+        grid.Measure(new Size(1600, 950)); grid.Arrange(new Rect(0, 0, 1600, 950)); grid.UpdateLayout();
+        Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.Render);
+        var bitmap = new RenderTargetBitmap(1600, 950, 96, 96, PixelFormats.Pbgra32);
+        bitmap.Render(grid);
+        var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
+        using var stream = File.Create(path);
+        encoder.Save(stream);
     }
 }

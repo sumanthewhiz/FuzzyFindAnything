@@ -408,6 +408,23 @@ try {
     }
 
     Select-Tab 'ModelsTab'
+    if ($Enhanced) {
+        if ((Find-Id 'ModelsTab').Current.Name -ne 'Model configuration') { throw 'The model tab lost its accessible name.' }
+        foreach ($theme in @('dark','light')) {
+            Wait-Check { (Find-Id 'ThemeToggle').Current.ItemStatus -ieq $theme } 'model tab theme'
+            $guidance = @($window.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Text))) |
+                Where-Object { $_.Current.Name -like 'Matching model assignments*' -or
+                    $_.Current.Name -like 'A model must provide*' -or $_.Current.AutomationId -eq 'ModelConfigurationStatus' } |
+                Sort-Object { $_.Current.BoundingRectangle.Top })
+            if ($guidance.Count -ne 3) { throw 'The model configuration guidance is incomplete.' }
+            $firstGap = $guidance[1].Current.BoundingRectangle.Top - $guidance[0].Current.BoundingRectangle.Bottom
+            $secondGap = $guidance[2].Current.BoundingRectangle.Top - $guidance[1].Current.BoundingRectangle.Bottom
+            if ($firstGap -le 0 -or [Math]::Abs($firstGap - $secondGap) -gt 1) { throw "Model guidance spacing is inconsistent in $theme mode." }
+            Toggle-Control 'ThemeToggle'
+        }
+        Write-Output 'PASS model tab accessibility and uniform guidance spacing in both themes'
+    }
     $defaultModel = 'https://huggingface.co/google/embeddinggemma-2'
     foreach ($id in @('TextModelUrl','CodeModelUrl','ImageModelUrl')) {
         $value = [System.Windows.Automation.ValuePattern](Find-Id $id).GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
