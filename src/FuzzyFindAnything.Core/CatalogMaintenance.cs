@@ -60,7 +60,7 @@ public static class CatalogMaintenance
                 DELETE FROM vectors;
                 DELETE FROM files;
                 DELETE FROM sqlite_sequence WHERE name IN ('files','vectors','index_jobs');
-                DELETE FROM settings WHERE key LIKE 'usn:%' OR key LIKE 'scan_error:%' OR key='last_refreshed';
+                DELETE FROM settings WHERE key LIKE 'usn:%' OR key LIKE 'scan_error:%' OR key LIKE 'generation:%' OR key='last_refreshed';
                 UPDATE settings SET value=CAST(value AS INTEGER)+1 WHERE key='generation';
                 """;
             command.ExecuteNonQuery();
@@ -79,6 +79,14 @@ public static class CatalogMaintenance
             foreach (string snapshot in Directory.EnumerateDirectories(index))
                 if (Regex.IsMatch(Path.GetFileName(snapshot), "^snapshot-[0-9a-f]{32}$") && !FilePaths.IsNameSurrogate(snapshot))
                     Directory.Delete(snapshot, true);
+        }
+        string modelIndexes = Path.Combine(directory, "model-indexes");
+        if (Directory.Exists(modelIndexes))
+        {
+            if (FilePaths.IsNameSurrogate(modelIndexes)) throw new IOException("Model indexes are under a reparse link; cleanup was refused.");
+            foreach (string shard in Directory.EnumerateDirectories(modelIndexes))
+                if (Regex.IsMatch(Path.GetFileName(shard), "^[0-9a-f]{24}$") && !FilePaths.IsNameSurrogate(shard))
+                    Directory.Delete(shard, true);
         }
         return new(clearFolders ? 0 : folders.Count, clearFolders ? folders.Count : 0, backup, catalog);
     }

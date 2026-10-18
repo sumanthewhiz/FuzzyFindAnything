@@ -35,6 +35,11 @@ internal static class Program
                     ModelAssets.Verify(Path.GetFullPath(Required("--destination")),
                         (completed, total, file) => Console.WriteLine($"Verified {completed}/{total}: {file}"), cancellation.Token);
                     break;
+                case "prepare-hf-model":
+                    var models = new HuggingFaceModels(Path.GetFullPath(Required("--cache")), Path.GetFullPath(Required("--default-model")));
+                    var space = await models.ResolveAsync(Required("--url"), Console.Error.WriteLine, cancellation.Token);
+                    Console.WriteLine(JsonSerializer.Serialize(new { space, directory = models.DirectoryFor(space) }, Protocol.Json));
+                    break;
                 case "reset-index":
                     Console.WriteLine(JsonSerializer.Serialize(CatalogMaintenance.Reset(Required("--data-dir"),
                         options.ContainsKey("--clear-folders")), Protocol.Json));

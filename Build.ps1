@@ -50,6 +50,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'The native coordinator publish failed.' }
     dotnet publish (Join-Path $root 'src\FuzzyFindAnything.Inference\FuzzyFindAnything.Inference.csproj') -c Release -r $RuntimeIdentifier "-p:PlatformTarget=$uiArchitecture" @versionArguments --self-contained true -o (Join-Path $staging 'inference') --nologo
     if ($LASTEXITCODE -ne 0) { throw 'The native inference host publish failed.' }
+    dotnet publish (Join-Path $root 'src\FuzzyFindAnything.HuggingFaceInference\FuzzyFindAnything.HuggingFaceInference.csproj') -c Release -r $RuntimeIdentifier "-p:PlatformTarget=$uiArchitecture" @versionArguments --self-contained true -o (Join-Path $staging 'hf-inference') --nologo
+    if ($LASTEXITCODE -ne 0) { throw 'The compatible Hugging Face inference host publish failed.' }
     dotnet publish (Join-Path $root 'src\FuzzyFindAnything.Tools\FuzzyFindAnything.Tools.csproj') -c Release -r win-x64 -p:PlatformTarget=x64 @versionArguments --self-contained true -o (Join-Path $staging 'tools') --nologo
     if ($LASTEXITCODE -ne 0) { throw 'The model/maintenance tools publish failed.' }
     foreach ($directory in @('engine', 'tools')) {
@@ -60,6 +62,7 @@ try {
     foreach ($component in @(
         @{ Directory = ''; Architecture = $uiArchitecture.ToLowerInvariant() },
         @{ Directory = 'inference'; Architecture = $uiArchitecture.ToLowerInvariant() },
+        @{ Directory = 'hf-inference'; Architecture = $uiArchitecture.ToLowerInvariant() },
         @{ Directory = 'engine'; Architecture = 'x64' },
         @{ Directory = 'extractor'; Architecture = 'x64' },
         @{ Directory = 'tools'; Architecture = 'x64' }

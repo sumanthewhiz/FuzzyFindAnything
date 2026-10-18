@@ -1,6 +1,5 @@
 using System.Globalization;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using Microsoft.Data.Sqlite;
 
 namespace FuzzyFindAnything.Core;
@@ -12,15 +11,17 @@ public sealed class Catalog : IDisposable
     private SqliteTransaction? transaction;
     private readonly Action<string> log;
     private readonly Dictionary<string, string> pathKeys = new(StringComparer.OrdinalIgnoreCase);
-    private NativeIndex? index;
-    private Exception? graphError;
-    private int capacity, allocated;
-    private long checkpointGeneration = -1;
+    private readonly Dictionary<string, VectorShard> shards = [];
+    private Dictionary<string, EmbeddingSpace> routes = new(StringComparer.Ordinal)
+    { ["Document"] = EmbeddingSpace.Default, ["Code"] = EmbeddingSpace.Default, ["Image"] = EmbeddingSpace.Default };
     private readonly int threads;
     private bool disposed;
     public string DirectoryPath { get; }
     public string IndexDirectory { get; }
-    public string Recovery { get; private set; } = "";
+    public string Recovery => string.Join(" ", shards.Values.Select(shard => shard.Recovery).Where(value => value.Length > 0));
+    public IReadOnlyList<EmbeddingSpace> Spaces { get { lock (gate) return routes.Values.DistinctBy(space => space.Key).ToArray(); } }
+    public ModelSelection Selection { get { lock (gate) return new(routes["Document"].ModelUrl, routes["Code"].ModelUrl, routes["Image"].ModelUrl); } }
+    public EmbeddingSpace SpaceFor(string kind) { lock (gate) return routes[kind]; }
 
     public Catalog(string directory, int nativeThreads, Action<string>? diagnostic = null)
     {
@@ -41,6 +42,12 @@ public sealed class Catalog : IDisposable
             database.Open();
             Execute("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;");
             InitializeSchema();
+            if (Setting("embedding_routes") is { } saved)
+            {
+                routes = JsonSerializer.Deserialize<Dictionary<string, EmbeddingSpace>>(saved, Protocol.Json)
+                    ?? throw new InvalidDataException("Invalid saved model configuration.");
+                ValidateRoutes(routes);
+            }
             foreach (var row in Query("SELECT path,path_key FROM files UNION SELECT path,path_key FROM index_jobs",
                          reader => (Path: reader.GetString(0), Key: reader.GetString(1))))
                 pathKeys[row.Path] = row.Key;
@@ -49,11 +56,11 @@ public sealed class Catalog : IDisposable
                 Execute("UPDATE index_jobs SET state='pending',scheduled=0 WHERE state='active'");
                 Execute("DELETE FROM index_jobs WHERE NOT EXISTS(SELECT 1 FROM job_folders WHERE job_id=index_jobs.id)");
             });
-            Restore();
+            foreach (var space in Spaces) shards.Add(space.Key, OpenShard(space));
         }
         catch
         {
-            index?.Dispose();
+            foreach (var shard in shards.Values) shard.Dispose();
             database.Dispose();
             throw;
         }
@@ -128,7 +135,7 @@ public sealed class Catalog : IDisposable
             INSERT OR IGNORE INTO settings VALUES('schema_version','1');
             """);
         string version = Setting("schema_version")!;
-        if (version is not ("1" or "2" or "3" or "4"))
+        if (version is not ("1" or "2" or "3" or "4" or "5"))
             throw new InvalidDataException($"Unsupported catalog schema: {version}.");
         string? model = Setting("model");
         if (model is not null && model != ModelContract.Fingerprint)
@@ -143,7 +150,7 @@ public sealed class Catalog : IDisposable
             })
                 if (!columns.Contains(column.Name)) Execute($"ALTER TABLE files ADD COLUMN {column.Name} {column.Definition}");
             if (version is "1" or "2") Execute("UPDATE files SET retry_after=0 WHERE error IS NOT NULL");
-            SetSetting("schema_version", "4");
+            SetSetting("schema_version", version == "5" ? "5" : "4");
             SetSetting("model", ModelContract.Fingerprint);
         });
     }
@@ -155,9 +162,12 @@ public sealed class Catalog : IDisposable
     public void SetSetting(string key, string value) => Transaction(() =>
         Execute("INSERT INTO settings VALUES($p0,$p1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", key, value));
     private long Generation => long.Parse(Setting("generation")!, CultureInfo.InvariantCulture);
-    private void Bump()
+    private void Bump(IEnumerable<EmbeddingSpace> changed)
     {
+        var generations = changed.DistinctBy(space => space.Key).ToDictionary(space => space.Key, GenerationFor);
         Execute("UPDATE settings SET value=CAST(value AS INTEGER)+1 WHERE key='generation'");
+        if (Setting("schema_version") == "5")
+            foreach (var pair in generations) SetSetting("generation:" + pair.Key, (pair.Value + 1).ToString(CultureInfo.InvariantCulture));
         SetSetting("last_refreshed", DateTimeOffset.UtcNow.ToString("O"));
     }
     private string Key(string path) => pathKeys.TryGetValue(path, out string? value) ? value : FilePaths.Key(path);
@@ -292,11 +302,11 @@ public sealed class Catalog : IDisposable
     public bool SaveBatch(IndexJob job, IReadOnlyList<Passage> passages, IReadOnlyList<float[]> vectors)
     {
         if (passages.Count != vectors.Count) throw new InvalidDataException("Incomplete inference response.");
-        var bytes = vectors.Select(vector => ModelContract.Bytes(ModelContract.Normalize(vector))).ToArray();
         bool result = false;
         Transaction(() =>
         {
             if (!IsCurrent(job)) return;
+            var bytes = vectors.Select(vector => ModelContract.Bytes(routes[job.Kind].Normalize(vector))).ToArray();
             for (int i = 0; i < passages.Count; i++)
                 Execute("UPDATE job_passages SET embedding=$p0 WHERE job_id=$p1 AND ordinal=$p2 AND embedding IS NULL",
                     bytes[i], job.Id, passages[i].Ordinal);
@@ -323,7 +333,7 @@ public sealed class Catalog : IDisposable
             if (rows.Count == 0 || rows.Any(row => row.Bytes is null)) throw new InvalidDataException("Cannot publish an incomplete file.");
             string? warning = Query("SELECT warning FROM index_jobs WHERE id=$p0", row => NullableString(row, 0), job.Id)[0];
             return Publish(job, rows.Select(row => (FilePaths.ScalarPrefix(job.Kind == "Code" ? row.Text.Trim() : FilePaths.CollapseWhitespace(row.Text), 400),
-                ModelContract.Vector(row.Bytes!))).ToArray(), warning, null, null, null, 0);
+                routes[job.Kind].Vector(row.Bytes!))).ToArray(), warning, null, null, null, 0);
         }
     }
     public bool Fail(IndexJob job, string error, string code, bool retryable, double elapsedMs)
@@ -341,7 +351,9 @@ public sealed class Catalog : IDisposable
         if (!IsCurrent(job)) return false;
         var owners = Owners(job);
         if (owners.Count == 0) return false;
-        var deleted = new List<uint>();
+        var space = routes[job.Kind];
+        var oldSpace = FindFile(job.Path) is { } old ? routes[old.Kind] : space;
+        var deleted = new List<RemovedVector>();
         var inserted = new List<(uint Id, float[] Vector)>();
         Transaction(() =>
         {
@@ -355,16 +367,16 @@ public sealed class Catalog : IDisposable
                 job.Kind, error, errorCode, retryAt, attempts, warning, job.ContentHash);
             long fileId = Scalar<long>("SELECT id FROM files WHERE path_key=$p0", job.PathKey);
             foreach (int owner in owners) Execute("INSERT OR IGNORE INTO folder_files VALUES($p0,$p1)", owner, fileId);
-            deleted = Query("SELECT id FROM vectors WHERE file_id=$p0", row => checked((uint)row.GetInt64(0)), fileId);
+            deleted = Query("SELECT id FROM vectors WHERE file_id=$p0", row => new RemovedVector(checked((uint)row.GetInt64(0)), oldSpace), fileId);
             Execute("DELETE FROM vectors WHERE file_id=$p0", fileId);
             for (int ordinal = 0; ordinal < chunks.Count; ordinal++)
             {
-                float[] vector = ModelContract.Normalize(chunks[ordinal].Vector);
+                float[] vector = space.Normalize(chunks[ordinal].Vector);
                 Execute("INSERT INTO vectors(file_id,ordinal,snippet,embedding) VALUES($p0,$p1,$p2,$p3)",
                     fileId, ordinal, chunks[ordinal].Text, ModelContract.Bytes(vector));
                 inserted.Add((checked((uint)Scalar<long>("SELECT last_insert_rowid()")), vector));
             }
-            if (deleted.Count != 0 || inserted.Count != 0) Bump();
+            if (deleted.Count != 0 || inserted.Count != 0) Bump(deleted.Select(value => value.Space).Append(space));
             if (retryAt is null)
                 Execute("DELETE FROM index_jobs WHERE id=$p0 AND revision=$p1", job.Id, job.Revision);
             else
@@ -372,7 +384,7 @@ public sealed class Catalog : IDisposable
                     attempts, retryAt, FilePaths.UnixNow, elapsedMs, job.Id, job.Revision);
         });
         pathKeys[job.Path] = job.PathKey;
-        Apply(deleted, inserted);
+        Apply(deleted, inserted, space);
         return true;
     }
 
@@ -381,13 +393,13 @@ public sealed class Catalog : IDisposable
         lock (gate)
         {
             string targetKey = Key(path);
-            var deleted = new List<uint>();
+            var deleted = new List<RemovedVector>();
             Transaction(() =>
             {
-                foreach (var file in Query("SELECT id,path,path_key FROM files", row => (Id: row.GetInt64(0), Path: row.GetString(1), Key: row.GetString(2))))
+                foreach (var file in Query("SELECT id,path,path_key,kind FROM files", row => (Id: row.GetInt64(0), Path: row.GetString(1), Key: row.GetString(2), Kind: row.GetString(3))))
                 {
                     if (!file.Key.Equals(targetKey, StringComparison.Ordinal) && !(recursive && FilePaths.Within(file.Path, path))) continue;
-                    deleted.AddRange(Query("SELECT id FROM vectors WHERE file_id=$p0", row => checked((uint)row.GetInt64(0)), file.Id));
+                    deleted.AddRange(Query("SELECT id FROM vectors WHERE file_id=$p0", row => new RemovedVector(checked((uint)row.GetInt64(0)), routes[file.Kind]), file.Id));
                     Execute("DELETE FROM files WHERE id=$p0", file.Id);
                     pathKeys.Remove(file.Path);
                 }
@@ -397,9 +409,9 @@ public sealed class Catalog : IDisposable
                         Execute("DELETE FROM index_jobs WHERE id=$p0", job.Id);
                         pathKeys.Remove(job.Path);
                     }
-                if (deleted.Count > 0) Bump();
+                if (deleted.Count > 0) Bump(deleted.Select(value => value.Space));
             });
-            Apply(deleted, []);
+            Apply(deleted, [], null);
         }
     }
 
@@ -407,7 +419,7 @@ public sealed class Catalog : IDisposable
     {
         lock (gate)
         {
-            var deleted = new List<uint>();
+            var deleted = new List<RemovedVector>();
             Transaction(() =>
             {
                 foreach (int id in ids) Execute("DELETE FROM folders WHERE id=$p0", id);
@@ -419,12 +431,12 @@ public sealed class Catalog : IDisposable
                     foreach (var folder in remaining.Where(folder => FilePaths.Within(job.Path, folder.Path)))
                         Execute("INSERT OR IGNORE INTO job_folders VALUES($p0,$p1)", job.Id, folder.Id);
                 Execute("DELETE FROM index_jobs WHERE NOT EXISTS(SELECT 1 FROM job_folders WHERE job_id=index_jobs.id)");
-                deleted = Query("SELECT v.id FROM vectors v WHERE NOT EXISTS(SELECT 1 FROM folder_files ff WHERE ff.file_id=v.file_id)",
-                    row => checked((uint)row.GetInt64(0)));
+                deleted = Query("SELECT v.id,f.kind FROM vectors v JOIN files f ON f.id=v.file_id WHERE NOT EXISTS(SELECT 1 FROM folder_files ff WHERE ff.file_id=v.file_id)",
+                    row => new RemovedVector(checked((uint)row.GetInt64(0)), routes[row.GetString(1)]));
                 Execute("DELETE FROM files WHERE NOT EXISTS(SELECT 1 FROM folder_files WHERE file_id=files.id)");
-                if (deleted.Count > 0) Bump();
+                if (deleted.Count > 0) Bump(deleted.Select(value => value.Space));
             });
-            Apply(deleted, []);
+            Apply(deleted, [], null);
             Checkpoint();
         }
     }
@@ -494,7 +506,7 @@ public sealed class Catalog : IDisposable
                 """, row => (Documents: row.GetInt64(0), Code: row.GetInt64(1), Images: row.GetInt64(2)))[0];
             long size = 0;
             foreach (string file in new[] { "catalog.sqlite3", "catalog.sqlite3-wal", "catalog.sqlite3-shm" }.Select(name => Path.Combine(DirectoryPath, name))
-                         .Concat(Directory.EnumerateFiles(IndexDirectory, "*", SearchOption.AllDirectories)))
+                         .Concat(shards.Values.SelectMany(shard => Directory.EnumerateFiles(shard.DirectoryPath, "*", SearchOption.AllDirectories))))
             {
                 try { size += new FileInfo(file).Length; }
                 catch (FileNotFoundException) { }
@@ -503,30 +515,31 @@ public sealed class Catalog : IDisposable
                 counts.Documents, counts.Images, size, Setting("last_refreshed"), counts.Code);
         }
     }
-    public List<ResultFile> Search(float[] query, int limit, double threshold)
+    public List<ResultFile> Search(float[] query, int limit, double threshold, EmbeddingSpace? space = null)
     {
         if (limit is < 1 or > 100 || !double.IsFinite(threshold) || threshold is < 0 or > 1)
             throw new ArgumentException("Search limit must be 1-100 and similarity 0-1.");
-        query = ModelContract.Normalize(query);
+        space ??= EmbeddingSpace.Default;
+        query = space.Normalize(query);
         lock (gate)
         {
-            if (graphError is not null) throw new NativeIndexException("The native graph is unavailable; restart to recover it from committed vectors. " + graphError.Message);
-            int count = Scalar<int>("SELECT COUNT(*) FROM vectors");
+            if (!shards.TryGetValue(space.Key, out var shard)) return [];
+            int count = Scalar<int>($"SELECT COUNT(*) FROM vectors v JOIN files f ON f.id=v.file_id WHERE f.kind IN ({KindsSql(space)})");
             if (count == 0) return [];
             int k = Math.Min(count, Math.Max(64, limit * 4));
             while (true)
             {
                 var matches = new Dictionary<long, ResultFile>();
-                foreach (uint id in index!.Search(query, k))
+                foreach (uint id in shard.Search(query, k))
                 {
                     var records = Query("""
                         SELECT f.id,f.path,f.kind,f.size,f.mtime_ns,v.snippet,v.embedding FROM vectors v JOIN files f ON f.id=v.file_id
                         WHERE v.id=$p0 AND f.error IS NULL AND EXISTS(SELECT 1 FROM folder_files WHERE file_id=f.id)
                         """, row => (Id: row.GetInt64(0), Path: row.GetString(1), Kind: row.GetString(2), Size: row.GetInt64(3),
-                            Mtime: row.GetInt64(4), Snippet: row.GetString(5), Vector: ModelContract.Vector((byte[])row[6])), id);
+                            Mtime: row.GetInt64(4), Snippet: row.GetString(5), Vector: space.Vector((byte[])row[6])), id);
                     if (records.Count == 0) continue;
                     var record = records[0];
-                    if (!File.Exists(record.Path)) continue;
+                    if (!File.Exists(record.Path) || routes[record.Kind].Key != space.Key) continue;
                     double score = ModelContract.Similarity(query, record.Vector);
                     if (score < threshold || matches.TryGetValue(record.Id, out var old) && old.Score >= score) continue;
                     matches[record.Id] = new(record.Path, Path.GetFileName(record.Path), record.Kind, record.Size, record.Mtime, record.Snippet, score);
@@ -538,134 +551,101 @@ public sealed class Catalog : IDisposable
         }
     }
 
-    private List<(uint Id, float[] Vector)> Vectors() => Query("SELECT id,embedding FROM vectors ORDER BY id",
-        row => (checked((uint)row.GetInt64(0)), ModelContract.Vector((byte[])row[1])));
-    private void NewIndex(int count)
+    private sealed record RemovedVector(uint Id, EmbeddingSpace Space);
+    private long GenerationFor(EmbeddingSpace space) => Setting("schema_version") == "5"
+        ? long.Parse(Setting("generation:" + space.Key) ?? "0", CultureInfo.InvariantCulture) : Generation;
+    private string KindsSql(EmbeddingSpace space)
     {
-        int nextCapacity = CapacityFor(count);
-        var replacement = new NativeIndex(ModelContract.Dimensions, nextCapacity, threads);
-        index?.Dispose();
-        index = replacement;
-        capacity = nextCapacity;
-        allocated = 0;
+        string[] kinds = routes.Where(pair => pair.Value.Key == space.Key).Select(pair => "'" + pair.Key + "'").ToArray();
+        return kinds.Length == 0 ? "NULL" : string.Join(",", kinds);
     }
-    private static int CapacityFor(int count) =>
-        checked((int)Math.Max(128, System.Numerics.BitOperations.RoundUpToPowerOf2(checked((uint)Math.Max(1, checked(count * 2))))));
-    private void Rebuild()
+    private List<(uint Id, float[] Vector)> Vectors(EmbeddingSpace space) =>
+        Query($"SELECT v.id,v.embedding FROM vectors v JOIN files f ON f.id=v.file_id WHERE f.kind IN ({KindsSql(space)}) ORDER BY v.id",
+            row => (checked((uint)row.GetInt64(0)), space.Vector((byte[])row[1])));
+    private VectorShard OpenShard(EmbeddingSpace space) => new(
+        space == EmbeddingSpace.Default ? IndexDirectory : Path.Combine(DirectoryPath, "model-indexes", space.Key),
+        space, threads, () => Vectors(space), () => GenerationFor(space), log);
+    private void Apply(IReadOnlyList<RemovedVector> deleted, IReadOnlyList<(uint Id, float[] Vector)> inserted, EmbeddingSpace? destination)
     {
-        var vectors = Vectors();
-        int nextCapacity = CapacityFor(vectors.Count);
-        var replacement = new NativeIndex(ModelContract.Dimensions, nextCapacity, threads);
-        try { foreach (var vector in vectors) replacement.Insert(vector.Id, vector.Vector); }
-        catch { replacement.Dispose(); throw; }
-        index?.Dispose(); index = replacement; capacity = nextCapacity; allocated = vectors.Count; graphError = null;
+        foreach (string key in deleted.Select(value => value.Space.Key).Concat(destination is null ? [] : new[] { destination.Key }).Distinct())
+            shards[key].Apply(deleted.Where(value => value.Space.Key == key).Select(value => value.Id).ToArray(),
+                destination?.Key == key ? inserted : []);
     }
-    private void Apply(IReadOnlyList<uint> deleted, IReadOnlyList<(uint Id, float[] Vector)> inserted)
+    private static void ValidateRoutes(IReadOnlyDictionary<string, EmbeddingSpace> value)
     {
-        try
-        {
-            if (allocated + inserted.Count > capacity) { Rebuild(); return; }
-            foreach (uint id in deleted) index!.Delete(id);
-            foreach (var vector in inserted) { index!.Insert(vector.Id, vector.Vector); allocated++; }
-        }
-        catch (IOException error)
-        {
-            graphError = error;
-            log($"Native graph mutation failed; rebuilding from committed vectors: {error.Message}");
-            Rebuild();
-        }
+        if (value.Count != 3 || new[] { "Document", "Code", "Image" }.Any(kind => !value.ContainsKey(kind)))
+            throw new InvalidDataException("A model is required for documents, code and images.");
+        foreach (var space in value.Values) space.Validate();
+        if (!value["Image"].SupportsImages) throw new InvalidDataException("The selected image model cannot create image embeddings.");
+        if (value.Values.GroupBy(space => space.ModelUrl).Any(group => group.Select(space => space.Key).Distinct().Count() != 1))
+            throw new InvalidDataException("The same model URL must use the same pinned embedding space for every assigned type.");
     }
-    private void Restore()
+    public string[] ReconfigureModels(IReadOnlyDictionary<string, EmbeddingSpace> next, Action persistConfiguration, Action? configurationCommitted = null)
     {
-        string manifest = Path.Combine(IndexDirectory, "current.json");
-        if (File.Exists(manifest))
-        {
-            try
-            {
-                using var value = JsonDocument.Parse(File.ReadAllText(manifest));
-                var root = value.RootElement;
-                string name = root.GetProperty("snapshot").GetString()!;
-                if (!Regex.IsMatch(name, "^snapshot-[0-9a-f]{32}$")) throw new InvalidDataException("Invalid snapshot name.");
-                if (root.GetProperty("generation").GetInt64() != Generation || root.GetProperty("model").GetString() != ModelContract.Fingerprint)
-                    throw new InvalidDataException("Snapshot generation or model differs from committed state.");
-                string directory = Path.Combine(IndexDirectory, name);
-                foreach (var file in root.GetProperty("files").EnumerateObject())
-                {
-                    if (Path.GetFileName(file.Name) != file.Name || FilePaths.Hash(Path.Combine(directory, file.Name)) != file.Value.GetString())
-                        throw new InvalidDataException("Snapshot checksum mismatch.");
-                }
-                int count = Scalar<int>("SELECT COUNT(*) FROM vectors");
-                if (count > 0 && new[] { "ann", "ann.data", "ann.tags" }.Any(file => !root.GetProperty("files").TryGetProperty(file, out _)))
-                    throw new InvalidDataException("Snapshot files are incomplete.");
-                NewIndex(count);
-                if (count > 0) index!.Load(Path.Combine(directory, "ann"));
-                allocated = count;
-                checkpointGeneration = Generation;
-                return;
-            }
-            catch (Exception error) when (error is IOException or InvalidDataException or JsonException or KeyNotFoundException or InvalidOperationException)
-            {
-                Recovery = "Recovered DiskANN from durable vectors: " + error.Message;
-                log(Recovery);
-            }
-        }
-        Rebuild();
-    }
-
-    public void Checkpoint()
-    {
+        ValidateRoutes(next);
         lock (gate)
         {
-            long generation = Generation;
-            if (generation == checkpointGeneration) return;
-            string manifest = Path.Combine(IndexDirectory, "current.json");
-            string? previous = null;
-            if (File.Exists(manifest))
+            string[] changed = routes.Keys.Where(kind => routes[kind].Fingerprint != next[kind].Fingerprint).ToArray();
+            if (changed.Length == 0) return [];
+            var prepared = new Dictionary<string, VectorShard>();
+            try
             {
-                try { using var old = JsonDocument.Parse(File.ReadAllText(manifest)); previous = old.RootElement.GetProperty("snapshot").GetString(); }
-                catch (Exception error) when (error is IOException or JsonException or KeyNotFoundException)
-                { log("Previous manifest is unreadable; retaining its snapshot: " + error.Message); }
+                foreach (var space in next.Values.DistinctBy(value => value.Key))
+                    if (!shards.ContainsKey(space.Key)) prepared.Add(space.Key, OpenShard(space));
+                var deleted = Query("SELECT v.id,f.kind FROM vectors v JOIN files f ON f.id=v.file_id",
+                    row => (Id: checked((uint)row.GetInt64(0)), Kind: row.GetString(1)))
+                    .Where(row => changed.Contains(row.Kind)).Select(row => new RemovedVector(row.Id, routes[row.Kind])).ToArray();
+                Transaction(() =>
+                {
+                    foreach (var space in Spaces.Concat(next.Values).DistinctBy(value => value.Key))
+                        if (Setting("generation:" + space.Key) is null)
+                            SetSetting("generation:" + space.Key, (space == EmbeddingSpace.Default ? Generation : 0).ToString(CultureInfo.InvariantCulture));
+                    foreach (string kind in changed)
+                    {
+                        Execute("DELETE FROM index_jobs WHERE kind=$p0", kind);
+                        Execute("DELETE FROM files WHERE kind=$p0", kind);
+                    }
+                    SetSetting("schema_version", "5");
+                    SetSetting("embedding_routes", JsonSerializer.Serialize(next, Protocol.Json));
+                    Bump(changed.Select(kind => routes[kind]).Concat(changed.Select(kind => next[kind])));
+                    // XML is published before the SQL commit; a crash is reconciled against the saved intent on restart.
+                    persistConfiguration();
+                });
+                routes = next.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
+                configurationCommitted?.Invoke();
+                foreach (var pair in prepared) shards.Add(pair.Key, pair.Value);
+                prepared.Clear();
+                Apply(deleted, [], null);
+                foreach (string key in shards.Keys.Where(key => !routes.Values.Any(space => space.Key == key)).ToArray())
+                {
+                    var obsolete = shards[key]; shards.Remove(key);
+                    try { obsolete.Discard(); }
+                    catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+                    { log("Inactive model index cleanup requires attention: " + error.Message); }
+                }
+                return changed;
             }
-            string name = "snapshot-" + Guid.NewGuid().ToString("N");
-            string directory = Path.Combine(IndexDirectory, name);
-            Directory.CreateDirectory(directory);
-            var vectors = Vectors();
-            if (vectors.Count > 0) index!.SavePacked(Path.Combine(directory, "ann"), vectors);
-            var files = new Dictionary<string, string>();
-            foreach (string file in Directory.EnumerateFiles(directory))
-            {
-                using (var stream = new FileStream(file, FileMode.Open, FileAccess.ReadWrite, FileShare.Read)) stream.Flush(true);
-                files[Path.GetFileName(file)] = FilePaths.Hash(file);
-            }
-            string temporary = manifest + ".tmp";
-            using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
-            {
-                JsonSerializer.Serialize(stream, new { snapshot = name, generation, model = ModelContract.Fingerprint, files }, Protocol.Json);
-                stream.Flush(true);
-            }
-            File.Move(temporary, manifest, overwrite: true);
-            int nextCapacity = CapacityFor(vectors.Count);
-            var replacement = new NativeIndex(ModelContract.Dimensions, nextCapacity, threads);
-            try { if (vectors.Count > 0) replacement.Load(Path.Combine(directory, "ann")); }
-            catch { replacement.Dispose(); throw; }
-            index?.Dispose(); index = replacement; capacity = nextCapacity; graphError = null;
-            allocated = vectors.Count;
-            checkpointGeneration = generation;
-            if (previous is not null && previous != name && Regex.IsMatch(previous, "^snapshot-[0-9a-f]{32}$"))
-            {
-                string old = Path.Combine(IndexDirectory, previous);
-                try { if (Directory.Exists(old) && !FilePaths.IsNameSurrogate(old)) Directory.Delete(old, true); }
-                catch (IOException error) { log("Retained an in-use old snapshot: " + error.Message); }
-            }
+            finally { foreach (var shard in prepared.Values) shard.Dispose(); }
         }
     }
+
+    public IReadOnlyList<ModelIndexState> ModelIndexes()
+    {
+        lock (gate) return Spaces.Select(space => new ModelIndexState(space.ModelUrl,
+            routes.Where(pair => pair.Value.Key == space.Key).Select(pair => pair.Key).ToArray(), space.Dimensions,
+            Scalar<long>($"SELECT COUNT(*) FROM files f WHERE f.error IS NULL AND f.kind IN ({KindsSql(space)})"),
+            Scalar<long>($"SELECT COUNT(*) FROM vectors v JOIN files f ON f.id=v.file_id WHERE f.kind IN ({KindsSql(space)})"),
+            shards[space.Key].DirectoryPath, "", "")).ToArray();
+    }
+
+    public void Checkpoint() { lock (gate) foreach (var shard in shards.Values) shard.Checkpoint(); }
     public void Dispose()
     {
         lock (gate)
         {
             if (disposed) return;
             try { Checkpoint(); }
-            finally { disposed = true; index?.Dispose(); database.Dispose(); }
+            finally { disposed = true; foreach (var shard in shards.Values) shard.Dispose(); database.Dispose(); }
         }
     }
 }

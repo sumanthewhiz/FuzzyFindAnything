@@ -23,6 +23,7 @@ public static class ReleasePackage
         "Get-Model.ps1", "Reset-Index.ps1", "QUICKSTART.md", "THIRD-PARTY-NOTICES.txt", "release-manifest.json", "model-manifest.json",
         "engine/FuzzyFindAnything.Engine.exe", "engine/ffa_diskann.dll", "engine/libiomp5md.dll", "engine/e_sqlite3.dll",
         "inference/FuzzyFindAnything.Inference.exe", "inference/onnxruntime.dll",
+        "hf-inference/FuzzyFindAnything.HuggingFaceInference.exe", "hf-inference/onnxruntime.dll", "hf-inference/DirectML.dll",
         "extractor/FuzzyFindAnything.Extractor.exe", "tools/FuzzyFindAnything.Tools.exe", "tools/ffa_diskann.dll",
         "engine/msvcp140.dll", "engine/vcruntime140.dll", "inference/msvcp140.dll", "inference/vcruntime140.dll"
     ];
@@ -110,7 +111,10 @@ public static class ReleasePackage
             await RunAsync(Path.Combine(root, "tools", "FuzzyFindAnything.Tools.exe"),
                 ["verify-model", "--destination", Path.Combine(root, "missing-model")], false, cancellation);
             if (runtime == "win-x64" || RuntimeInformation.OSArchitecture == Architecture.Arm64)
+            {
                 await RunAsync(Path.Combine(root, "inference", "FuzzyFindAnything.Inference.exe"), ["--self-test"], true, cancellation);
+                await RunAsync(Path.Combine(root, "hf-inference", "FuzzyFindAnything.HuggingFaceInference.exe"), ["--devices"], true, cancellation);
+            }
             else
                 Console.WriteLine("ARM64 inference execution requires an ARM64 host; this host checked its PE layout only.");
             if (Directory.Exists(Path.Combine(root, "missing-model"))) throw new InvalidDataException("Verification created an empty model directory.");

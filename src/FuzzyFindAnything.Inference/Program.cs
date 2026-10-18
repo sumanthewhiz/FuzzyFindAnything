@@ -51,6 +51,13 @@ internal static class Program
                         "split" => model.Split(data.GetProperty("text").GetString()!),
                         "documents" => model.EncodeTexts(data.GetProperty("texts").Deserialize<string[]>()!),
                         "images" => model.EncodeImages(data.GetProperty("paths").Deserialize<string[]>()!),
+                        "capabilities" => new
+                        {
+                            space = EmbeddingSpace.Default,
+                            provider = "CPUExecutionProvider",
+                            device = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture + " CPU",
+                            device_type = "CPU"
+                        },
                         "shutdown" => null,
                         _ => throw new ArgumentException("Unknown inference operation: " + operation)
                     };

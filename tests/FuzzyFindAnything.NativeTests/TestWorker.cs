@@ -53,6 +53,11 @@ internal static class TestWorker
             using var request = JsonDocument.Parse(line);
             string operation = request.RootElement.GetProperty("operation").GetString()!;
             var values = request.RootElement.GetProperty("args");
+            if (operation == "capabilities")
+            {
+                Send(new { ok = true, result = new { space = EmbeddingSpace.Default, provider = "CPUExecutionProvider", device = "Test CPU" } });
+                continue;
+            }
             File.AppendAllText(Path.Combine(root, $"operations-{ordinal}.txt"), operation + "\n");
             if (operation == "shutdown") { Send(new { ok = true, result = (object?)null }); return 0; }
             operations++;
@@ -75,7 +80,7 @@ internal static class TestWorker
         }
         return 0;
     }
-    private static void Send(object value) => Console.WriteLine(JsonSerializer.Serialize(value));
+    private static void Send(object value) => Console.WriteLine(JsonSerializer.Serialize(value, Protocol.Json));
 
     public static int Filter(string path)
     {

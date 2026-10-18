@@ -66,7 +66,16 @@ public static class UsnParser
     }
 }
 
-public sealed class ChangeMonitor : IAsyncDisposable
+public interface IChangeMonitor : IAsyncDisposable
+{
+    string Description { get; }
+    void Configure(IReadOnlyList<FolderState> folders);
+    void UpdateIdentities(int id, Dictionary<UInt128, string> values, bool complete = true);
+    void Start();
+    void Checkpoint();
+}
+
+public sealed class ChangeMonitor : IChangeMonitor
 {
     private sealed record Root(string Path, string Drive);
     private readonly object gate = new();

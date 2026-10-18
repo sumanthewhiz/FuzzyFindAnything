@@ -18,6 +18,7 @@ The active DiskANN graph resides in RAM. Persistence and recovery do not make it
 | Coordinator executable | `src\FuzzyFindAnything.Engine` | Exclusive data-directory lease, local JSON IPC, startup/status and shutdown |
 | Engine library | `src\FuzzyFindAnything.Core` | Catalog, durable queue, discovery, monitoring, concurrency, extraction client and logs |
 | Inference host | `src\FuzzyFindAnything.Inference` | Exact tokenization/decoding, image preprocessing and reusable ONNX sessions |
+| Compatible-model host | `src\FuzzyFindAnything.HuggingFaceInference` | Native BERT/CLIP adapters and Windows ML CPU/GPU/NPU execution validation |
 | IFilter helper | `src\FuzzyFindAnything.Extractor` | Isolated COM activation, content detection, bounded extraction and classified errors |
 | Native DiskANN bridge | `native` | Pinned C++ implementation, versioned C ABI, caller-owned buffers and packed snapshots |
 | Utilities | `src\FuzzyFindAnything.Tools` | Native model acquisition/verification, offline maintenance and package verification |
@@ -30,6 +31,8 @@ The active DiskANN graph resides in RAM. Persistence and recovery do not make it
 The current DiskANN C++/MKL backend requires x64. On ARM64, inference remains native while the smaller coordination/index/helper processes use Windows x64 compatibility. Each process loads only architecture-compatible native dependencies. App-local C++ runtimes and self-contained .NET runtimes are packaged with their notices.
 
 The UI communicates through redirected process pipes, not an HTTP listener. A Windows job object supplies shared affinity and lifetime containment. A per-index byte-range lease prevents concurrent writers, including the older coordinator. A data-directory-specific mutex and activation pipe restore an existing UI instance maximized.
+
+The WPF application owns a .NET Windows Forms `NotifyIcon` for the system tray. Minimize and Close hide the window and remove its taskbar presence without stopping the engine. The tray icon and its themed Open/Quit menu restore the existing window or invoke the same graceful shutdown path as the window's Quit button. The icon is disposed when the application exits, and the framework recreates it if Explorer restarts.
 
 ## Model contract
 
@@ -63,9 +66,35 @@ Verified assets are atomically promoted. Inference holds read leases that preven
 
 A custom `-Destination` does not automatically change `runtime.json`; update its `model` path while the application is stopped. Export changes, precision changes and tokenizer/preprocessing changes require new parity evidence and an explicit embedding-space compatibility decision.
 
+## Configurable models and device checks
+
+The **Model configuration** tab stores three Hugging Face model-card URLs in the same versioned XML configuration:
+
+```xml
+<Models text="https://huggingface.co/google/embeddinggemma-2"
+        code="https://huggingface.co/google/embeddinggemma-2"
+        image="https://huggingface.co/google/embeddinggemma-2" />
+```
+
+Older XML without this element receives the EmbeddingGemma2 defaults in memory. Reading it does not replace the existing index or rewrite the configuration. Apply with unchanged normalized URLs is a no-op.
+
+The native adapters currently support the existing EmbeddingGemma2 bundle, mean-pooled BERT ONNX models with the standard WordPiece tokenizer, and CLIP ONNX models with separate text/image embedding graphs and the supported image processor. Text and code may share either adapter; images require a multimodal adapter. Unsupported tokenization/pooling/model families are rejected. Hugging Face Python model code is never downloaded for execution.
+
+New assets are fetched from the selected Hugging Face repository at a resolved commit, with bounded downloads, LFS SHA-256 verification where supplied and a complete local checksum manifest. Previously cached assets can be reused offline. Active models hold read leases on their assets. Model payloads remain outside Git and application ZIPs.
+
+The compatible-model process uses the self-contained `Microsoft.Windows.AI.MachineLearning` runtime, separate from the pinned original EmbeddingGemma2 process. Windows ML enumerates real EP/device pairs, including DirectML GPUs and compatible installed vendor providers such as QNN for Qualcomm NPUs. Installed providers may be activated for the process; missing providers are reported instead of being represented as available.
+
+Selection tries CPU first for continuity and then available local GPU/NPU devices if CPU cannot execute the graph. Each candidate must create the required graph sessions and produce valid, distinguishable normalized embeddings for its supported modalities. For accelerator candidates, runtime profiling must show that the selected provider actually executed embedding kernels; an all-CPU fallback does not count as GPU/NPU support. CPU assistance for supported control/shape nodes is allowed. Cloud execution providers are excluded.
+
+Model changes are prepared before mutating the catalog. Only after asset, modality, memory and execution checks succeed are file workers paused, affected jobs/vectors removed, XML and routing state published, and processing restarted. Unchanged file types retain their vector IDs and committed passage batches. A failed validation leaves the applied XML and indexes intact.
+
+There is one DiskANN graph per distinct pinned embedding space, not simply per vector dimension. The default graph retains its existing `diskann` location. Other graphs live under `model-indexes\<space-key>`; model assets live separately under `models\<space-key>` in the selected data directory. Counts and search results are aggregated, while the model tab lists each graph's file types, dimensions and actual execution device.
+
+Schema 4 is retained for unchanged default installations. The first model-assignment change upgrades the catalog to schema 5, recording embedding routes and independent graph generations. XML is published within the model-change transaction boundary; if a process exits between XML publication and SQLite commit, startup validates the saved intent, reconciles routing and schedules the affected files again. Older application versions must not be used against a schema-5 catalog; use a complete pre-change backup for rollback.
+
 ## Startup and resource budgeting
 
-Readiness follows nine checkpoints: catalog, monitoring, six primary-model phases and service readiness. Startup events carry monotonic sequence numbers, completed/total steps, percentage, phase, state and error. The UI cannot regress from Ready to a stale Loading snapshot. Percentages describe checkpoints, not elapsed time or an ETA.
+Readiness follows nine checkpoints: catalog, scheduling background monitoring, six primary-model phases and service readiness. Startup events carry monotonic sequence numbers, completed/total steps, percentage, phase, state and error. The UI cannot regress from Ready to a stale Loading snapshot. Percentages describe checkpoints, not elapsed time or an ETA.
 
 The first complete text/vision model enables search. A second model, when resources permit, warms asynchronously and cannot block primary readiness. Its failure leaves the primary usable with a visible warning. Initialization has a five-minute deadline; progress messages do not extend it. Native operations have a three-minute deadline. Shutdown cancels and reaps partially initialized workers.
 
@@ -101,6 +130,8 @@ Model copies and file pipelines are separate. One available model does not reduc
 8. Prune deleted paths only after successful enumeration. Permission/enumeration failures are not evidence of deletion.
 
 `folders`, `folder_files` and `job_folders` preserve overlapping-root ownership. Removing a parent retains files and pending work still owned by a configured child. Completed files and saved passages do not re-enter work just because startup or a parent notification triggers enumeration.
+
+Every restart schedules an incremental reconciliation of each saved root and its subfolders. Monitoring setup and discovery execute on the background discovery task, independently of primary-model readiness; even a slow monitoring setup does not delay existing-index search. Discovery compares saved modification timestamps, size and file identity, hashes changed candidates to avoid re-embedding unchanged content, and prunes confirmed deletions. Prepared passages for unchanged queued revisions survive the scan. Reconciliation is exposed separately from model startup in status, and follows the same queue and failure handling as ordinary folder indexing.
 
 USN v2/v3 replay tracks file and parent identities. **Unprivileged records may omit names**; those events reconcile the known parent directory without resetting unchanged work. Rename handling reconciles both old and new paths when available. Identity maps are prepared before replay so startup cannot discard relevant records prematurely.
 

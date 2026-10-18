@@ -13,6 +13,7 @@ public partial class App : Application
     private Mutex? instanceMutex;
     private readonly CancellationTokenSource activationLifetime = new();
     private bool ownsMutex;
+    private SystemTrayIcon? tray;
     public bool AllowExit { get; set; }
 
     protected override async void OnStartup(StartupEventArgs args)
@@ -44,6 +45,7 @@ public partial class App : Application
             ThemeService.Apply(settings.Current.Theme);
             var window = new MainWindow(dataDirectory, settings);
             MainWindow = window;
+            tray = new SystemTrayIcon(window.Restore, () => _ = window.QuitAsync());
             window.Show();
             _ = ListenForActivationAsync(name, window);
         }
@@ -89,6 +91,7 @@ public partial class App : Application
     protected override void OnExit(ExitEventArgs args)
     {
         activationLifetime.Cancel();
+        tray?.Dispose();
         if (ownsMutex)
             instanceMutex?.ReleaseMutex();
         instanceMutex?.Dispose();

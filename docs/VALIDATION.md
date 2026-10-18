@@ -18,6 +18,16 @@ These runs used isolated data directories and did not reset or launch against th
 
 ## Acceptance layers
 
+### Configurable-model acceptance
+
+The new model-routing tests use `all-MiniLM-L6-v2`, `paraphrase-MiniLM-L3-v2`, `Xenova/clip-vit-base-patch32` and the existing EmbeddingGemma2 bundle. Seven real configurations exercise three distinct models, shared text/code, one multimodal model for all types, shared text/images, shared code/images, default text/images with alternate code, and restoration of all defaults. Both architecture builds passed these permutations.
+
+Each case checks index count and file ownership, matching semantic queries, retained vector IDs for unchanged assignments, no-op Apply, rejection of a text-only image selection, and XML persistence. Additional checks cover non-default restart without re-embedding, XML write rollback and recovery when saved XML intent precedes the catalog commit.
+
+On the ARM64 acceptance device, explicit MiniLM inference probes succeeded on CPU, DirectML GPU and Qualcomm QNN NPU. Runtime profiling confirmed actual accelerator kernel execution rather than an all-CPU fallback. A nonexistent provider/device was rejected. GPU/NPU eligibility is conditional on hardware, usable drivers/providers and graph compatibility; these results do not certify all models on all devices.
+
+The model-tab UI check verifies the three default URLs, unchanged Apply, invalid-host preservation, an actual code-model change and restoration of EmbeddingGemma2. Its corpus/catalog are isolated from the user's configuration and indexes. The existing default production-data hashes are checked separately for preservation.
+
 Validation uses temporary catalogs and synthetic fixtures. It does not launch the production deployment, clear configured folders or reset the live index.
 
 | Layer | Command / entry point | Coverage |
@@ -66,7 +76,9 @@ Two migration defects were found through these checks and corrected before accep
 
 ## Native desktop evidence
 
-The relocated ARM64 package passed private-desktop UI Automation with Python absent from `PATH`: maximized startup, attribution links, all four tabs, light/dark switching, native folder selection, real document/code/image retrieval, gallery thumbnails, live metadata, clearing completed/in-flight searches, logging changes, XML persistence, scope removal, close-to-taskbar, single-instance restoration and Quit. A complete restart retained theme, logging and the changed similarity value.
+The original release 1.1.0 ARM64 package passed private-desktop UI Automation with Python absent from `PATH`: maximized startup, attribution links, all four tabs, light/dark switching, native folder selection, real document/code/image retrieval, gallery thumbnails, live metadata, clearing completed/in-flight searches, logging changes, XML persistence, scope removal, its then-current close-to-taskbar behavior, single-instance restoration and Quit. A complete restart retained theme, logging and the changed similarity value.
+
+Current regression coverage adds offline restart deltas (including deleted subfolders, timestamp-only notifications with unchanged content, and partially committed work), search while monitoring setup is blocked, and a no-change second restart with no new embeddings. The real-engine integration test changes/adds/deletes files while stopped and asserts that only the two changed/new files are embedded. The UI suite now checks minimize/close-to-tray behavior, ongoing indexing while hidden, absence of the taskbar button, tray click/menu restoration, single-instance activation and Quit from the tray while hidden. On the private desktop, shell callbacks are delivered to the real .NET notification-icon window because that desktop has no Explorer taskbar.
 
 Private-desktop compositor captures were not usable as visual evidence. Separate offscreen renders of the actual XAML/resources, with synthetic data and no application window or engine, were inspected in both themes. Those renders are the documentation previews; they are not screenshots of personal search results.
 

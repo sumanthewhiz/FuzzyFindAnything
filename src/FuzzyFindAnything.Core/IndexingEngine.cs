@@ -21,14 +21,17 @@ public sealed class IndexingEngine : IAsyncDisposable
     private readonly CancellationTokenSource lifetime = new();
     private readonly SemaphoreSlim wake = new(0, 1);
     private readonly List<Task> workers = [];
+    private readonly SemaphoreSlim configuration = new(1, 1);
+    private CancellationTokenSource? processing;
     private readonly TextExtractor extractor;
     private readonly string[] excluded;
     private readonly CpuBudget budget;
     private readonly EngineLog log;
     private readonly IEmbeddings model;
-    private readonly ChangeMonitor? monitor;
+    private readonly IChangeMonitor? monitor;
     private Task? discovery, loading;
     private string modelState = "Loading", error = "";
+    private volatile string monitorStatus;
     private int fileWorkerCount;
     public Catalog Store { get; }
     public StartupProgress Startup { get; }
@@ -45,21 +48,31 @@ public sealed class IndexingEngine : IAsyncDisposable
 
     public IndexingEngine(string data, string models, string extractorPath, string appDirectory, CpuBudget budget,
         IEmbeddings model, EngineLog log, StartupProgress startup, bool watch = true)
+        : this(data, models, extractorPath, appDirectory, budget, model, log, startup,
+            watch ? static (store, changed, diagnostic) => new ChangeMonitor(store, changed, diagnostic) : null)
+    {
+    }
+
+    internal IndexingEngine(string data, string models, string extractorPath, string appDirectory, CpuBudget budget,
+        IEmbeddings model, EngineLog log, StartupProgress startup,
+        Func<Catalog, Action<int, string?, bool>, Action<string>, IChangeMonitor>? monitorFactory)
     {
         this.budget = budget; this.model = model; this.log = log; Startup = startup;
         Startup.Update(0, "Opening the saved index");
         Store = new Catalog(data, Math.Min(2, budget.Processors), message => log.Write("catalog", message));
-        Startup.Update(1, "Preparing change monitoring");
+        if (model is ModelManager manager) manager.Bind(Store);
+        Startup.Update(1, "Scheduling background change checks");
         extractor = new TextExtractor(extractorPath);
         excluded = new[] { data, models, appDirectory }.Select(FilePaths.Canonical).ToArray();
         FileWorkerCount = Math.Min(8, budget.Processors);
-        if (watch) monitor = new ChangeMonitor(Store, (id, path, force) => Schedule(id, path, force), message => log.Write("monitor", message));
+        monitor = monitorFactory?.Invoke(Store, (id, path, force) => Schedule(id, path, force), message => log.Write("monitor", message));
+        monitorStatus = monitor is null ? "Monitoring disabled" : "Starting background change monitoring...";
     }
     public void Start()
     {
         if (discovery is not null) throw new InvalidOperationException("The engine is already started.");
         var folders = Store.Folders();
-        monitor?.Configure(folders); monitor?.Start();
+        // Enumerate saved roots on every start, retaining unchanged vectors and committed passage batches.
         foreach (var folder in folders) Schedule(folder.Id, immediate: true);
         Startup.Update(2, "Starting the native search model");
         discovery = Task.Run(DiscoverLoopAsync);
@@ -88,6 +101,7 @@ public sealed class IndexingEngine : IAsyncDisposable
         if (Excluded(path)) throw new ArgumentException("Application-owned folders cannot be indexed.");
         int id = Store.AddFolder(path);
         monitor?.Configure(Store.Folders());
+        monitorStatus = monitor?.Description ?? "Monitoring disabled";
         Schedule(id, immediate: true);
         return id;
     }
@@ -98,6 +112,7 @@ public sealed class IndexingEngine : IAsyncDisposable
         lock (gate)
             foreach (int id in ids) { pending.Remove(id); lastScans.Remove(id); identities.Remove(id); }
         monitor?.Configure(Store.Folders());
+        monitorStatus = monitor?.Description ?? "Monitoring disabled";
     }
     public void Rescan() { foreach (var folder in Store.Folders()) Schedule(folder.Id, force: true, immediate: true); }
     public EngineState Status()
@@ -111,27 +126,87 @@ public sealed class IndexingEngine : IAsyncDisposable
         var queue = Store.QueueCounts();
         var batches = model.Statistics;
         return new(modelState, modelState == "Ready" ? "Search engine ready" : Startup.Snapshot.Stage,
-            error.Length > 0 ? error : model.Warning, folders, count.Files, count.Vectors, monitor?.Description ?? "Monitoring disabled",
+            error.Length > 0 ? error : model.Warning, folders, count.Files, count.Vectors, monitorStatus,
             Store.Recovery, Store.Metadata(), new(budget.TotalCores, budget.Processors, model.ReadyWorkers, model.Threads,
-                FileWorkerCount, batches.LastBatchSize), queue.Queued, queue.Active, activities, log.State, Startup.Snapshot, batches);
+                FileWorkerCount, batches.LastBatchSize), queue.Queued, queue.Active, activities, log.State, Startup.Snapshot, batches, busy.Count,
+                model is ModelManager manager ? manager.State() : null);
     }
     public async Task<List<ResultFile>> SearchAsync(string query, double threshold = 0.6, int limit = 50)
     {
         if (string.IsNullOrWhiteSpace(query) || FilePaths.ScalarLength(query) > 2048)
             throw new ArgumentException("Enter a search phrase of at most 2,048 characters.");
         if (modelState != "Ready") throw new InvalidOperationException(error.Length > 0 ? error : Startup.Snapshot.Stage);
-        return Store.Search(await model.QueryAsync(query.Trim(), lifetime.Token), limit, threshold);
+        await configuration.WaitAsync(lifetime.Token);
+        try
+        {
+            var searches = model.ActiveModels.Select(async provider =>
+                Store.Search(await provider.QueryAsync(query.Trim(), lifetime.Token), limit, threshold, provider.Space));
+            return (await Task.WhenAll(searches)).SelectMany(value => value)
+                .OrderByDescending(value => value.Score).ThenBy(value => value.Path, StringComparer.Ordinal).Take(limit).ToList();
+        }
+        finally { configuration.Release(); }
+    }
+    private void StartWorkers()
+    {
+        processing = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+        CancellationToken cancellation = processing.Token;
+        for (int i = 0; i < FileWorkerCount; i++) workers.Add(Task.Run(() => WorkLoopAsync(cancellation)));
+    }
+
+    public async Task<ModelApplyResult> ApplyModelsAsync(ModelSelection selection, Action<string> progress)
+    {
+        if (model is not ModelManager manager) throw new NotSupportedException("Configurable models are not available in this engine.");
+        selection = selection.Normalize();
+        await configuration.WaitAsync(lifetime.Token);
+        try
+        {
+            if (selection == Store.Selection) return new(false, selection, []);
+            if (modelState == "Loading") throw new InvalidOperationException("Wait for initial model loading to finish before changing models.");
+            await using var prepared = await manager.PrepareAsync(selection, progress, lifetime.Token);
+            if (prepared is null) return new(false, Store.Selection, []);
+            using var settings = new ModelSettingsUpdate(Store.DirectoryPath, selection);
+            bool committed = false;
+            try
+            {
+                progress("Applying validated model assignments");
+                processing?.Cancel();
+                await Task.WhenAll(workers);
+                workers.Clear(); processing?.Dispose(); processing = null;
+                lifetime.Token.ThrowIfCancellationRequested();
+                string[] changed = Store.ReconfigureModels(prepared.Routes, settings.Publish,
+                    () => { settings.Commit(); committed = true; });
+                await manager.CommitAsync(prepared);
+                modelState = "Ready"; error = "";
+                foreach (var folder in Store.Folders()) Schedule(folder.Id, immediate: true);
+                StartWorkers();
+                progress("Model configuration applied; affected files are being reindexed in the background.");
+                return new(true, selection, changed);
+            }
+            catch (Exception exception)
+            {
+                if (committed)
+                {
+                    await manager.CommitAsync(prepared);
+                    StopAfterStorageFailure(exception);
+                }
+                else if (!lifetime.IsCancellationRequested && processing is null) StartWorkers();
+                throw;
+            }
+        }
+        finally { configuration.Release(); }
     }
     private async Task LoadAsync()
     {
         try
         {
             await model.StartAsync(Startup.ModelProgress, lifetime.Token);
+            if (model is ModelManager manager && Store.ReconfigureModels(manager.Routes, () => { }).Length > 0)
+                foreach (var folder in Store.Folders()) Schedule(folder.Id, immediate: true);
             lock (gate)
             {
                 lifetime.Token.ThrowIfCancellationRequested();
                 modelState = "Ready";
-                for (int i = 0; i < FileWorkerCount; i++) workers.Add(Task.Run(WorkLoopAsync));
+                StartWorkers();
                 log.Write("startup", $"Primary model ready; {FileWorkerCount} file pipelines, {model.ReadyWorkers} model processes, {budget.Processors} permitted cores.");
                 Startup.Ready();
             }
@@ -148,8 +223,13 @@ public sealed class IndexingEngine : IAsyncDisposable
         long checkpointAt = Environment.TickCount64;
         try
         {
+            // Opening watches/journals can involve slow or unavailable folders; it must not gate model readiness.
+            monitor?.Configure(Store.Folders());
+            lifetime.Token.ThrowIfCancellationRequested();
+            monitor?.Start();
             while (!lifetime.IsCancellationRequested)
             {
+                monitorStatus = monitor?.Description ?? "Monitoring disabled";
                 (int Id, Dirty Work)? selected = null;
                 var folders = Store.Folders();
                 lock (gate)
@@ -297,18 +377,18 @@ public sealed class IndexingEngine : IAsyncDisposable
         }
         if (previousErrors == failures.Count) Store.Prune(id, root, seen);
     }
-    private async Task WorkLoopAsync()
+    private async Task WorkLoopAsync(CancellationToken cancellation)
     {
         try
         {
-            while (!lifetime.IsCancellationRequested)
+            while (!cancellation.IsCancellationRequested)
             {
                 var job = Store.Claim();
-                if (job is null) { await Task.Delay(300, lifetime.Token); continue; }
-                await ProcessAsync(job);
+                if (job is null) { await Task.Delay(300, cancellation); continue; }
+                await ProcessAsync(job, cancellation);
             }
         }
-        catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
         catch (Exception exception)
         {
             StopAfterStorageFailure(exception);
@@ -319,9 +399,9 @@ public sealed class IndexingEngine : IAsyncDisposable
         var progress = Store.Progress(job);
         lock (gate) activity[job.Id] = new(job.Path, stage, progress.Completed, progress.Total);
     }
-    private void CheckCurrent(IndexJob job)
+    private void CheckCurrent(IndexJob job, CancellationToken cancellation)
     {
-        lifetime.Token.ThrowIfCancellationRequested();
+        cancellation.ThrowIfCancellationRequested();
         if (!Store.IsCurrent(job)) throw new OperationCanceledException("The source revision or indexing scope changed.");
     }
     private void CheckSourceScope(IndexJob job)
@@ -335,12 +415,13 @@ public sealed class IndexingEngine : IAsyncDisposable
             throw new OperationCanceledException("The source moved outside the configured scope.");
         }
     }
-    private async Task ProcessAsync(IndexJob job)
+    private async Task ProcessAsync(IndexJob job, CancellationToken cancellation)
     {
         var timer = Stopwatch.StartNew();
         try
         {
-            CheckCurrent(job);
+            CheckCurrent(job, cancellation);
+            IEmbeddings encoder = model.ForKind(job.Kind);
             CheckSourceScope(job);
             if (FilePaths.Inspect(job.Path) != job.Fingerprint) throw new SourceChanged();
             if (FilePaths.IsOffline(job.Path)) throw new ContentException("The file is online-only. Make it available on this device.", "cloud_unavailable", true);
@@ -350,32 +431,32 @@ public sealed class IndexingEngine : IAsyncDisposable
                 else
                 {
                     Activity(job, "Extracting");
-                    var extracted = await extractor.ExtractAsync(job.Path, lifetime.Token);
+                    var extracted = await extractor.ExtractAsync(job.Path, cancellation);
                     Activity(job, "Preparing");
-                    string[] passages = await model.SplitAsync(extracted.Text, lifetime.Token);
-                    CheckCurrent(job);
+                    string[] passages = await encoder.SplitAsync(extracted.Text, cancellation);
+                    CheckCurrent(job, cancellation);
                     if (FilePaths.Inspect(job.Path) != job.Fingerprint) throw new SourceChanged();
                     Store.Prepare(job, passages, extracted.Warnings.Length == 0 ? null : string.Join(" ", extracted.Warnings));
                 }
             }
-            CheckCurrent(job);
+            CheckCurrent(job, cancellation);
             var remaining = Store.Remaining(job);
             Activity(job, "Embedding");
             if (job.Kind == "Image" && remaining.Count > 0)
             {
-                float[] vector = await model.ImageAsync(job.Path, lifetime.Token);
+                float[] vector = await encoder.ImageAsync(job.Path, cancellation);
                 if (!Store.SaveBatch(job, remaining, [vector])) throw new OperationCanceledException();
             }
             else if (remaining.Count > 0)
             {
-                using var concurrency = new SemaphoreSlim(model.BatchConcurrency);
+                using var concurrency = new SemaphoreSlim(encoder.BatchConcurrency);
                 async Task Embed(Passage[] batch)
                 {
-                    await concurrency.WaitAsync(lifetime.Token);
+                    await concurrency.WaitAsync(cancellation);
                     try
                     {
-                        CheckCurrent(job);
-                        float[][] values = await model.DocumentsAsync(Path.GetFileName(job.Path), batch.Select(value => value.Content).ToArray(), lifetime.Token);
+                        CheckCurrent(job, cancellation);
+                        float[][] values = await encoder.DocumentsAsync(Path.GetFileName(job.Path), batch.Select(value => value.Content).ToArray(), cancellation);
                         if (!Store.SaveBatch(job, batch, values)) throw new OperationCanceledException();
                         Activity(job, "Embedding");
                     }
@@ -383,7 +464,7 @@ public sealed class IndexingEngine : IAsyncDisposable
                 }
                 await Task.WhenAll(remaining.Chunk(4).Select(Embed));
             }
-            CheckCurrent(job);
+            CheckCurrent(job, cancellation);
             var progress = Store.Progress(job);
             if (progress.Completed == progress.Total && progress.Total > 0)
             {
@@ -397,7 +478,7 @@ public sealed class IndexingEngine : IAsyncDisposable
             }
             else Store.Release(job, timer.Elapsed.TotalMilliseconds);
         }
-        catch (OperationCanceledException) when (lifetime.IsCancellationRequested || !Store.IsCurrent(job))
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested || !Store.IsCurrent(job))
         { Store.Release(job, timer.Elapsed.TotalMilliseconds); }
         catch (FileNotFoundException exception)
         {
@@ -445,9 +526,9 @@ public sealed class IndexingEngine : IAsyncDisposable
     {
         lock (gate) lifetime.Cancel();
         Signal();
+        await configuration.WaitAsync();
         try
         {
-            if (monitor is not null) await monitor.DisposeAsync();
             var tasks = new List<Task>();
             if (discovery is not null) tasks.Add(discovery);
             if (loading is not null) tasks.Add(loading);
@@ -456,11 +537,15 @@ public sealed class IndexingEngine : IAsyncDisposable
         }
         finally
         {
-            try { await model.DisposeAsync(); }
+            try { if (monitor is not null) await monitor.DisposeAsync(); }
             finally
             {
-                try { Store.Dispose(); }
-                finally { wake.Dispose(); lifetime.Dispose(); }
+                try { await model.DisposeAsync(); }
+                finally
+                {
+                    try { Store.Dispose(); }
+                    finally { processing?.Dispose(); wake.Dispose(); lifetime.Dispose(); configuration.Dispose(); }
+                }
             }
         }
     }

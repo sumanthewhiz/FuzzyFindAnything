@@ -5,6 +5,7 @@ using System.Runtime.CompilerServices;
 using System.Globalization;
 using System.Windows.Media.Imaging;
 using FuzzyFindAnything.App.Services;
+using FuzzyFindAnything.Core;
 
 namespace FuzzyFindAnything.App.ViewModels;
 
@@ -75,6 +76,16 @@ public sealed class MainViewModel : ObservableObject
     private string cpuSummary = "CPU limit";
     private string cpuDetail = "The application is restricted to at most half of the physical CPU cores.";
     private IndexMetadata? indexInfo;
+    private string textModelUrl = ModelSelection.DefaultUrl;
+    private string codeModelUrl = ModelSelection.DefaultUrl;
+    private string imageModelUrl = ModelSelection.DefaultUrl;
+    private string modelConfigurationMessage = "Models are checked for native embedding and device compatibility before indexes are changed.";
+    public string TextModelUrl { get => textModelUrl; set => Set(ref textModelUrl, value); }
+    public string CodeModelUrl { get => codeModelUrl; set => Set(ref codeModelUrl, value); }
+    public string ImageModelUrl { get => imageModelUrl; set => Set(ref imageModelUrl, value); }
+    public string ModelConfigurationMessage { get => modelConfigurationMessage; set => Set(ref modelConfigurationMessage, value); }
+    public ObservableCollection<ModelIndexState> ModelIndexes { get; } = [];
+    public bool CanApplyModels => CanConfigure && !IsEngineLoading && !FoldersBusy;
 
     public ObservableCollection<FolderViewModel> Folders { get; } = [];
     public ObservableCollection<SearchResult> Results { get; } = [];
@@ -109,7 +120,7 @@ public sealed class MainViewModel : ObservableObject
     public bool ConfigurationBusy
     {
         get => configurationBusy;
-        set { Set(ref configurationBusy, value); Changed(nameof(CanConfigure)); Changed(nameof(IsConfigurationIdle)); }
+        set { Set(ref configurationBusy, value); Changed(nameof(CanConfigure)); Changed(nameof(IsConfigurationIdle)); Changed(nameof(CanApplyModels)); Changed(nameof(CanSearch)); }
     }
     public bool IsConfigurationIdle => !ConfigurationBusy;
     public bool CanConfigure => IsConnected && !ConfigurationBusy;
@@ -124,15 +135,15 @@ public sealed class MainViewModel : ObservableObject
     public bool IsConnected
     {
         get => connected;
-        set { Set(ref connected, value); Changed(nameof(CanSearch)); Changed(nameof(CanRemove)); Changed(nameof(CanConfigure)); Changed(nameof(CanManageFolders)); }
+        set { Set(ref connected, value); Changed(nameof(CanSearch)); Changed(nameof(CanRemove)); Changed(nameof(CanConfigure)); Changed(nameof(CanManageFolders)); Changed(nameof(CanApplyModels)); }
     }
     public bool FoldersBusy
     {
         get => foldersBusy;
-        set { Set(ref foldersBusy, value); Changed(nameof(CanSearch)); Changed(nameof(CanRemove)); Changed(nameof(CanManageFolders)); }
+        set { Set(ref foldersBusy, value); Changed(nameof(CanSearch)); Changed(nameof(CanRemove)); Changed(nameof(CanManageFolders)); Changed(nameof(CanApplyModels)); }
     }
     public bool CanManageFolders => IsConnected && !FoldersBusy;
-    public bool CanSearch => IsConnected && ready && !IsSearching && !FoldersBusy;
+    public bool CanSearch => IsConnected && ready && !IsSearching && !FoldersBusy && !ConfigurationBusy;
     public bool CanRemove => CanManageFolders && Folders.Any(folder => folder.IsSelected);
     public bool HasFolders => Folders.Count > 0;
     public bool NoFolders => !HasFolders;
@@ -144,7 +155,7 @@ public sealed class MainViewModel : ObservableObject
     public string ModelState
     {
         get => modelState;
-        set { Set(ref modelState, value); Changed(nameof(IsEngineLoading)); Changed(nameof(ShowEngineState)); }
+        set { Set(ref modelState, value); Changed(nameof(IsEngineLoading)); Changed(nameof(ShowEngineState)); Changed(nameof(CanApplyModels)); }
     }
     public bool IsEngineLoading => ModelState is "Starting" or "Loading";
     public bool ShowEngineState => !IsEngineLoading;
@@ -174,13 +185,20 @@ public sealed class MainViewModel : ObservableObject
             ? string.Join("  |  ", status.Activities.Select(item =>
                 $"{item.Stage}: {Path.GetFileName(item.Path)}" +
                 (item.TotalPassages > 0 ? $" ({item.CompletedPassages:N0}/{item.TotalPassages:N0} passages)" : "")))
-            : status.QueueCount > 0 && ready ? $"{status.QueueCount:N0} files queued" : ready ? "Search engine ready" : status.Message;
+            : status.QueueCount > 0 && ready ? $"{status.QueueCount:N0} files queued"
+            : status.ReconcilingFolders > 0 && ready ? "Checking indexed folders for changes..."
+            : ready ? "Search engine ready" : status.Message;
         Monitor = status.Monitor;
+        if (status.Models is { } models)
+        {
+            ModelIndexes.Clear();
+            foreach (var index in models.Indexes) ModelIndexes.Add(index);
+        }
         Counts = $"{status.FileCount:N0} files | {status.VectorCount:N0} passages";
         CpuSummary = $"CPU limit: {status.Cpu.CoreLimit}/{status.Cpu.TotalCores}";
         CpuDetail = $"Maximum {status.Cpu.CoreLimit} of {status.Cpu.TotalCores} physical cores across the application and all workers. " +
             $"{status.Cpu.FileWorkerCount} concurrent file workers; {status.Cpu.WorkerCount} ready model processes, " +
-            $"{status.Cpu.ThreadsPerWorker} compute threads per process. Last inference batch: {status.Cpu.LastBatchSize} inputs.";
+            $"up to {status.Cpu.ThreadsPerWorker} compute threads per process. Last inference batch: {status.Cpu.LastBatchSize} inputs.";
         indexInfo = status.IndexInfo;
         foreach (string property in new[] { nameof(IndexType), nameof(IndexLocation), nameof(TotalFiles),
                      nameof(TotalDocuments), nameof(TotalCodeFiles), nameof(TotalImages), nameof(DatabaseSize), nameof(LastRefreshed), nameof(RefreshTimestamp) })
@@ -221,6 +239,11 @@ public sealed class MainViewModel : ObservableObject
         LoggingEnabled = settings.LoggingEnabled;
         LogDirectory = settings.LogDirectory;
         SettingsPath = path;
+    }
+
+    public void ApplyModels(ModelSelection selection)
+    {
+        TextModelUrl = selection.Text; CodeModelUrl = selection.Code; ImageModelUrl = selection.Image;
     }
 
     public void ApplyStartup(StartupStatus status)

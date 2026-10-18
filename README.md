@@ -2,12 +2,14 @@
 
 **Find documents, source code and images by meaning, on your Windows PC.**
 
-[![Build and release](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml)
+This checkout is **1.2.0-dev.1**, including configurable models and system-tray behavior. Earlier release packages do not contain these additions.
+
+[![Build and release](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml/badge.svg?branch=dev)](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml)
 ![Windows 11](https://img.shields.io/badge/platform-Windows%2011-0078D4)
 ![.NET 10](https://img.shields.io/badge/runtime-.NET%2010-512BD4)
 
 [**Quickstart**](QUICKSTART.md) ·
-[**Download builds**](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml?query=branch%3Amain) ·
+[**Download builds**](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml?query=branch%3Adev) ·
 [Architecture](docs/ARCHITECTURE.md) ·
 [Upgrade and rollback](docs/MIGRATION.md) ·
 [Report an issue](https://github.com/sumanthewhiz/FuzzyFindAnything/issues)
@@ -24,11 +26,13 @@ The application uses .NET and native Windows libraries, with ONNX Runtime for lo
 | Three result sections | Openable document and code lists, plus a clickable image thumbnail gallery |
 | Explicit indexing scope | Select folders and ordinary subfolders; removing scope never deletes source files |
 | Background updates | NTFS/ReFS USN replay, directory notifications, and conservative reconciliation |
+| Changes while the app is closed | Background timestamp/size/identity checks on restart update only added, changed or deleted files |
 | Parallel indexing | Independent file pipelines and bounded cross-file inference batches |
 | Enforced CPU ceiling | The entire process tree shares at most half the physical cores, even when other cores are idle |
 | Durable progress | Completed files and committed passage batches survive crashes and normal exits |
 | Startup visibility | Sequenced percentage/phase checkpoints; the first ready model enables search |
 | Live index information | Backend/version, location, size, file/document/code/image counts and refresh time |
+| Model configuration | Separate Hugging Face model-card URLs for text, code and images; compatible assignments share an index |
 | Polished desktop controls | Light/dark appearance, persisted similarity, search clearing, configurable logs and keyboard access |
 
 ### Supported content
@@ -66,8 +70,9 @@ The [quickstart](QUICKSTART.md) includes exact download, verification, model and
 | **Indexed folders** | Add roots, review concise succeeded/failed counts, and remove checked folders |
 | **Index information** | Inspect continuously refreshed index metadata |
 | **Configuration** | Enable/disable logging and choose its destination |
+| **Model configuration** | Apply compatible local embedding models and inspect their indexes and execution devices |
 
-The window opens maximized. Closing it minimizes it to the taskbar while indexing continues; **Quit** stops the application. It does not install a service or register automatic startup at sign-in.
+The window opens maximized. Minimizing or closing it hides it in the **system tray** while indexing continues, without leaving a taskbar button. Click the tray icon or choose **Open Fuzzy Find Anything** from its menu to restore the window; **Quit** in either the window or tray menu stops the application. Windows may place the icon in the notification-area overflow menu. The app does not install a service or register automatic startup at sign-in.
 
 ## Architecture
 
@@ -84,6 +89,10 @@ flowchart LR
 
 The ARM64 package uses **native ARM64 UI and inference**, with an **x64 coordinator, DiskANN and IFilter helper**. The current C++ DiskANN/MKL implementation requires this deliberate process boundary; no mixed-architecture DLLs are loaded into one process. The x64 package uses x64 throughout.
 
+EmbeddingGemma2 remains the pre-filled default for every file type. The **Model configuration** tab also accepts compatible Hugging Face ONNX exports: mean-pooled BERT/SentenceTransformer models for documents/code, and CLIP models for documents/code/images. Unsupported model families, missing exports, text-only image selections and models that fail local hardware execution are rejected before an index is changed. A model-card URL is not a promise that every Hugging Face architecture is supported.
+
+Examples include `sentence-transformers/all-MiniLM-L6-v2`, `sentence-transformers/paraphrase-MiniLM-L3-v2` and `Xenova/clip-vit-base-patch32`. The separate compatible-model host uses self-contained Windows ML to discover usable CPU, GPU and NPU execution providers. Acceptance depends on the hardware, driver/provider and actual graph execution, not a blanket accelerator restriction. See [model configuration and device checks](docs/ARCHITECTURE.md#configurable-models-and-device-checks).
+
 The active mutable DiskANN graph resides in memory and is checkpointed to disk. SQLite retains vectors, folder ownership, source revisions and passage progress so a damaged or stale graph can recover without repeating committed inference. It is not an out-of-core index.
 
 On a 12-core PC, six file pipelines can overlap reading, extraction and preparation even when only one model fits in memory. Text requests coalesce into batches of up to eight passages; up to two images are scheduled together using separate, valid single-image vision calls. The status display distinguishes file workers, model processes, compute threads and batch size. Eligible cores are a ceiling, not a promise of constant CPU utilization.
@@ -94,6 +103,7 @@ On a 12-core PC, six file pipelines can overlap reading, extraction and preparat
 - Only configured folders define indexing scope. Source content is read, not moved, edited or deleted.
 - Interrupted work resumes at the last durable passage commit. An interrupted, uncommitted native operation may run again.
 - Repeated notifications and parent-directory changes do not restart unchanged jobs.
+- Every restart checks configured folders and subfolders in the background for changes made while the app was stopped. Search becomes available when the model is ready, without waiting for that check or the incremental indexing queue.
 - Content errors, unavailable dependencies and temporary failures have explicit diagnostics and retry policies.
 - The index contains paths, snippets and embeddings; logs contain paths and error details. Protect both with Windows permissions and disk encryption.
 
@@ -104,7 +114,7 @@ Process isolation is fault containment, not a security sandbox. Installed IFilte
 Use **PowerShell 7**, Windows 11, the **.NET 10 SDK**, Git and Visual Studio 2022 or later with **Desktop development with C++**, CMake and a Windows SDK. ARM64 packages also need the ARM64 C++ redistributable files supplied with the corresponding MSVC tools.
 
 ```powershell
-git clone --branch main https://github.com/sumanthewhiz/FuzzyFindAnything.git
+git clone --branch dev https://github.com/sumanthewhiz/FuzzyFindAnything.git
 Set-Location .\FuzzyFindAnything
 .\Setup.ps1 -SkipModel
 .\Get-Model.ps1 -SourceDirectory 'D:\ApprovedModels\embeddinggemma-2-onnx-v1'

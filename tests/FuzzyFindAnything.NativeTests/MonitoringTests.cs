@@ -14,6 +14,8 @@ internal static class MonitoringTests
         await NotificationsAsync();
         await JournalAsync();
         await DeltasAsync();
+        await RestartDeltasAsync();
+        await BackgroundStartupAsync();
         await FilterLifecycleAsync();
     }
     private static byte[] Record(ushort version, UInt128 file, UInt128 parent, string name)
@@ -94,9 +96,14 @@ internal static class MonitoringTests
             bool directory = Directory.Exists(path);
             string[] paths = directory ? Directory.GetFiles(path, "*", SearchOption.AllDirectories) : [path];
             foreach (string file in paths.Where(value => FilePaths.Kind(value) is not null))
-                if (File.Exists(file))
-                    store.Enqueue(folder, file, FilePaths.Inspect(file), FilePaths.Kind(file)!, FilePaths.Hash(file), true);
-                else store.RemovePath(file);
+                try
+                {
+                    if (File.Exists(file))
+                        store.Enqueue(folder, file, FilePaths.Inspect(file), FilePaths.Kind(file)!, FilePaths.Hash(file), true);
+                    else store.RemovePath(file);
+                }
+                catch (Exception error) when (error is FileNotFoundException or DirectoryNotFoundException)
+                { store.RemovePath(file); }
             if (directory) store.Prune(folder, path, paths.Select(FilePaths.Key).ToHashSet());
             events.Enqueue(path);
         }, Console.Error.WriteLine, directoryNotifications: false);
@@ -205,4 +212,128 @@ internal static class MonitoringTests
         catch (ArgumentException) { }
         Console.WriteLine("PASS IFilter timeout/cancellation and helper reaping");
     });
+
+    private static async Task RestartDeltasAsync() => await Check.TemporaryAsync(async root =>
+    {
+        string source = Path.Combine(root, "files"), nested = Path.Combine(source, "removed");
+        Directory.CreateDirectory(nested);
+        string data = Path.Combine(root, "index"), keep = Path.Combine(source, "keep.txt"),
+            touched = Path.Combine(source, "touched.txt"), changed = Path.Combine(source, "changed.txt"),
+            gone = Path.Combine(nested, "deleted.txt"), queued = Path.Combine(source, "queued.txt");
+        long keepId, touchedId, keepVector, touchedVector;
+        int folder;
+        using (var catalog = new Catalog(data, 1))
+        {
+            folder = catalog.AddFolder(source);
+            foreach (string path in new[] { keep, touched, changed, gone })
+                Program.Complete(catalog, Program.Enqueue(catalog, folder, path, "apple source"));
+            keepId = catalog.FindFile(keep)!.Id; touchedId = catalog.FindFile(touched)!.Id;
+            keepVector = Check.Scalar(data, $"SELECT id FROM vectors WHERE file_id={keepId}");
+            touchedVector = Check.Scalar(data, $"SELECT id FROM vectors WHERE file_id={touchedId}");
+            var job = Program.Enqueue(catalog, folder, queued, "apple zero\napple one\napple two");
+            catalog.Prepare(job, ["apple zero", "apple one", "apple two"], null);
+            catalog.SaveBatch(job, catalog.Remaining(job, 1), [Program.Vector(0)]);
+        }
+        var changedTime = File.GetLastWriteTimeUtc(changed);
+        await File.WriteAllTextAsync(changed, "boats source");
+        File.SetLastWriteTimeUtc(changed, changedTime.AddSeconds(20));
+        File.SetLastWriteTimeUtc(touched, File.GetLastWriteTimeUtc(touched).AddSeconds(20));
+        File.Delete(gone);
+        Directory.Delete(nested);
+        string addedDirectory = Path.Combine(source, "new-subfolder");
+        Directory.CreateDirectory(addedDirectory);
+        string added = Path.Combine(addedDirectory, "added.py");
+        await File.WriteAllTextAsync(added, "apple added");
+
+        IndexingEngine Engine(IEmbeddings model) => new(data, Path.Combine(root, "models"), Path.Combine(root, "unused.exe"),
+            Path.Combine(root, "app"), new(12, 6, 63), model, new EngineLog(data), new(), watch: false);
+        var model = new FakeEmbeddings();
+        await using (var resumed = Engine(model))
+        {
+            resumed.Start();
+            await Check.UntilAsync(() => resumed.Store.Counts() == (5, 7) && resumed.Status().ReconcilingFolders == 0,
+                "Startup did not reconcile offline additions, deletions and timestamp changes.");
+            Program.Require(resumed.Store.Folders().Single().Id == folder && resumed.Store.FindFile(gone) is null,
+                "Restart lost folder configuration or retained a deleted subtree.");
+            Program.Require(resumed.Store.FindFile(keep)!.Id == keepId && resumed.Store.FindFile(touched)!.Id == touchedId &&
+                Check.Scalar(data, $"SELECT id FROM vectors WHERE file_id={keepId}") == keepVector &&
+                Check.Scalar(data, $"SELECT id FROM vectors WHERE file_id={touchedId}") == touchedVector,
+                "Startup reindexed unchanged content.");
+            Program.Require(model.Embedded.Order().SequenceEqual(new[] { "boats source", "apple added", "apple one", "apple two" }.Order()),
+                "Startup recomputed committed passages or skipped changed content.");
+            Program.Require((await resumed.SearchAsync("boats")).Single().Path == changed,
+                "The timestamp-updated file did not replace its old searchable content.");
+        }
+        string generation = Check.Scalar(data, "SELECT CAST(value AS INTEGER) FROM settings WHERE key='generation'").ToString();
+        var unchanged = new FakeEmbeddings();
+        await using (var next = Engine(unchanged))
+        {
+            next.Start();
+            await Check.UntilAsync(() => next.Status() is { ModelState: "Ready", ReconcilingFolders: 0, QueueCount: 0 },
+                "The unchanged restart did not finish reconciliation.");
+            Program.Require(unchanged.Embedded.IsEmpty && next.Store.Setting("generation") == generation,
+                "Restart without source changes rebuilt existing embeddings.");
+        }
+        Console.WriteLine("PASS timestamp-based offline deltas, deleted subfolders and unchanged-passage resume on restart");
+    });
+
+    private static async Task BackgroundStartupAsync() => await Check.TemporaryAsync(async root =>
+    {
+        string source = Path.Combine(root, "files"), data = Path.Combine(root, "index");
+        Directory.CreateDirectory(source);
+        using (var catalog = new Catalog(data, 1))
+        {
+            int folder = catalog.AddFolder(source);
+            Program.Complete(catalog, Program.Enqueue(catalog, folder, Path.Combine(source, "ready.txt"), "apple"));
+        }
+        var monitor = new BlockingMonitor();
+        var model = new FakeEmbeddings();
+        var engine = new IndexingEngine(data, Path.Combine(root, "models"), Path.Combine(root, "unused.exe"),
+            Path.Combine(root, "app"), new(12, 6, 63), model, new EngineLog(data), new(),
+            monitorFactory: (_, _, _) => monitor);
+        Task start = Task.Run(engine.Start);
+        try
+        {
+            await Check.UntilAsync(() => monitor.Entered.IsSet, "Background monitoring setup did not begin.");
+            await start.WaitAsync(TimeSpan.FromSeconds(2));
+            await Check.UntilAsync(() => engine.Startup.Snapshot.State == "Ready",
+                "A slow folder delayed model readiness.");
+            Program.Require((await engine.SearchAsync("apple").WaitAsync(TimeSpan.FromSeconds(2))).Single().Name == "ready.txt" &&
+                engine.Status().ReconcilingFolders == 1 && model.Embedded.IsEmpty,
+                "Existing search was blocked by startup reconciliation.");
+        }
+        finally
+        {
+            monitor.Continue.Set();
+            await start;
+            await engine.DisposeAsync();
+            monitor.Entered.Dispose(); monitor.Continue.Dispose();
+        }
+        Program.Require(monitor.Disposed, "Shutdown leaked the background monitor.");
+        Console.WriteLine("PASS slow startup folder checks do not block readiness or existing-index search");
+    });
+
+    private sealed class BlockingMonitor : IChangeMonitor
+    {
+        public ManualResetEventSlim Entered { get; } = new();
+        public ManualResetEventSlim Continue { get; } = new();
+        public bool Disposed { get; private set; }
+        public string Description
+        {
+            get
+            {
+                Program.Require(Continue.IsSet, "Status attempted to inspect a monitor while its initialization was blocked.");
+                return "Test monitoring ready";
+            }
+        }
+        public void Configure(IReadOnlyList<FolderState> folders)
+        {
+            Entered.Set();
+            if (!Continue.Wait(TimeSpan.FromSeconds(15))) throw new TimeoutException("Monitoring fixture was not released.");
+        }
+        public void UpdateIdentities(int id, Dictionary<UInt128, string> values, bool complete = true) { }
+        public void Start() { Program.Require(!Disposed, "Monitoring started after disposal."); }
+        public void Checkpoint() { }
+        public ValueTask DisposeAsync() { Disposed = true; return ValueTask.CompletedTask; }
+    }
 }

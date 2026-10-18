@@ -4,6 +4,8 @@
 
 ## Compatibility policy
 
+Configurable-model builds (1.2.0 and later) leave an unchanged default-model catalog at schema 4. Applying a different model assignment upgrades it to schema 5. Restoring the default model does not downgrade the schema; use a complete pre-change backup to return to an older application build.
+
 The application retains the established model fingerprint, schema-4 catalog, folder ownership, file/vector identifiers, prepared passages and committed embedding batches. Tokenization, chunk decoding, embeddings and retrieval have explicit parity gates; matching dimensions alone is not treated as compatibility proof.
 
 Native graph loading is attempted only after checksums, model identity and generation agree. A missing, incompatible or damaged graph is reconstructed from SQLite vectors without re-embedding completed content. The native graph format is not a reason to clear the catalog or folder list.

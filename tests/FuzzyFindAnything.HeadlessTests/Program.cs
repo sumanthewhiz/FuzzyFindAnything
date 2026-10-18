@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Xml.Linq;
 using FuzzyFindAnything.App.Services;
 using FuzzyFindAnything.App.ViewModels;
+using FuzzyFindAnything.Core;
 
 namespace FuzzyFindAnything.HeadlessTests;
 
@@ -20,6 +21,8 @@ internal static class Program
         Run("Invalid similarity is rejected without overwriting preferences", InvalidSimilarity);
         Run("Three result groups and clearing", ResultGroups);
         Run("Loading indicator state", LoadingState);
+        Run("Startup reconciliation does not disable search", ReconciliationState);
+        Run("Model defaults and XML round-trip", ModelsRoundTrip);
         Run("Footer alignment and results layout", () => LayoutContracts(args[0]));
         Console.WriteLine("All headless checks passed. No application window or engine was started.");
         return 0;
@@ -194,4 +197,41 @@ internal static class Program
                 ((string?)Find("StartupProgress").Attribute("Value"))?.Contains("StartupPercent") == true,
             "Startup progress must be determinate and driven by loader progress.");
     }
+
+    private static void ReconciliationState()
+    {
+        var model = new MainViewModel();
+        model.Apply(new EngineStatus("Ready", "Search engine ready", "", [], 1, 1, "Monitoring", "",
+            new IndexMetadata("DiskANN", @"C:\fixtures", 1, 1, 0, 1024, null),
+            new CpuStatus(12, 6, 1, 3, 6, 0), 0, 0, [], new LoggingStatus(false, "", ""),
+            new StartupStatus(10, 100, 9, 9, "Search engine ready", "Ready", ""), ReconcilingFolders: 1));
+        Require(model.CanSearch && model.StartupPercent == 100 && !model.IsEngineLoading &&
+            model.EngineMessage == "Checking indexed folders for changes...",
+            "Background reconciliation must remain visible without blocking search.");
+    }
+
+    private static void ModelsRoundTrip() => InTemporaryDirectory(directory =>
+    {
+        var settings = new SettingsService(directory);
+        Require(settings.Current.ModelSelection == ModelSelection.Default, "All model defaults must be EmbeddingGemma2.");
+        var chosen = new ModelSelection("https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2",
+            ModelSelection.DefaultUrl, "https://huggingface.co/Xenova/clip-vit-base-patch32");
+        settings.Save(settings.Current with { Models = chosen, MinimumSimilarity = 0.75, Theme = "Dark" });
+        var restored = new SettingsService(directory);
+        Require(restored.Current.ModelSelection == chosen && restored.Current.MinimumSimilarity == 0.75 && restored.Current.Theme == "Dark",
+            "Model URLs or existing preferences did not survive XML reload.");
+        var model = new MainViewModel();
+        model.ApplyModels(restored.Current.ModelSelection);
+        Require(model.TextModelUrl == chosen.Text && model.CodeModelUrl == chosen.Code && model.ImageModelUrl == chosen.Image,
+            "Model configuration fields did not restore their applied values.");
+        byte[] before = File.ReadAllBytes(settings.FilePath);
+        CheckInvalid();
+        Require(before.SequenceEqual(File.ReadAllBytes(settings.FilePath)), "An invalid model URL overwrote preferences.");
+        void CheckInvalid()
+        {
+            try { settings.Save(settings.Current with { Models = chosen with { Image = "https://example.com/model" } }); }
+            catch (ArgumentException) { return; }
+            throw new InvalidOperationException("An unsupported model host was accepted.");
+        }
+    });
 }

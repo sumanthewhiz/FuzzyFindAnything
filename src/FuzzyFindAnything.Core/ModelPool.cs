@@ -5,6 +5,11 @@ namespace FuzzyFindAnything.Core;
 
 public interface IEmbeddings : IAsyncDisposable
 {
+    EmbeddingSpace Space => EmbeddingSpace.Default;
+    string Provider => "CPUExecutionProvider";
+    string Device => RuntimeInformation.ProcessArchitecture + " CPU";
+    IEmbeddings ForKind(string kind) => this;
+    IReadOnlyList<IEmbeddings> ActiveModels => new[] { this };
     int ReadyWorkers { get; }
     int Threads { get; }
     int BatchConcurrency { get; }
@@ -18,8 +23,11 @@ public interface IEmbeddings : IAsyncDisposable
 }
 
 public sealed class ModelPool(string executable, string modelDirectory, CpuBudget budget, Action<string> log,
-    Func<long>? memoryAvailable = null) : IEmbeddings
+    Func<long>? memoryAvailable = null, EmbeddingSpace? space = null, int? workerLimit = null, int? threadLimit = null) : IEmbeddings
 {
+    public EmbeddingSpace Space { get; } = space ?? EmbeddingSpace.Default;
+    public string Provider { get; private set; } = "CPUExecutionProvider";
+    public string Device { get; private set; } = RuntimeInformation.ProcessArchitecture + " CPU";
     private readonly object gate = new();
     private readonly List<InferenceClient> clients = [];
     private readonly Queue<InferenceClient> available = new();
@@ -31,7 +39,7 @@ public sealed class ModelPool(string executable, string modelDirectory, CpuBudge
     private int queryWaiters, desired;
     private static TaskCompletionSource NewSignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
     private void Wake() { TaskCompletionSource previous = changed; changed = NewSignal(); previous.TrySetResult(); }
-    public int ReadyWorkers { get { lock (gate) return clients.Count(client => client.Alive); } }
+    public int ReadyWorkers { get { lock (gate) return closed ? 0 : clients.Count(client => client.Alive); } }
     public int Threads { get; private set; }
     public int BatchConcurrency => Math.Min(budget.Processors, 2 * Math.Max(1, desired));
     public string Warning { get; private set; } = "";
@@ -45,9 +53,26 @@ public sealed class ModelPool(string executable, string modelDirectory, CpuBudge
             lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
         }
         long memory = (memoryAvailable ?? AvailableMemory)();
-        (desired, Threads) = Plan(budget.Processors, memory);
+        if (Space == EmbeddingSpace.Default) (desired, Threads) = Plan(budget.Processors, memory);
+        else
+        {
+            if (memory < Space.MemoryBytes + (2L << 30)) throw new IOException("Insufficient available memory for this model and the system reserve.");
+            desired = 1; Threads = budget.Processors;
+        }
+        if (workerLimit is { } maximum) desired = Math.Min(desired, maximum);
+        if (threadLimit is { } compute) Threads = Math.Clamp(compute, 1, budget.Processors);
+        else Threads = Math.Max(1, budget.Processors / desired);
         log($"Native inference plan: {desired} model processes, {Threads} threads each, {memory / (double)(1L << 30):0.0} GiB available.");
         var client = await InferenceClient.StartAsync(executable, modelDirectory, Threads, progress, log, lifetime.Token);
+        try
+        {
+            var capabilities = await client.RequestAsync("capabilities", new { }, lifetime.Token);
+            var actual = capabilities.GetProperty("space").Deserialize<EmbeddingSpace>(Protocol.Json);
+            if (actual?.Fingerprint != Space.Fingerprint) throw new InvalidDataException("The model worker loaded a different embedding space.");
+            Provider = capabilities.GetProperty("provider").GetString()!;
+            Device = capabilities.GetProperty("device").GetString()!;
+        }
+        catch { await client.DisposeAsync(); throw; }
         lock (gate) { clients.Add(client); available.Enqueue(client); Wake(); }
         batches = new InferenceBatcher(EncodeAsync, log, lifetime.Token);
         batches.AddWorker();
@@ -131,17 +156,18 @@ public sealed class ModelPool(string executable, string modelDirectory, CpuBudge
             var result = await client.RequestAsync(operation, arguments, cancellation);
             var vectors = result.Deserialize<float[][]>() ?? throw new InvalidDataException("Empty inference output.");
             if (vectors.Length != values.Length) throw new InvalidDataException("Incomplete inference batch.");
-            return vectors.Select(vector => ModelContract.Normalize(vector)).ToArray();
+            return vectors.Select(vector => Space.Normalize(vector)).ToArray();
         }, cancellation);
     public Task<string[]> SplitAsync(string text, CancellationToken cancellation) => WithClientAsync(false, async client =>
         (await client.RequestAsync("split", new { text }, cancellation)).Deserialize<string[]>()
             ?? throw new InvalidDataException("Empty passage preparation output."), cancellation);
     public Task<float[][]> DocumentsAsync(string title, string[] passages, CancellationToken cancellation) =>
-        batches!.SubmitAsync("documents", passages.Select(passage => $"title: {FilePaths.ScalarPrefix(title, 160)} | text: {passage}").ToArray(), cancellation);
+        batches!.SubmitAsync("documents", passages.Select(passage => Space == EmbeddingSpace.Default
+            ? $"title: {FilePaths.ScalarPrefix(title, 160)} | text: {passage}" : passage).ToArray(), cancellation);
     public async Task<float[]> ImageAsync(string path, CancellationToken cancellation) =>
         (await batches!.SubmitAsync("images", [path], cancellation))[0];
     public Task<float[]> QueryAsync(string text, CancellationToken cancellation) => WithClientAsync(true, async client =>
-        ModelContract.Normalize((await client.RequestAsync("query", new { text }, cancellation)).Deserialize<float[]>()
+        Space.Normalize((await client.RequestAsync("query", new { text }, cancellation)).Deserialize<float[]>()
             ?? throw new InvalidDataException("Empty query embedding.")), cancellation);
 
     public async ValueTask DisposeAsync()

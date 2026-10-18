@@ -13,7 +13,8 @@ $licenses = Join-Path $root '.downloads\licenses'
 New-Item -ItemType Directory -Force -Path $licenses | Out-Null
 $sources = Get-Content -LiteralPath (Join-Path $root 'native\license-sources.json') -Raw | ConvertFrom-Json
 foreach ($source in $sources) {
-    $path = Join-Path $licenses ($source.name + '.txt')
+    $fileName = if ($source.file_name) { $source.file_name } else { $source.name + '.txt' }
+    $path = Join-Path $licenses $fileName
     if (-not (Test-Path -LiteralPath $path)) {
         & curl.exe --fail --location --silent --show-error --retry 2 --connect-timeout 30 --max-time 180 `
             --tls-max 1.2 --http1.1 $source.url --output ($path + '.partial')
@@ -47,6 +48,9 @@ foreach ($file in Get-ChildItem -LiteralPath $Package -Recurse -File -Filter '*.
             Copy-Item -Destination $noticeDirectory -Force
         $extra = if ($name -eq 'Google.Protobuf') { 'protobuf' } elseif ($name -eq 'Microsoft.Data.Sqlite.Core') { 'dotnet-sqlite' } elseif ($name -like 'SQLitePCLRaw.*') { 'sqlitepclraw' }
         if ($extra) { Copy-Item -LiteralPath (Join-Path $licenses ($extra + '.txt')) -Destination (Join-Path $noticeDirectory 'LICENSE.txt') -Force }
+        if ($name -eq 'Microsoft.Windows.SDK.NET.Ref') {
+            Copy-Item -LiteralPath (Join-Path $licenses 'windows-sdk.rtf') -Destination (Join-Path $noticeDirectory 'LICENSE.rtf')
+        }
         $specPath = Get-ChildItem -LiteralPath $directory -File -Filter '*.nuspec' | Select-Object -First 1
         [xml]$spec = Get-Content -LiteralPath $specPath.FullName -Raw
         $components[$identity] = @{

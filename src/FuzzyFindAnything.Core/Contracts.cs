@@ -22,10 +22,10 @@ public static class ModelContract
     public const int PassageTokens = 512;
     public const int PassageStride = 448;
 
-    public static float[] Normalize(ReadOnlySpan<float> values)
+    public static float[] Normalize(ReadOnlySpan<float> values, int dimensions = Dimensions)
     {
-        if (values.Length != Dimensions)
-            throw new InvalidDataException($"Expected {Dimensions} vector dimensions.");
+        if (values.Length != dimensions)
+            throw new InvalidDataException($"Expected {dimensions} vector dimensions.");
         double sum = 0;
         foreach (float value in values)
         {
@@ -34,7 +34,7 @@ public static class ModelContract
         }
         double norm = Math.Sqrt(sum);
         if (norm < 1e-12) throw new InvalidDataException("The embedding is empty or zero-length.");
-        float[] result = new float[Dimensions];
+        float[] result = new float[dimensions];
         for (int i = 0; i < result.Length; i++) result[i] = (float)(values[i] / norm);
         return result;
     }
@@ -46,11 +46,11 @@ public static class ModelContract
         return bytes;
     }
 
-    public static float[] Vector(byte[] bytes)
+    public static float[] Vector(byte[] bytes, int dimensions = Dimensions)
     {
-        if (bytes.Length != Dimensions * sizeof(float))
+        if (bytes.Length != dimensions * sizeof(float))
             throw new InvalidDataException("Invalid durable embedding length.");
-        float[] vector = new float[Dimensions];
+        float[] vector = new float[dimensions];
         Buffer.BlockCopy(bytes, 0, vector, 0, bytes.Length);
         if (vector.Any(value => !float.IsFinite(value)))
             throw new InvalidDataException("Invalid durable embedding values.");
@@ -59,8 +59,9 @@ public static class ModelContract
 
     public static double Similarity(float[] first, float[] second)
     {
+        if (first.Length != second.Length) throw new InvalidDataException("Cannot compare different embedding spaces.");
         double value = 0;
-        for (int i = 0; i < Dimensions; i++) value += (double)first[i] * second[i];
+        for (int i = 0; i < first.Length; i++) value += (double)first[i] * second[i];
         return Math.Clamp(value, -1, 1);
     }
 }
@@ -81,7 +82,7 @@ public sealed record BatchState(long CompletedBatches, long CompletedInputs, int
 public sealed record EngineState(string ModelState, string Message, string Error, List<FolderState> Folders,
     long FileCount, long VectorCount, string Monitor, string Recovery, IndexInfo IndexInfo, CpuState Cpu,
     int QueueCount, int ActiveCount, List<ActivityState> Activities, LogState Logging, StartupState Startup,
-    BatchState InferenceBatches);
+    BatchState InferenceBatches, int ReconcilingFolders = 0, ModelConfigurationState? Models = null);
 public sealed record ExtractedContent(string Text, string[] Warnings, string Format);
 public sealed class ContentException(string message, string code, bool retryable = false) : IOException(message)
 {

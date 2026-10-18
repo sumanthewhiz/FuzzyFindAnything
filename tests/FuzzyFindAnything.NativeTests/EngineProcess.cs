@@ -15,6 +15,7 @@ internal sealed class EngineProcess : IAsyncDisposable
     private readonly SemaphoreSlim writes = new(1);
     private Exception? failure;
     private bool stopped;
+    private bool disposed;
     public ConcurrentQueue<StartupState> Progress { get; } = [];
     public ConcurrentQueue<string> Diagnostics { get; } = [];
     public EngineState? Status { get; private set; }
@@ -91,7 +92,7 @@ internal sealed class EngineProcess : IAsyncDisposable
                 await process.StandardInput.FlushAsync();
             }
             finally { writes.Release(); }
-            return (await completion.Task.WaitAsync(TimeSpan.FromMinutes(4))).Deserialize<T>(Protocol.Json)!;
+            return (await completion.Task.WaitAsync(TimeSpan.FromMinutes(command == "apply_models" ? 20 : 4))).Deserialize<T>(Protocol.Json)!;
         }
         finally { pending.TryRemove(id, out _); }
     }
@@ -122,6 +123,8 @@ internal sealed class EngineProcess : IAsyncDisposable
     }
     public async ValueTask DisposeAsync()
     {
+        if (disposed) return;
+        disposed = true;
         try
         {
             if (!stopped && !process.HasExited)

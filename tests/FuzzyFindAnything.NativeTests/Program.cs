@@ -19,6 +19,8 @@ internal static class Program
         if (args.Length > 0 && args[0] == "product-parity") return ProductParity.Run(args[1], args[2], args[3]);
         if (args.Length > 0 && args[0] == "monitoring") { MonitoringTests.RunAsync().GetAwaiter().GetResult(); return 0; }
         if (args.Length > 0 && args[0] == "assets") { AssetTests.RunAsync().GetAwaiter().GetResult(); return 0; }
+        if (args.Length > 0 && args[0] == "model-config") { ModelConfigurationTests.Run(); return 0; }
+        if (args.Length > 0 && args[0] == "model-permutations") { ModelPermutationTests.RunAsync(args[1], args[2], args[3], args[4]).GetAwaiter().GetResult(); return 0; }
         if (args.Length > 0 && args[0] == "ui-fixture") { Fixtures.Ui(args[1]); return 0; }
         if (args.Length > 0 && args[0] == "fixtures") { Fixtures.Corpus(args[1]); return 0; }
         if (args.Length > 0 && args[0] == "numeric-fixture") { Fixtures.NumericWorkbook(args[1]); return 0; }
@@ -33,6 +35,7 @@ internal static class Program
         Run("Overlapping folder ownership", Ownership);
         Run("Native source extraction", () => Extraction().GetAwaiter().GetResult());
         StorageTests.Run();
+        ModelConfigurationTests.Run();
         SchedulingTests.RunAsync().GetAwaiter().GetResult();
         MonitoringTests.RunAsync().GetAwaiter().GetResult();
         AssetTests.RunAsync().GetAwaiter().GetResult();

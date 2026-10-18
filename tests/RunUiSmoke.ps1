@@ -3,6 +3,7 @@ param(
     [switch]$Enhanced,
     [switch]$Diagnose,
     [string]$ApplicationDirectory,
+    [string]$ModelCache,
     [ValidateRange(60, 1800)][int]$TimeoutSeconds = 900
 )
 
@@ -123,6 +124,10 @@ $options = $(if ($Enhanced) { ' -Enhanced' }) + $(if ($Diagnose) { ' -Diagnose' 
 if ($ApplicationDirectory) {
     $ApplicationDirectory = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($ApplicationDirectory)
     $options += " -ApplicationDirectory '" + $ApplicationDirectory.Replace("'", "''") + "'"
+}
+if ($ModelCache) {
+    $ModelCache = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($ModelCache)
+    $options += " -ModelCache '" + $ModelCache.Replace("'", "''") + "'"
 }
 $command = "`"$executable`" -NoProfile -Command `"& { try { & '$script'$options } catch { Write-Output (`$_ | Out-String); Write-Output `$_.ScriptStackTrace; Write-Output `$_.Exception.ToString(); exit 1 } } *> '$log'`""
 $run = $null

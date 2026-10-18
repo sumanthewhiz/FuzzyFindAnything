@@ -23,6 +23,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FuzzyFindAnything.Tools", "
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FuzzyFindAnything.NativeTests", "tests\FuzzyFindAnything.NativeTests\FuzzyFindAnything.NativeTests.csproj", "{557C0BA4-BF73-407B-8F3E-1CE887C96870}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FuzzyFindAnything.HuggingFaceInference", "src\FuzzyFindAnything.HuggingFaceInference\FuzzyFindAnything.HuggingFaceInference.csproj", "{B391F11D-7F64-4D7E-80B1-3EBB61457DAD}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -129,6 +131,18 @@ Global
 		{557C0BA4-BF73-407B-8F3E-1CE887C96870}.Release|x64.Build.0 = Release|Any CPU
 		{557C0BA4-BF73-407B-8F3E-1CE887C96870}.Release|x86.ActiveCfg = Release|Any CPU
 		{557C0BA4-BF73-407B-8F3E-1CE887C96870}.Release|x86.Build.0 = Release|Any CPU
+		{B391F11D-7F64-4D7E-80B1-3EBB61457DAD}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B391F11D-7F64-4D7E-80B1-3EBB61457DAD}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B391F11D-7F64-4D7E-80B1-3EBB61457DAD}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{B391F11D-7F64-4D7E-80B1-3EBB61457DAD}.Debug|x64.Build.0 = Debug|Any CPU
+		{B391F11D-7F64-4D7E-80B1-3EBB61457DAD}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{B391F11D-7F64-4D7E-80B1-3EBB61457DAD}.Debug|x86.Build.0 = Debug|Any CPU
+		{B391F11D-7F64-4D7E-80B1-3EBB61457DAD}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B391F11D-7F64-4D7E-80B1-3EBB61457DAD}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B391F11D-7F64-4D7E-80B1-3EBB61457DAD}.Release|x64.ActiveCfg = Release|Any CPU
+		{B391F11D-7F64-4D7E-80B1-3EBB61457DAD}.Release|x64.Build.0 = Release|Any CPU
+		{B391F11D-7F64-4D7E-80B1-3EBB61457DAD}.Release|x86.ActiveCfg = Release|Any CPU
+		{B391F11D-7F64-4D7E-80B1-3EBB61457DAD}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -142,5 +156,6 @@ Global
 		{4091C11D-0BC9-45B0-B048-F951045A2759} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{85B683A2-E845-4F69-883E-A106F03CED76} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{557C0BA4-BF73-407B-8F3E-1CE887C96870} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
+		{B391F11D-7F64-4D7E-80B1-3EBB61457DAD} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 	EndGlobalSection
 EndGlobal

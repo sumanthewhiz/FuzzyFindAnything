@@ -124,6 +124,29 @@ internal static class Integration
                 Program.Require(matches.Any(value => value.Name == "large-resume.txt"), "The resumed file was not searchable.");
                 Console.WriteLine($"PASS real abrupt-exit resume: preserved {committed}/{total} passages; computed only {total - committed}");
             }
+            long retainedVector = Check.Scalar(data, "SELECT v.id FROM vectors v JOIN files f ON f.id=v.file_id WHERE f.path LIKE '%parser.py'");
+            string offlineChanged = Path.Combine(corpus, "orchard.txt");
+            var previousTimestamp = File.GetLastWriteTimeUtc(offlineChanged);
+            await File.WriteAllTextAsync(offlineChanged, "An updated orchard plan for apple harvesting and irrigation after restarting the application.");
+            File.SetLastWriteTimeUtc(offlineChanged, previousTimestamp.AddSeconds(20));
+            File.Delete(Path.Combine(corpus, "launch.pptx"));
+            string offlineDirectory = Path.Combine(corpus, "offline-additions");
+            Directory.CreateDirectory(offlineDirectory);
+            await File.WriteAllTextAsync(Path.Combine(offlineDirectory, "Added.cs"),
+                "public static string HarvestApples() => \"Fresh orchard apples\";");
+            await using (var updated = new EngineProcess(package, models, data))
+            {
+                await updated.ReadyAsync();
+                await updated.WaitAsync(value => value.FileCount == initialFiles + 1 && value.QueueCount == 0 &&
+                    value.ReconcilingFolders == 0 && Check.Scalar(data, "SELECT COUNT(*) FROM files WHERE path LIKE '%Added.cs'") == 1,
+                    "Restart did not incrementally reconcile offline changes.", 120000);
+                var status = await updated.RequestAsync<EngineState>("status");
+                Program.Require(status.InferenceBatches.CompletedInputs == 2 &&
+                    Check.Scalar(data, "SELECT v.id FROM vectors v JOIN files f ON f.id=v.file_id WHERE f.path LIKE '%parser.py'") == retainedVector &&
+                    Check.Scalar(data, "SELECT COUNT(*) FROM files WHERE path LIKE '%launch.pptx'") == 0,
+                    "Restart reindexed unchanged files or missed an offline deletion.");
+                Console.WriteLine("PASS real offline restart: two changed/new files embedded; unchanged vectors retained and deleted file removed");
+            }
             File.WriteAllText(Path.Combine(output, "integration.json"), JsonSerializer.Serialize(new
             {
                 failures = 0,
@@ -142,6 +165,7 @@ internal static class Integration
                 committed_before_crash = committed,
                 total_passages = total,
                 resumed_passages = total - committed,
+                offline_reconciliation_inputs = 2,
                 startup = progress,
                 processes
             }, new JsonSerializerOptions { WriteIndented = true }));

@@ -18,6 +18,7 @@ internal static class ReleaseTests
         "Get-Model.ps1", "Reset-Index.ps1", "QUICKSTART.md", "THIRD-PARTY-NOTICES.txt",
         "engine/FuzzyFindAnything.Engine.exe", "engine/ffa_diskann.dll", "engine/libiomp5md.dll", "engine/e_sqlite3.dll",
         "inference/FuzzyFindAnything.Inference.exe", "inference/onnxruntime.dll",
+        "hf-inference/FuzzyFindAnything.HuggingFaceInference.exe", "hf-inference/onnxruntime.dll", "hf-inference/DirectML.dll",
         "extractor/FuzzyFindAnything.Extractor.exe", "tools/FuzzyFindAnything.Tools.exe", "tools/ffa_diskann.dll",
         "engine/msvcp140.dll", "engine/vcruntime140.dll", "inference/msvcp140.dll", "inference/vcruntime140.dll"
     ];

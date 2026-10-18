@@ -2,7 +2,8 @@
 param(
     [switch]$Enhanced,
     [switch]$Diagnose,
-    [string]$ApplicationDirectory
+    [string]$ApplicationDirectory,
+    [string]$ModelCache
 )
 
 $ErrorActionPreference = 'Stop'
@@ -39,6 +40,39 @@ public static class FfaUiChecks {
     [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
     [DllImport("user32.dll", SetLastError=true)] public static extern bool AttachThreadInput(uint from, uint to, bool attach);
     [DllImport("user32.dll")] public static extern IntPtr SetFocus(IntPtr hwnd);
+    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
+    [DllImport("user32.dll", EntryPoint="GetWindowLongW")] public static extern int GetWindowLong(IntPtr hwnd, int index);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern int GetClassName(IntPtr hwnd, System.Text.StringBuilder name, int maximum);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern int GetWindowText(IntPtr hwnd, System.Text.StringBuilder text, int maximum);
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint process);
+    private delegate bool EnumWindow(IntPtr hwnd, IntPtr state);
+    [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindow callback, IntPtr state);
+    public static IntPtr FindWindow(int processId, bool tray) {
+        var matches = new System.Collections.Generic.List<IntPtr>();
+        EnumWindows((hwnd, state) => {
+            uint owner; GetWindowThreadProcessId(hwnd,out owner);
+            if(owner != processId) return true;
+            var name = new System.Text.StringBuilder(256);
+            if(tray) {
+                GetClassName(hwnd,name,name.Capacity);
+                if(!name.ToString().StartsWith("WindowsForms10.Window.")) return true;
+                name.Clear(); GetWindowText(hwnd,name,name.Capacity);
+                if(name.Length != 0) return true;
+            } else {
+                GetWindowText(hwnd,name,name.Capacity);
+                if(name.ToString() != "Fuzzy Find Anything") return true;
+            }
+            matches.Add(hwnd);
+            return true;
+        },IntPtr.Zero);
+        if(matches.Count != 1) throw new Exception("Expected one " + (tray ? "tray callback" : "main") + " window; found " + matches.Count);
+        return matches[0];
+    }
+    public static void TrayClick(IntPtr hwnd, bool right) {
+        // Deliver the .NET NotifyIcon shell callback on the private desktop, which has no Explorer taskbar.
+        if(!PostMessage(hwnd,0x800,IntPtr.Zero,new IntPtr(right ? 0x205 : 0x202)))
+            throw new Exception("Could not deliver the tray callback: " + Marshal.GetLastWin32Error());
+    }
     [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left,Top,Right,Bottom; }
     public static Task InvokeAsync(AutomationElement element) {
         return Task.Run(() => ((InvokePattern)element.GetCurrentPattern(InvokePattern.Pattern)).Invoke());
@@ -126,12 +160,47 @@ function Toggle-Control([string]$id) {
     ([System.Windows.Automation.TogglePattern]$control.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)).Toggle()
 }
 
+function Read-FileHash([string]$path) {
+    $hash = [Security.Cryptography.SHA256]::Create()
+    $stream = [IO.File]::OpenRead($path)
+    try { [BitConverter]::ToString($hash.ComputeHash($stream)) }
+    finally { $stream.Dispose(); $hash.Dispose() }
+}
+
+function Refresh-Window {
+    $script:window = [System.Windows.Automation.AutomationElement]::FromHandle([FfaUiChecks]::FindWindow($process.Id, $false))
+    $script:windowPattern = [System.Windows.Automation.WindowPattern]$window.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern)
+}
+
+function Close-ToTray {
+    $handle = [FfaUiChecks]::FindWindow($process.Id, $false)
+    if (-not [FfaUiChecks]::PostMessage($handle, 0x10, [IntPtr]::Zero, [IntPtr]::Zero)) {
+        throw 'The close message could not be delivered to the current application window.'
+    }
+    Wait-Check { -not [FfaUiChecks]::IsWindowVisible([FfaUiChecks]::FindWindow($process.Id, $false)) } 'close to tray' 15
+}
+
+function Invoke-TrayMenu([string]$name) {
+    [FfaUiChecks]::TrayClick($trayHandle, $true)
+    $script:trayItem = $null
+    Wait-Check {
+        $script:trayItem = [System.Windows.Automation.AutomationElement]::RootElement.FindFirst(
+            [System.Windows.Automation.TreeScope]::Descendants,
+            (New-Object System.Windows.Automation.AndCondition(
+                (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty, $process.Id)),
+                (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, $name)))))
+        $script:trayItem -ne $null
+    } "tray menu item $name" 15
+    ([System.Windows.Automation.InvokePattern]$trayItem.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)).Invoke()
+}
+
 $process = $null
 $window = $null
 try {
     New-Item -ItemType Directory -Path $work, $corpus | Out-Null
     & $fixtureTool ui-fixture $work
     if ($LASTEXITCODE -ne 0) { throw 'Could not prepare the isolated UI test corpus.' }
+    if ($ModelCache) { Copy-Item -LiteralPath $ModelCache -Destination (Join-Path $data 'models') -Recurse }
     $process = Start-Process -FilePath $app -ArgumentList @('--data-dir', "`"$data`"") -PassThru
     Wait-Check {
         $script:window = [System.Windows.Automation.AutomationElement]::RootElement.FindFirst(
@@ -142,6 +211,7 @@ try {
         $script:window -ne $null
     } 'main window' 30
     $mainHandle = [IntPtr]$window.Current.NativeWindowHandle
+    $trayHandle = [FfaUiChecks]::FindWindow($process.Id, $true)
     $windowPattern = [System.Windows.Automation.WindowPattern]$window.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern)
     if ($windowPattern.Current.WindowVisualState -ne [System.Windows.Automation.WindowVisualState]::Maximized) {
         throw 'The application did not open maximized.'
@@ -337,6 +407,62 @@ try {
         Write-Output 'PASS logging defaults, disable, native folder selection, per-file outcomes and XML persistence'
     }
 
+    Select-Tab 'ModelsTab'
+    $defaultModel = 'https://huggingface.co/google/embeddinggemma-2'
+    foreach ($id in @('TextModelUrl','CodeModelUrl','ImageModelUrl')) {
+        $value = [System.Windows.Automation.ValuePattern](Find-Id $id).GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+        if ($value.Current.Value -ne $defaultModel) { throw "Incorrect default in $id." }
+    }
+    $configHash = Read-FileHash (Join-Path $data 'settings.xml')
+    Invoke-Button 'ApplyModelsButton'
+    Start-Sleep -Milliseconds 250
+    if ((Read-FileHash (Join-Path $data 'settings.xml')) -ne $configHash) { throw 'Unchanged model Apply rewrote configuration.' }
+    $codeModel = [System.Windows.Automation.ValuePattern](Find-Id 'CodeModelUrl').GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+    $codeModel.SetValue('https://example.com/not-a-model')
+    Invoke-Button 'ApplyModelsButton'
+    Wait-Check { (Find-Id 'ModelConfigurationStatus').Current.Name -like 'Model configuration was not applied:*' } 'invalid model URL rejection'
+    if ((Read-FileHash (Join-Path $data 'settings.xml')) -ne $configHash) { throw 'Invalid URL changed model settings.' }
+    if ($ModelCache) {
+        $alternate = 'https://huggingface.co/sentence-transformers/paraphrase-MiniLM-L3-v2'
+        $codeModel.SetValue($alternate)
+        Invoke-Button 'ApplyModelsButton'
+        Wait-Check { (Find-Id 'ApplyModelsButton').Current.IsEnabled -and (Find-Id 'ModelConfigurationStatus').Current.Name -like 'Configuration saved*' } 'model configuration apply' 300
+        [xml]$configuration = Get-Content -LiteralPath (Join-Path $data 'settings.xml') -Raw
+        if ($configuration.FuzzyFindAnythingConfiguration.Models.code -ne $alternate) { throw 'The selected code model was not saved.' }
+        $codeModel.SetValue($defaultModel)
+        Invoke-Button 'ApplyModelsButton'
+        Wait-Check { (Find-Id 'ApplyModelsButton').Current.IsEnabled -and (Find-Id 'ModelConfigurationStatus').Current.Name -like 'Configuration saved*' } 'default model restore' 300
+        [xml]$configuration = Get-Content -LiteralPath (Join-Path $data 'settings.xml') -Raw
+        if ($configuration.FuzzyFindAnythingConfiguration.Models.text -ne $defaultModel -or
+            $configuration.FuzzyFindAnythingConfiguration.Models.code -ne $defaultModel -or
+            $configuration.FuzzyFindAnythingConfiguration.Models.image -ne $defaultModel) { throw 'Model defaults were not restored.' }
+    } else { $codeModel.SetValue($defaultModel) }
+    Write-Output 'PASS model URL defaults, no-op Apply, invalid URL preservation and configured model changes'
+
+    Select-Tab 'FoldersTab'
+    Wait-Check {
+        $window.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
+            (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Indexed'))) -ne $null
+    } 'model reindex completion' 180
+    Select-Tab 'SearchTab'
+    $filesBeforeTray = [int]([regex]::Match((Find-Id 'IndexCounts').Current.Name, '^\d+').Value)
+    $windowPattern.SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Minimized)
+    Wait-Check { -not [FfaUiChecks]::IsWindowVisible([FfaUiChecks]::FindWindow($process.Id, $false)) } 'background tray state' 15
+    $trayFile = Join-Path $corpus 'Tray background.txt'
+    [IO.File]::WriteAllText($trayFile, 'This document was indexed while the window was hidden in the system tray.', [Text.Encoding]::UTF8)
+    Wait-Check {
+        $found = & $fixtureTool lookup-file $data 'Tray background.txt'
+        if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the isolated tray-test catalog.' }
+        @($found | ConvertFrom-Json).Count -eq 1
+    } 'indexing while hidden in the tray'
+    [FfaUiChecks]::TrayClick($trayHandle, $false)
+    Wait-Check { [FfaUiChecks]::IsWindowVisible([FfaUiChecks]::FindWindow($process.Id, $false)) } 'restore after background indexing' 15
+    Refresh-Window
+    Wait-Check { (Find-Id 'IndexCounts').Current.Name -like "$($filesBeforeTray + 1) files |*" } 'tray-indexed file count'
+    [IO.File]::Delete($trayFile)
+    Wait-Check { (Find-Id 'IndexCounts').Current.Name -like "$filesBeforeTray files |*" } 'tray fixture deletion'
+    Write-Output 'PASS live indexing continues while hidden in the system tray'
+
     Select-Tab 'FoldersTab'
     $checkbox = $window.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
         (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::CheckBox)))
@@ -353,17 +479,29 @@ try {
     if (-not (Test-Path (Join-Path $corpus 'Shape guide.txt'))) { throw 'Removing a folder deleted an original file.' }
     Write-Output 'PASS checkbox removal and no-match UI; original files retained'
 
-    $windowPattern.Close()
-    Start-Sleep -Milliseconds 500
-    if ($process.HasExited -or $windowPattern.Current.WindowVisualState -ne [System.Windows.Automation.WindowVisualState]::Minimized) {
-        throw 'Closing did not leave the background application minimized.'
-    }
+    $windowPattern.SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Minimized)
+    Wait-Check { -not [FfaUiChecks]::IsWindowVisible([FfaUiChecks]::FindWindow($process.Id, $false)) } 'minimize to tray' 15
+    $hiddenHandle = [FfaUiChecks]::FindWindow($process.Id, $false)
+    if (([FfaUiChecks]::GetWindowLong($hiddenHandle, -20) -band 0x40000) -ne 0) { throw 'The hidden app still has a taskbar button.' }
+    [FfaUiChecks]::TrayClick($trayHandle, $false)
+    Wait-Check { [FfaUiChecks]::IsWindowVisible([FfaUiChecks]::FindWindow($process.Id, $false)) } 'tray click restore' 15
+    Refresh-Window
+    if ($windowPattern.Current.WindowVisualState -ne [System.Windows.Automation.WindowVisualState]::Maximized) { throw 'Tray restore was not maximized.' }
+    Close-ToTray
+    Wait-Check { -not [FfaUiChecks]::IsWindowVisible([FfaUiChecks]::FindWindow($process.Id, $false)) } 'close to tray' 15
+    Invoke-TrayMenu 'Open Fuzzy Find Anything'
+    Wait-Check { [FfaUiChecks]::IsWindowVisible([FfaUiChecks]::FindWindow($process.Id, $false)) } 'tray menu restore' 15
+    Refresh-Window
+    Close-ToTray
     $second = Start-Process -FilePath $app -ArgumentList @('--data-dir', "`"$data`"") -PassThru
     $second.WaitForExit(15000) | Out-Null
+    Refresh-Window
     Wait-Check { $windowPattern.Current.WindowVisualState -eq [System.Windows.Automation.WindowVisualState]::Maximized } 'single-instance activation' 15
-    Write-Output 'PASS close-to-taskbar and maximized single-instance restore'
-    Invoke-Button 'QuitButton'
+    Write-Output 'PASS minimize/close to tray, tray click/menu restore, and maximized single-instance activation'
+    Close-ToTray
+    Invoke-TrayMenu 'Quit'
     if (-not $process.WaitForExit(50000)) { throw 'Quit did not stop the application.' }
+    Write-Output 'PASS Quit from the tray while the application window is hidden'
     if ($Enhanced) {
         $process = Start-Process -FilePath $app -ArgumentList @('--data-dir', "`"$data`"") -PassThru
         Wait-Check {

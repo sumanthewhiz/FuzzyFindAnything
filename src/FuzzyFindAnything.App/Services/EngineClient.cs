@@ -34,6 +34,7 @@ public sealed class EngineClient : IAsyncDisposable
     public event Action<StartupStatus>? StartupChanged;
     public event Action<string>? Failed;
     public event Action<string>? Warning;
+    public event Action<string>? ModelStatusChanged;
 
     public EngineClient(string dataDirectory, ApplicationSettings settings)
     {
@@ -160,6 +161,8 @@ public sealed class EngineClient : IAsyncDisposable
                             throw new InvalidDataException("The engine returned invalid startup progress.");
                         StartupChanged?.Invoke(startup);
                     }
+                    else if (eventName.GetString() == "model_status")
+                        ModelStatusChanged?.Invoke(root.GetProperty("message").GetString() ?? "");
                     else if (eventName.GetString() == "status")
                     {
                         var status = root.GetProperty("data").Deserialize<EngineStatus>(JsonOptions)
@@ -301,7 +304,7 @@ public sealed record EngineStatus(
     string ModelState, string Message, string Error, List<FolderStatus> Folders,
     long FileCount, long VectorCount, string Monitor, string Recovery, IndexMetadata IndexInfo,
     CpuStatus Cpu, int QueueCount, int ActiveCount, List<IndexActivity> Activities, LoggingStatus Logging,
-    StartupStatus? Startup = null);
+    StartupStatus? Startup = null, int ReconcilingFolders = 0, ModelConfigurationState? Models = null);
 
 public sealed record StartupStatus(
     int Sequence, int Percent, int CompletedSteps, int TotalSteps, string Stage, string State, string Error);

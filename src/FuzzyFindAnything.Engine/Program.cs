@@ -32,7 +32,9 @@ internal static class Program
             lease = new EngineLease(data);
             log = new EngineLog(data);
             var startup = new StartupProgress(value => Send(new { @event = "startup", data = value }));
-            var pool = new ModelPool(inference, model, budget, message => log.Write("inference", message));
+            var pool = new ModelManager(data, model, inference,
+                Path.Combine(app, "hf-inference", "FuzzyFindAnything.HuggingFaceInference.exe"),
+                budget, message => log.Write("inference", message));
             engine = new IndexingEngine(data, model, helper, app, budget, pool, log, startup);
             engine.Start();
             reporter = Task.Run(async () =>
@@ -72,6 +74,10 @@ internal static class Program
                                 arguments.TryGetProperty("limit", out var limit) ? limit.GetInt32() : 50); break;
                         case "rescan": engine.Rescan(); result = engine.Status(); break;
                         case "reload_configuration": log.Reload(); result = engine.Status(); break;
+                        case "apply_models":
+                            result = await engine.ApplyModelsAsync(arguments.Deserialize<ModelSelection>(Protocol.Json)!,
+                                message => Send(new { @event = "model_status", message }));
+                            break;
                         case "shutdown": Send(new { id, ok = true, result = (object?)null }); return 0;
                         default: throw new ArgumentException("Unknown engine command: " + command);
                     }

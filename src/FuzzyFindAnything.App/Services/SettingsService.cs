@@ -1,10 +1,15 @@
 using System.IO;
 using System.Xml;
 using System.Xml.Linq;
+using FuzzyFindAnything.Core;
 
 namespace FuzzyFindAnything.App.Services;
 
-public sealed record ApplicationSettings(string Theme, bool LoggingEnabled, string LogDirectory, double MinimumSimilarity = 0.60);
+public sealed record ApplicationSettings(string Theme, bool LoggingEnabled, string LogDirectory, double MinimumSimilarity = 0.60,
+    ModelSelection? Models = null)
+{
+    public ModelSelection ModelSelection => Models ?? Core.ModelSelection.Default;
+}
 
 public sealed class SettingsService
 {
@@ -43,7 +48,7 @@ public sealed class SettingsService
             string directory = (string?)logging?.Attribute("directory") ?? defaultLogDirectory;
             string? similarity = (string?)root.Element("Search")?.Attribute("minimumSimilarity");
             var settings = new ApplicationSettings(theme, enabled, directory,
-                similarity is null ? 0.60 : XmlConvert.ToDouble(similarity));
+                similarity is null ? 0.60 : XmlConvert.ToDouble(similarity), ModelSelection.Read(root));
             Validate(settings);
             return settings with { LogDirectory = Path.GetFullPath(directory) };
         }
@@ -69,6 +74,7 @@ public sealed class SettingsService
                 new XElement("FuzzyFindAnythingConfiguration", new XAttribute("version", "1"),
                     new XElement("Appearance", new XAttribute("theme", settings.Theme)),
                     new XElement("Search", new XAttribute("minimumSimilarity", settings.MinimumSimilarity)),
+                    settings.ModelSelection.Normalize().ToXml(),
                     new XElement("Logging", new XAttribute("enabled", settings.LoggingEnabled),
                         new XAttribute("directory", settings.LogDirectory))));
             using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None,
@@ -89,6 +95,7 @@ public sealed class SettingsService
 
     private static void Validate(ApplicationSettings settings)
     {
+        _ = settings.ModelSelection.Normalize();
         if (settings.Theme is not ("Light" or "Dark"))
             throw new InvalidDataException($"Unknown appearance theme: {settings.Theme}.");
         if (string.IsNullOrWhiteSpace(settings.LogDirectory) || !Path.IsPathFullyQualified(settings.LogDirectory))
@@ -96,6 +103,8 @@ public sealed class SettingsService
         if (!double.IsFinite(settings.MinimumSimilarity) || settings.MinimumSimilarity is < 0 or > 0.9)
             throw new InvalidDataException("Minimum similarity must be a finite number between 0.00 and 0.90.");
     }
+
+    public void Reload() => Current = Load();
 
     private static void ValidateLogDirectory(string directory)
     {

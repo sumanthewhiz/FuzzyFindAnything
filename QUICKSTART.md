@@ -4,6 +4,8 @@
 
 Release packages include the .NET and native runtimes. No separate Python, .NET, compiler or package manager is required.
 
+Model configuration and system-tray behavior described below require **1.2.0-dev.1 or later**. Use the matching development build or build this checkout; the earlier 1.1.0 package does not include these controls.
+
 [Project](README.md) · [Architecture](docs/ARCHITECTURE.md) · [Existing-user migration](docs/MIGRATION.md)
 
 ## Before you start
@@ -21,7 +23,7 @@ The ARM64 package runs the UI and model inference natively. Its DiskANN coordina
 
 ## 1. Download the right package
 
-Open **[Build and release](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml?query=branch%3Amain)**, select a successful **main** run for version **1.1.0**, and download the appropriate artifact. Actions downloads require GitHub sign-in and expire.
+Open **[Build and release](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml?query=branch%3Adev)**, select a successful **dev** run for version **1.2.0-dev.1 or later**, and download the appropriate artifact. Actions downloads require GitHub sign-in and expire.
 
 Published versioned downloads are also listed on the [Releases page](https://github.com/sumanthewhiz/FuzzyFindAnything/releases). Use the application ZIP and quickstart belonging to the same version.
 
@@ -99,6 +101,8 @@ For a separate trial without using an existing index:
 
 Wait for **Ready**. The progress bar shows completed startup checkpoints and the current phase, not a time-based estimate. Search becomes usable after the first complete model; optional additional capacity loads in the background.
 
+After an exit, the app also checks configured folders and subfolders for added, deleted or timestamp-changed files. This runs in the background and retains unchanged embeddings and saved passage progress. You can search the existing index while the status says **Checking indexed folders for changes...** or while incremental updates are queued.
+
 1. Open **Indexed folders**, select **Add folder**, and choose a small local folder containing a few `.txt` files, source files and photos.
 2. Wait for **Indexed**. The details show succeeded/failed totals; the footer shows current processing.
 3. Open **Search**, enter a natural-language phrase, and select **Search**.
@@ -121,10 +125,34 @@ Minimum similarity starts at **0.60**, and slider changes survive restarts. Lowe
 | **Index information** | Shows live counts, backend version, location, size and refresh time |
 | **Dark mode** | Switches and saves appearance |
 | **Configuration** | Enables/disables logging and selects a log directory |
-| Close / Alt+F4 | Minimizes to the taskbar; indexing continues |
-| **Quit** | Stops the process tree; committed file/passage progress resumes next time |
+| Minimize / Close / Alt+F4 | Hides the window in the system tray, not the taskbar; indexing continues |
+| Tray icon / **Open Fuzzy Find Anything** | Restores the existing window maximized |
+| **Quit**, in the window or tray menu | Stops the process tree; committed file/passage progress resumes next time |
 
 The application does not register automatic startup at sign-in. Model-process count is not file-worker count: a 12-core PC can run six file pipelines with one model copy. Hover over CPU status for the separate values.
+
+If the tray icon is not immediately visible, open Windows' notification-area overflow menu beside the clock.
+
+## Change embedding models
+
+Open **Model configuration** and enter HTTPS model-card URLs for **Documents / text**, **Source code** and **Images**. All three initially contain `https://huggingface.co/google/embeddinggemma-2`.
+
+Select **Apply model changes** once. The app validates the URL, required native assets, modality, available memory and local execution before replacing any embeddings. Downloads and device checks are shown in the tab. If the selections are unchanged, Apply does nothing.
+
+| Example model URL | Compatible assignments |
+|---|---|
+| `https://huggingface.co/google/embeddinggemma-2` | Text, code, images; uses the separately provisioned default bundle |
+| `https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2` | Text and code |
+| `https://huggingface.co/sentence-transformers/paraphrase-MiniLM-L3-v2` | Text and code |
+| `https://huggingface.co/Xenova/clip-vit-base-patch32` | Text, code and images |
+
+These are examples, not a guarantee that every repository on Hugging Face is compatible. BERT models need the supported WordPiece/mean-pooling contract and `onnx/model.onnx`; CLIP models need the supported tokenizer/image processor and separate text/vision ONNX graphs. Other architectures, including currently unsupported Qwen exports, fail with an explanation rather than silently using another model.
+
+Matching assignments share one DiskANN index. Different models get separate indexes, including when their embedding dimensions happen to match. Changing only the code model reindexes code, not unchanged document/image embeddings. Settings are saved in the existing XML file; cached model revisions and indexes reload on restart.
+
+CPU, GPU and NPU eligibility is evaluated against actual local execution providers and an inference probe. Windows ML can activate compatible providers already installed on the device. A missing provider/driver can make an otherwise suitable model unavailable; this is not a ban on GPU/NPU-only models. CPU is tried first, followed by available local accelerators when needed. The tab displays the execution provider actually selected.
+
+Search is temporarily disabled while model changes are being validated/applied, then resumes while the affected files are reindexed in the background. Similarity scores differ between models; a threshold useful for EmbeddingGemma2 may be too high for CLIP.
 
 ## Storage
 
@@ -141,7 +169,7 @@ The catalog contains paths, snippets and embeddings. Logs can contain filenames 
 
 | Problem | Action |
 |---|---|
-| No application ZIP | Use a successful main build's artifact or the matching versioned release, not GitHub's source-code archive |
+| No application ZIP | Use a successful build artifact for the required version, not GitHub's source-code archive |
 | Missing runtime configuration/DLL | Re-extract the entire package; its native runtime folders must remain together |
 | Missing or mismatched model asset | Use the approved ONNX bundle and rerun `Get-Model.ps1 -VerifyOnly` |
 | Model asset cannot be replaced | Quit applications using that model; check destination permissions |

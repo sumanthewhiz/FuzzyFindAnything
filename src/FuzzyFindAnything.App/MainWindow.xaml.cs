@@ -7,6 +7,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using FuzzyFindAnything.App.Services;
 using FuzzyFindAnything.App.ViewModels;
+using FuzzyFindAnything.Core;
 using Microsoft.Win32;
 
 namespace FuzzyFindAnything.App;
@@ -30,12 +31,14 @@ public partial class MainWindow : Window
         this.settings = settings;
         viewModel.IsDarkMode = settings.Current.Theme == "Dark";
         viewModel.ApplySettings(settings.Current, settings.FilePath);
+        viewModel.ApplyModels(settings.Current.ModelSelection);
         SourceInitialized += (_, _) => ThemeService.ApplyTitleBar(this, viewModel.IsDarkMode);
         DataContext = viewModel;
         engine = new EngineClient(dataDirectory, settings.Current);
         engine.StatusChanged += status => Dispatcher.InvokeAsync(() => viewModel.Apply(status));
         engine.StartupChanged += status => Dispatcher.InvokeAsync(() => viewModel.ApplyStartup(status));
         engine.Warning += message => Dispatcher.InvokeAsync(() => viewModel.Error = message);
+        engine.ModelStatusChanged += message => Dispatcher.InvokeAsync(() => viewModel.ModelConfigurationMessage = message);
         engine.Failed += message => Dispatcher.InvokeAsync(() =>
         {
             viewModel.IsConnected = false;
@@ -126,6 +129,34 @@ public partial class MainWindow : Window
     }
 
     private async void Search_Click(object sender, RoutedEventArgs args) => await SearchAsync();
+
+    private async void ApplyModels_Click(object sender, RoutedEventArgs args)
+    {
+        if (!viewModel.CanApplyModels) return;
+        try
+        {
+            var selection = new ModelSelection(viewModel.TextModelUrl, viewModel.CodeModelUrl, viewModel.ImageModelUrl).Normalize();
+            if (selection == settings.Current.ModelSelection.Normalize()) return;
+            viewModel.Error = "";
+            viewModel.ConfigurationBusy = true;
+            viewModel.ModelConfigurationMessage = "Validating models and available execution devices...";
+            var result = await engine.RequestAsync<ModelApplyResult>("apply_models", selection, TimeSpan.FromMinutes(30));
+            settings.Reload();
+            viewModel.ApplySettings(settings.Current, settings.FilePath);
+            viewModel.ApplyModels(result.Selection);
+            if (result.Changed)
+            {
+                CancelPendingSearch(); thumbnailLifetime.Cancel(); viewModel.ClearResults();
+                viewModel.ModelConfigurationMessage = "Configuration saved. Affected files are being reindexed in the background.";
+            }
+        }
+        catch (Exception exception)
+        {
+            viewModel.ModelConfigurationMessage = "Model configuration was not applied: " + exception.Message;
+            ShowError(viewModel.ModelConfigurationMessage);
+        }
+        finally { viewModel.ConfigurationBusy = false; }
+    }
 
     private async void SearchInput_KeyDown(object sender, KeyEventArgs args)
     {
@@ -361,11 +392,26 @@ public partial class MainWindow : Window
         if (!((App)Application.Current).AllowExit)
         {
             args.Cancel = true;
-            WindowState = WindowState.Minimized;
+            HideToTray();
         }
     }
 
-    private async void Quit_Click(object sender, RoutedEventArgs args)
+    protected override void OnStateChanged(EventArgs args)
+    {
+        base.OnStateChanged(args);
+        if (WindowState == WindowState.Minimized && !quitting)
+            HideToTray();
+    }
+
+    private void HideToTray()
+    {
+        ShowInTaskbar = false;
+        Hide();
+    }
+
+    private async void Quit_Click(object sender, RoutedEventArgs args) => await QuitAsync();
+
+    public async Task QuitAsync()
     {
         if (quitting)
             return;
@@ -430,8 +476,10 @@ public partial class MainWindow : Window
 
     public void Restore()
     {
-        Show();
+        if (quitting) return;
+        ShowInTaskbar = true;
         WindowState = WindowState.Maximized;
+        Show();
         Activate();
     }
 }

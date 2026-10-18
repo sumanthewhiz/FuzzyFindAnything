@@ -57,7 +57,7 @@ public static class ImagePipeline
         return (targetWidth, targetHeight);
     }
 
-    private static RgbImage Decode(string path)
+    internal static RgbImage Decode(string path)
     {
         using var stream = FilePaths.OpenRead(path);
         BitmapFrame frame;
