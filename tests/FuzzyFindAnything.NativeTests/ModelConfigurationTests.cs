@@ -9,6 +9,8 @@ internal static class ModelConfigurationTests
     {
         Program.Run("Model URL restrictions and canonical no-op values", Urls);
         Program.Run("Independent model indexes and selective invalidation", Shards);
+        Program.Run("Durable model reindex completion and targeted image recovery", ReindexStatus);
+        Program.Run("Independent search budgets across embedding spaces", () => SearchBudgetsAsync().GetAwaiter().GetResult());
     }
     private static void Urls()
     {
@@ -22,11 +24,11 @@ internal static class ModelConfigurationTests
     private static EmbeddingSpace Space(string name, int dimensions, bool image = false) =>
         new("https://huggingface.co/test/" + name, new string('1', 40), image ? "clip" : "bert-mean", dimensions, 128, image, 1L << 30);
     private static float[] Vector(int dimensions) { float[] value = new float[dimensions]; value[0] = 1; return value; }
-    private static void Publish(Catalog catalog, int folder, string path, string kind)
+    private static void Publish(Catalog catalog, int folder, string path, string kind, float[]? vector = null)
     {
         var job = Program.Enqueue(catalog, folder, path, "content", kind);
         catalog.Prepare(job, ["content"], null);
-        catalog.SaveBatch(job, catalog.Remaining(job), [Vector(catalog.SpaceFor(kind).Dimensions)]);
+        catalog.SaveBatch(job, catalog.Remaining(job), [vector ?? Vector(catalog.SpaceFor(kind).Dimensions)]);
         Program.Require(catalog.Complete(job), "Could not publish the model-specific vector.");
     }
     private static void Shards() => Program.Temporary(root =>
@@ -98,5 +100,96 @@ internal static class ModelConfigurationTests
         CatalogMaintenance.Reset(data, false);
         using var reset = new Catalog(data, 1);
         Program.Require(reset.Spaces.Count == 1 && reset.Counts() == (0, 0), "Reset retained stale model-specific vectors.");
+    });
+
+    private static void ReindexStatus() => Program.Temporary(root =>
+    {
+        string data = Path.Combine(root, "index"), source = Path.Combine(root, "files");
+        Directory.CreateDirectory(source);
+        string image = Path.Combine(source, "rounding.jpg"), healthy = Path.Combine(source, "healthy.png");
+        string document = Path.Combine(source, "notes.txt"), invalid = Path.Combine(source, "invalid.txt");
+        long documentVector;
+        using (var catalog = new Catalog(data, 1))
+        {
+            int folder = catalog.AddFolder(source);
+            Publish(catalog, folder, document, "Document");
+            documentVector = Check.Scalar(data, "SELECT v.id FROM vectors v JOIN files f ON f.id=v.file_id WHERE f.kind='Document'");
+            var clip = Space("clip-progress", 512, true);
+            catalog.ReconfigureModels(new Dictionary<string, EmbeddingSpace>
+            { ["Document"] = EmbeddingSpace.Default, ["Code"] = EmbeddingSpace.Default, ["Image"] = clip }, () => { });
+            Program.Require(catalog.ModelReindex(false) is { Completed: false }, "An undiscovered empty queue was reported complete.");
+            Publish(catalog, folder, healthy, "Image");
+            var failed = Program.Enqueue(catalog, folder, image, "valid image", "Image");
+            Program.Require(catalog.ModelReindex(true) is { Completed: false }, "Active affected work was reported complete.");
+            catalog.Fail(failed, "Index was outside the bounds of the array.", "model_inference", false, 1);
+            var badDocument = Program.Enqueue(catalog, folder, invalid, "bad document");
+            catalog.Fail(badDocument, "Invalid document", "invalid_document", false, 1);
+            catalog.SetSetting("scan_error:" + folder, "Folder temporarily unavailable");
+            Program.Require(catalog.ModelReindex(true) is { Completed: false }, "Incomplete folder discovery was reported complete.");
+            catalog.SetSetting("scan_error:" + folder, "");
+        }
+        using (var resumed = new Catalog(data, 1))
+        {
+            int folder = resumed.Folders().Single().Id;
+            Program.Require(resumed.ModelReindex(false) is { Completed: false, Succeeded: 1, Failed: 1 },
+                "Pending model reindex state was lost across restart.");
+            var unrelated = Program.Enqueue(resumed, folder, Path.Combine(source, "unrelated.txt"), "unrelated work");
+            Program.Require(resumed.ModelReindex(true) is { Completed: true, Succeeded: 1, Failed: 1 },
+                "Completion included unrelated errors or waited for unaffected file types.");
+            Program.Complete(resumed, unrelated);
+        }
+        using (var reopened = new Catalog(data, 1))
+        {
+            int folder = reopened.Folders().Single().Id;
+            Program.Require(reopened.ModelReindex(false) is { Completed: true, Failed: 1 },
+                "Completed-with-errors status was not durable.");
+            Program.Require(reopened.RetryClipResizeFailures() == 1 && reopened.RetryClipResizeFailures() == 0 &&
+                reopened.FindFile(invalid)?.RetryAfter is null && reopened.ModelReindex(false) is { Completed: false },
+                "Legacy CLIP recovery retried unrelated failures or failed to reopen progress.");
+            Program.Require(reopened.Enqueue(folder, image, FilePaths.Inspect(image), "Image", FilePaths.Hash(image), false),
+                "The unchanged failed image was not eligible for incremental recovery.");
+            var retry = reopened.Claim() ?? throw new InvalidOperationException("The image retry was not queued.");
+            reopened.Prepare(retry, ["content"], null);
+            reopened.SaveBatch(retry, reopened.Remaining(retry), [Vector(512)]);
+            Program.Require(reopened.Complete(retry), "The recovered image did not publish.");
+            Program.Require(reopened.ModelReindex(true) is { Completed: true, Succeeded: 2, Failed: 0 } &&
+                Check.Scalar(data, "SELECT v.id FROM vectors v JOIN files f ON f.id=v.file_id WHERE f.path LIKE '%notes.txt'") == documentVector,
+                "Targeted image recovery discarded healthy embeddings or retained a stale failure.");
+        }
+    });
+
+    private static Task SearchBudgetsAsync() => Check.TemporaryAsync(async root =>
+    {
+        string data = Path.Combine(root, "index"), source = Path.Combine(root, "files");
+        Directory.CreateDirectory(source);
+        var clip = Space("clip-search", 768, true);
+        string image = Path.Combine(source, "matching-image.png");
+        using (var catalog = new Catalog(data, 1))
+        {
+            catalog.ReconfigureModels(new Dictionary<string, EmbeddingSpace>
+            { ["Document"] = EmbeddingSpace.Default, ["Code"] = EmbeddingSpace.Default, ["Image"] = clip }, () => { });
+            int folder = catalog.AddFolder(source);
+            for (int index = 0; index < 3; index++)
+            {
+                float[] highScore = new float[768];
+                highScore[0] = 0.9f; highScore[index + 1] = MathF.Sqrt(1 - 0.9f * 0.9f);
+                Publish(catalog, folder, Path.Combine(source, $"document-{index}.txt"), "Document", highScore);
+            }
+            float[] lowScore = new float[768];
+            lowScore[0] = 0.25f; lowScore[1] = MathF.Sqrt(1 - 0.25f * 0.25f);
+            Publish(catalog, folder, image, "Image", lowScore);
+        }
+        var models = new FakeEmbeddings
+        { QueryModels = new IEmbeddings[] { new FakeEmbeddings(), new FakeEmbeddings { Space = clip } } };
+        await using var engine = new IndexingEngine(data, Path.Combine(root, "models"), Path.Combine(root, "unused.exe"),
+            Path.Combine(root, "app"), new(12, 6, 63), models, new EngineLog(data), new(), watch: false);
+        engine.Start();
+        await Check.UntilAsync(() => engine.Startup.Snapshot.State == "Ready" && engine.Status().ReconcilingFolders == 0,
+            "The mixed-model search fixture did not become ready.");
+        var results = await engine.SearchAsync("apple", 0, 1);
+        Program.Require(results.Count(value => value.Kind == "Document") == 1 && results.Single(value => value.Kind == "Image").Path == image,
+            $"Higher document scores suppressed the independent image index: {string.Join(", ", results.GroupBy(value => value.Kind).Select(group => $"{group.Key}={group.Count()}"))}; providers={models.ActiveModels.Count}.");
+        Program.Require(results.Count == 2 && (await engine.SearchAsync("apple", 0.3, 1)).Single().Kind == "Document",
+            "Per-index budgets or the user's explicit similarity threshold were not respected.");
     });
 }

@@ -18,6 +18,18 @@ These runs used isolated data directories and did not reset or launch against th
 
 ## Acceptance layers
 
+### Extensible embedding acceptance
+
+`embedding-recipes` on the native test executable covers reviewed registry identities/aliases, query-versus-document fingerprints, padding-aware mean/CLS/last-token/pre-pooled contracts, malformed ONNX metadata/external paths, shared-space source-kind filtering and query-only XML/catalog updates. It also checks the version-2 logging reader and retention of unfinished reindex status. These checks run as part of the ordinary native core suite without downloading models.
+
+`extensible-models <application-directory> <default-model-directory> <recipe-cache> <output-directory>` runs the real native Qwen3-Embedding-0.6B, E5-base-v2 and E5-small-v2 recipes. It requires those reviewed assets to have been acquired into the supplied isolated cache with the packaged `prepare-hf-model` tool. Coverage includes exact Qwen tokenizer fixtures, the upstream score matrix (maximum error `0.0001`), mixed-length batch/single agreement (cosine above `0.99999`), chunk/prefix token budgets and source coverage, code retrieval, maximum-profile workload probes, cancellation, incompatible image rejection, shared text/code spaces with distinct query roles, query-only changes, unavailable strict-device rejection, restart without re-embedding and restoration of the defaults.
+
+The first new artifact profile is stateless fp32, 1,024 dimensions and a 2,048-token input ceiling; the 512-token chunk and total batch-token budgets are distinct. The two E5 checkpoints use the same prefix/mean-pooling recipe without adding model-specific UI or indexing logic. This acceptance does not claim support for Qwen generation models, Florence, every checkpoint or every GPU/NPU.
+
+The private-desktop runner accepts `-EmbeddingModelCache <recipe-cache>` in addition to the existing `-ModelCache`. It checks automatic requirements, optional query-purpose disclosure, search availability during validation, real Qwen Apply, query-only persistence, and returning to the simple Gemma form without leaked hidden settings. Offscreen WPF renders cover the collapsed/expanded recipe details in both themes.
+
+All model and UI runs use isolated corpora/catalogs. Existing configured folders, user selections, database files and native snapshots are not reset to exercise the new recipes. Runtime device checks execute again on worker startup; an old persisted compatibility certificate is not used to skip them.
+
 ### Configurable-model acceptance
 
 The new model-routing tests use `all-MiniLM-L6-v2`, `paraphrase-MiniLM-L3-v2`, `Xenova/clip-vit-base-patch32` and the existing EmbeddingGemma2 bundle. Seven real configurations exercise three distinct models, shared text/code, one multimodal model for all types, shared text/images, shared code/images, default text/images with alternate code, and restoration of all defaults. Both architecture builds passed these permutations.

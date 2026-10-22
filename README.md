@@ -2,7 +2,7 @@
 
 **Find documents, source code and images by meaning, on your Windows PC.**
 
-This checkout is **1.2.0-dev.1**, including configurable models and system-tray behavior. Earlier release packages do not contain these additions.
+This checkout is **1.2.0-dev.3**, including extensible native embedding recipes, configurable models and system-tray behavior. Earlier release packages do not contain these additions.
 
 [![Build and release](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml/badge.svg?branch=dev)](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml)
 ![Windows 11](https://img.shields.io/badge/platform-Windows%2011-0078D4)
@@ -22,7 +22,7 @@ The application uses .NET and native Windows libraries, with ONNX Runtime for lo
 
 | Capability | Behavior |
 |---|---|
-| Semantic retrieval | Documents, code and images share the exact EmbeddingGemma 2 embedding space |
+| Semantic retrieval | EmbeddingGemma 2 is the default; compatible document spaces share indexes while query roles remain explicit |
 | Three result sections | Openable document and code lists, plus a clickable image thumbnail gallery |
 | Explicit indexing scope | Select folders and ordinary subfolders; removing scope never deletes source files |
 | Background updates | NTFS/ReFS USN replay, directory notifications, and conservative reconciliation |
@@ -32,7 +32,7 @@ The application uses .NET and native Windows libraries, with ONNX Runtime for lo
 | Durable progress | Completed files and committed passage batches survive crashes and normal exits |
 | Startup visibility | Sequenced percentage/phase checkpoints; the first ready model enables search |
 | Live index information | Backend/version, location, size, file/document/code/image counts and refresh time |
-| Model configuration | Separate Hugging Face model-card URLs for text, code and images; compatible assignments share an index |
+| Model configuration | Hugging Face URLs with automatic tokenizer/pooling/device setup; extra controls appear only for applicable model requirements |
 | Polished desktop controls | Light/dark appearance, persisted similarity, search clearing, configurable logs and keyboard access |
 
 ### Supported content
@@ -89,9 +89,11 @@ flowchart LR
 
 The ARM64 package uses **native ARM64 UI and inference**, with an **x64 coordinator, DiskANN and IFilter helper**. The current C++ DiskANN/MKL implementation requires this deliberate process boundary; no mixed-architecture DLLs are loaded into one process. The x64 package uses x64 throughout.
 
-EmbeddingGemma2 remains the pre-filled default for every file type. The **Model configuration** tab also accepts compatible Hugging Face ONNX exports: mean-pooled BERT/SentenceTransformer models for documents/code, and CLIP models for documents/code/images. Unsupported model families, missing exports, text-only image selections and models that fail local hardware execution are rejected before an index is changed. A model-card URL is not a promise that every Hugging Face architecture is supported.
+EmbeddingGemma2 remains the pre-filled default for every file type, with no tokenizer or pipeline setup. The **Model configuration** tab resolves reviewed native recipes for text/code embeddings and retains direct CLIP image support. Query instructions, tokenization, pooling, tensor interfaces and device qualification are part of the recipe, not arbitrary downloaded model code. Unsupported families, missing exports, text-only image assignments and unusable device profiles are rejected before an index is changed.
 
-Examples include `sentence-transformers/all-MiniLM-L6-v2`, `sentence-transformers/paraphrase-MiniLM-L3-v2` and `Xenova/clip-vit-base-patch32`. The separate compatible-model host uses self-contained Windows ML to discover usable CPU, GPU and NPU execution providers. Acceptance depends on the hardware, driver/provider and actual graph execution, not a blanket accelerator restriction. See [model configuration and device checks](docs/ARCHITECTURE.md#configurable-models-and-device-checks).
+Examples include `Qwen/Qwen3-Embedding-0.6B`, `intfloat/e5-base-v2`, `vectoriseai/e5-small-v2`, the existing MiniLM examples and `Xenova/clip-vit-base-patch32`. The Qwen card resolves to a pinned stateless Qdrant ONNX export; the UI discloses the actual artifact source. Qwen Coder generation models and Florence image-understanding pipelines are **not** implemented by this embedding release.
+
+The compatible-model host uses self-contained Windows ML to discover usable CPU, GPU and NPU execution providers. Acceptance depends on hardware, driver/provider, resource limits and real inference, not a blanket accelerator restriction. Query-only changes retain file embeddings; accepted document-model changes rebuild only affected file types. See [model configuration and device checks](docs/ARCHITECTURE.md#configurable-models-and-device-checks).
 
 The active mutable DiskANN graph resides in memory and is checkpointed to disk. SQLite retains vectors, folder ownership, source revisions and passage progress so a damaged or stale graph can recover without repeating committed inference. It is not an out-of-core index.
 

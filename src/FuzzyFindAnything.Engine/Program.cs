@@ -17,6 +17,8 @@ internal static class Program
         EngineLog? log = null;
         using var reporting = new CancellationTokenSource();
         Task? reporter = null;
+        Task? applying = null;
+        var inspections = new List<Task>();
         try
         {
             var options = new Dictionary<string, string>();
@@ -61,6 +63,42 @@ internal static class Program
                     id = request.GetProperty("id").GetString();
                     string command = request.GetProperty("command").GetString() ?? "";
                     var arguments = request.TryGetProperty("args", out var value) ? value : default;
+                    if (command is "apply_models" or "inspect_models")
+                    {
+                        if (command == "apply_models" && applying is { IsCompleted: false })
+                            throw new InvalidOperationException("Another model change is already being validated.");
+                        inspections.RemoveAll(task => task.IsCompleted);
+                        if (command == "inspect_models" && inspections.Count >= 3)
+                            throw new InvalidOperationException("Model requirements are still being resolved. Retry after the current checks finish.");
+                        var selection = arguments.Deserialize<ModelSelection>(Protocol.Json)
+                            ?? throw new ArgumentException("Model selections are required.");
+                        string? requestId = id;
+                        async Task RunModelRequest()
+                        {
+                            try
+                            {
+                                object modelResult = command == "apply_models"
+                                    ? await engine.ApplyModelsAsync(selection, message => Send(new { @event = "model_status", message }))
+                                    : await engine.InspectModelsAsync(selection);
+                                Send(new { id = requestId, ok = true, result = modelResult });
+                            }
+                            catch (Exception error)
+                            {
+                                log.Write("request", error.ToString());
+                                Send(new
+                                {
+                                    id = requestId,
+                                    ok = false,
+                                    error = error.Message,
+                                    configuration_applied = error is ModelConfigurationException
+                                });
+                            }
+                        }
+                        var operation = Task.Run(RunModelRequest);
+                        if (command == "apply_models") applying = operation;
+                        else inspections.Add(operation);
+                        continue;
+                    }
                     object? result;
                     switch (command)
                     {
@@ -74,10 +112,7 @@ internal static class Program
                                 arguments.TryGetProperty("limit", out var limit) ? limit.GetInt32() : 50); break;
                         case "rescan": engine.Rescan(); result = engine.Status(); break;
                         case "reload_configuration": log.Reload(); result = engine.Status(); break;
-                        case "apply_models":
-                            result = await engine.ApplyModelsAsync(arguments.Deserialize<ModelSelection>(Protocol.Json)!,
-                                message => Send(new { @event = "model_status", message }));
-                            break;
+                        case "cancel_model_change": result = new { cancelled = engine.CancelModelChange() }; break;
                         case "shutdown": Send(new { id, ok = true, result = (object?)null }); return 0;
                         default: throw new ArgumentException("Unknown engine command: " + command);
                     }
@@ -101,7 +136,12 @@ internal static class Program
         {
             reporting.Cancel();
             if (reporter is not null) await reporter;
-            try { if (engine is not null) await engine.DisposeAsync(); }
+            try
+            {
+                if (engine is not null) await engine.DisposeAsync();
+                if (applying is not null) await applying;
+                await Task.WhenAll(inspections);
+            }
             finally { lease?.Dispose(); }
         }
     }

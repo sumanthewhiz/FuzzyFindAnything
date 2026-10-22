@@ -246,6 +246,9 @@ internal static class SchedulingTests
 
 internal sealed class FakeEmbeddings : IEmbeddings
 {
+    public EmbeddingSpace Space { get; init; } = EmbeddingSpace.Default;
+    public IReadOnlyList<IEmbeddings>? QueryModels { get; init; }
+    public IReadOnlyList<IEmbeddings> ActiveModels => QueryModels ?? new[] { this };
     public bool BlockAfterFirstBatch { get; init; }
     public bool BlockStartup { get; init; }
     public bool Started { get; private set; }

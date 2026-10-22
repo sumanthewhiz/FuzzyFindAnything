@@ -46,12 +46,21 @@ internal static class Program
                     var value = request.RootElement.GetProperty("args");
                     object? result = operation switch
                     {
-                        "query" => model.Query(value.GetProperty("text").GetString()!),
+                        "query" => model.Query(value.GetProperty("text").GetString()!,
+                            value.TryGetProperty("profile", out var profile) ? profile.GetString() : null),
                         "tokens" => model.TokenIds(value.GetProperty("text").GetString()!),
                         "split" => model.Split(value.GetProperty("text").GetString()!),
                         "documents" => model.Texts(value.GetProperty("texts").Deserialize<string[]>()!),
                         "images" => model.Images(value.GetProperty("paths").Deserialize<string[]>()!),
-                        "capabilities" => new { space = metadata.Space, provider = model.Device.Provider, device = model.Device.Name, device_type = model.Device.Type },
+                        "capabilities" => new
+                        {
+                            space = metadata.Space,
+                            provider = model.Device.Provider,
+                            device = model.Device.Name,
+                            device_type = model.Device.Type,
+                            protocol_version = 2,
+                            recipe = metadata.Space.Recipe?.ContractFingerprint
+                        },
                         "shutdown" => null,
                         _ => throw new ArgumentException("Unknown inference operation.")
                     };
@@ -61,7 +70,13 @@ internal static class Program
                 catch (Exception error)
                 {
                     Console.Error.WriteLine(error);
-                    Send(new { ok = false, error = error.Message, code = "model_inference", retryable = false });
+                    Send(new
+                    {
+                        ok = false,
+                        error = error.Message,
+                        code = error is ContentException content ? content.Code : error is NotSupportedException ? "model_contract" : "model_inference",
+                        retryable = false
+                    });
                 }
                 if (stop) break;
             }

@@ -22,6 +22,9 @@ public sealed class IndexingEngine : IAsyncDisposable
     private readonly SemaphoreSlim wake = new(0, 1);
     private readonly List<Task> workers = [];
     private readonly SemaphoreSlim configuration = new(1, 1);
+    private readonly SemaphoreSlim modelChanges = new(1, 1);
+    private readonly Dictionary<string, float[]> queryVectors = new(StringComparer.Ordinal);
+    private CancellationTokenSource? modelChange;
     private CancellationTokenSource? processing;
     private readonly TextExtractor extractor;
     private readonly string[] excluded;
@@ -117,19 +120,27 @@ public sealed class IndexingEngine : IAsyncDisposable
     public void Rescan() { foreach (var folder in Store.Folders()) Schedule(folder.Id, force: true, immediate: true); }
     public EngineState Status()
     {
-        var count = Store.Counts();
-        var folders = Store.Folders();
-        HashSet<int> busy;
-        List<ActivityState> activities;
-        lock (gate) { busy = new(scanning.Concat(pending.Keys)); activities = activity.Values.ToList(); }
-        folders = folders.Select(folder => Store.FolderCounts(folder, busy.Contains(folder.Id))).ToList();
-        var queue = Store.QueueCounts();
-        var batches = model.Statistics;
-        return new(modelState, modelState == "Ready" ? "Search engine ready" : Startup.Snapshot.Stage,
-            error.Length > 0 ? error : model.Warning, folders, count.Files, count.Vectors, monitorStatus,
-            Store.Recovery, Store.Metadata(), new(budget.TotalCores, budget.Processors, model.ReadyWorkers, model.Threads,
-                FileWorkerCount, batches.LastBatchSize), queue.Queued, queue.Active, activities, log.State, Startup.Snapshot, batches, busy.Count,
-                model is ModelManager manager ? manager.State() : null);
+        bool configurationIdle = configuration.Wait(0);
+        try
+        {
+            var count = Store.Counts();
+            var folders = Store.Folders();
+            HashSet<int> busy;
+            List<ActivityState> activities;
+            lock (gate) { busy = new(scanning.Concat(pending.Keys)); activities = activity.Values.ToList(); }
+            folders = folders.Select(folder => Store.FolderCounts(folder, busy.Contains(folder.Id))).ToList();
+            var queue = Store.QueueCounts();
+            var batches = model.Statistics;
+            var models = model is ModelManager manager ? manager.State() with
+            {
+                Reindex = Store.ModelReindex(configurationIdle && modelState == "Ready" && busy.Count == 0)
+            } : null;
+            return new(modelState, modelState == "Ready" ? "Search engine ready" : Startup.Snapshot.Stage,
+                error.Length > 0 ? error : model.Warning, folders, count.Files, count.Vectors, monitorStatus,
+                Store.Recovery, Store.Metadata(), new(budget.TotalCores, budget.Processors, model.ReadyWorkers, model.Threads,
+                    FileWorkerCount, batches.LastBatchSize), queue.Queued, queue.Active, activities, log.State, Startup.Snapshot, batches, busy.Count, models);
+        }
+        finally { if (configurationIdle) configuration.Release(); }
     }
     public async Task<List<ResultFile>> SearchAsync(string query, double threshold = 0.6, int limit = 50)
     {
@@ -139,10 +150,27 @@ public sealed class IndexingEngine : IAsyncDisposable
         await configuration.WaitAsync(lifetime.Token);
         try
         {
-            var searches = model.ActiveModels.Select(async provider =>
-                Store.Search(await provider.QueryAsync(query.Trim(), lifetime.Token), limit, threshold, provider.Space));
+            var searches = model.SearchBindings.Select(async binding =>
+            {
+                var provider = binding.Model;
+                string key = $"{provider.Space.Fingerprint}\n{provider.Space.Recipe?.ContractFingerprint}\n{provider.Provider}\n{provider.Device}\n{binding.Profile}\n{query.Trim()}";
+                float[]? vector;
+                lock (gate) queryVectors.TryGetValue(key, out vector);
+                if (vector is null)
+                {
+                    vector = await provider.QueryAsync(query.Trim(), binding.Profile, lifetime.Token);
+                    lock (gate)
+                    {
+                        if (queryVectors.Count >= 64) queryVectors.Remove(queryVectors.Keys.First());
+                        queryVectors[key] = vector;
+                    }
+                }
+                return Store.Search(vector, limit, threshold, provider.Space, binding.Kinds);
+            });
+            // Different models have different score distributions; one index must not consume another's result budget.
             return (await Task.WhenAll(searches)).SelectMany(value => value)
-                .OrderByDescending(value => value.Score).ThenBy(value => value.Path, StringComparer.Ordinal).Take(limit).ToList();
+                .OrderBy(value => value.Kind, StringComparer.Ordinal).ThenByDescending(value => value.Score)
+                .ThenBy(value => value.Path, StringComparer.Ordinal).ToList();
         }
         finally { configuration.Release(); }
     }
@@ -157,13 +185,19 @@ public sealed class IndexingEngine : IAsyncDisposable
     {
         if (model is not ModelManager manager) throw new NotSupportedException("Configurable models are not available in this engine.");
         selection = selection.Normalize();
-        await configuration.WaitAsync(lifetime.Token);
+        await modelChanges.WaitAsync(lifetime.Token);
+        using var change = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+        lock (gate) modelChange = change;
+        bool locked = false;
         try
         {
             if (selection == Store.Selection) return new(false, selection, []);
             if (modelState == "Loading") throw new InvalidOperationException("Wait for initial model loading to finish before changing models.");
-            await using var prepared = await manager.PrepareAsync(selection, progress, lifetime.Token);
+            await using var prepared = await manager.PrepareAsync(selection, progress, change.Token);
             if (prepared is null) return new(false, Store.Selection, []);
+            await configuration.WaitAsync(change.Token);
+            locked = true;
+            selection = prepared.Selection;
             using var settings = new ModelSettingsUpdate(Store.DirectoryPath, selection);
             bool committed = false;
             try
@@ -172,14 +206,17 @@ public sealed class IndexingEngine : IAsyncDisposable
                 processing?.Cancel();
                 await Task.WhenAll(workers);
                 workers.Clear(); processing?.Dispose(); processing = null;
-                lifetime.Token.ThrowIfCancellationRequested();
+                change.Token.ThrowIfCancellationRequested();
                 string[] changed = Store.ReconfigureModels(prepared.Routes, settings.Publish,
-                    () => { settings.Commit(); committed = true; });
+                    () => { settings.Commit(); committed = true; }, selection);
+                lock (gate) { modelChange = null; queryVectors.Clear(); }
                 await manager.CommitAsync(prepared);
                 modelState = "Ready"; error = "";
-                foreach (var folder in Store.Folders()) Schedule(folder.Id, immediate: true);
+                if (changed.Length > 0)
+                    foreach (var folder in Store.Folders()) Schedule(folder.Id, immediate: true);
                 StartWorkers();
-                progress("Model configuration applied; affected files are being reindexed in the background.");
+                progress(changed.Length > 0 ? "Model configuration applied; affected files are being reindexed in the background." :
+                    "Configuration saved. Query/device settings updated; existing embeddings were retained.");
                 return new(true, selection, changed);
             }
             catch (Exception exception)
@@ -188,20 +225,48 @@ public sealed class IndexingEngine : IAsyncDisposable
                 {
                     await manager.CommitAsync(prepared);
                     StopAfterStorageFailure(exception);
+                    throw new ModelConfigurationException("Configuration applied, but indexing stopped: " + exception.Message, exception);
                 }
                 else if (!lifetime.IsCancellationRequested && processing is null) StartWorkers();
                 throw;
             }
         }
-        finally { configuration.Release(); }
+        finally
+        {
+            lock (gate) if (ReferenceEquals(modelChange, change)) modelChange = null;
+            if (locked) configuration.Release();
+            modelChanges.Release();
+        }
+    }
+    public bool CancelModelChange()
+    {
+        lock (gate)
+        {
+            if (modelChange is null) return false;
+            modelChange.Cancel();
+            return true;
+        }
+    }
+    public async Task<ModelInspection> InspectModelsAsync(ModelSelection selection)
+    {
+        if (model is not ModelManager manager) throw new NotSupportedException("Configurable models are not available.");
+        using var inspection = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+        inspection.CancelAfter(TimeSpan.FromSeconds(30));
+        return await manager.InspectAsync(selection, inspection.Token);
     }
     private async Task LoadAsync()
     {
         try
         {
             await model.StartAsync(Startup.ModelProgress, lifetime.Token);
-            if (model is ModelManager manager && Store.ReconfigureModels(manager.Routes, () => { }).Length > 0)
+            if (model is ModelManager manager && Store.ReconfigureModels(manager.Routes, () => { }, selection: manager.Selection).Length > 0)
                 foreach (var folder in Store.Folders()) Schedule(folder.Id, immediate: true);
+            int retries = Store.RetryClipResizeFailures();
+            if (retries > 0)
+            {
+                log.Write("recovery", $"Retrying {retries} images affected by the earlier CLIP resize-rounding failure.");
+                foreach (var folder in Store.Folders()) Schedule(folder.Id, immediate: true);
+            }
             lock (gate)
             {
                 lifetime.Token.ThrowIfCancellationRequested();
@@ -526,6 +591,7 @@ public sealed class IndexingEngine : IAsyncDisposable
     {
         lock (gate) lifetime.Cancel();
         Signal();
+        await modelChanges.WaitAsync();
         await configuration.WaitAsync();
         try
         {
@@ -544,7 +610,7 @@ public sealed class IndexingEngine : IAsyncDisposable
                 finally
                 {
                     try { Store.Dispose(); }
-                    finally { processing?.Dispose(); wake.Dispose(); lifetime.Dispose(); configuration.Dispose(); }
+                    finally { processing?.Dispose(); wake.Dispose(); lifetime.Dispose(); configuration.Dispose(); modelChanges.Dispose(); }
                 }
             }
         }

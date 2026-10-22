@@ -1,0 +1,96 @@
+[
+  {
+    "model_urls": [
+      "https://huggingface.co/Qwen/Qwen3-Embedding-0.6B",
+      "https://huggingface.co/Qdrant/Qwen3-Embedding-0.6B-onnx"
+    ],
+    "artifact_url": "https://huggingface.co/Qdrant/Qwen3-Embedding-0.6B-onnx",
+    "revision": "af95f2c416ffe9379369ad64f9113e865db6112c",
+    "source_revision": "97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3",
+    "model_type": "qwen3",
+    "dimensions": 1024,
+    "maximum_tokens": 2048,
+    "memory_bytes": 3221225472,
+    "files": ["config.json", "tokenizer.json", "tokenizer_config.json", "vocab.json", "merges.txt", "onnx/model.onnx", "onnx/model.onnx_data"],
+    "checksums": {
+      "tokenizer.json": "def76fb086971c7867b829c23a26261e38d9d74e02139253b38aeb9df8b4b50a",
+      "onnx/model.onnx": "754d6ba1c7a323d7b3af0d85b8268f8b716b0cd362ce73295e0f71d3dd831639",
+      "onnx/model.onnx_data": "15d02a315e3b95296700c73d72a436e79facf4e17d919345bed730e98433bcb4"
+    },
+    "recipe": {
+      "id": "decoder-retrieval-f32-v1",
+      "tokenizer": "byte-bpe-nfc",
+      "pooling": "last-token",
+      "output": "last_hidden_state",
+      "chunk_tokens": 512,
+      "padding": "left",
+      "end_token": 151643,
+      "padding_token": 151643,
+      "maximum_batch_tokens": 2048,
+      "text_query": "document-search-v1",
+      "code_query": "code-search-v1",
+      "queries": [
+        {
+          "id": "document-search-v1",
+          "label": "Document search",
+          "prefix": "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:"
+        },
+        {
+          "id": "code-search-v1",
+          "label": "Code search",
+          "prefix": "Instruct: Given a natural language query, retrieve relevant code that answers the query\nQuery:"
+        }
+      ]
+    }
+  },
+  {
+    "model_urls": ["https://huggingface.co/intfloat/e5-base-v2"],
+    "artifact_url": "https://huggingface.co/intfloat/e5-base-v2",
+    "revision": "f52bf8ec8c7124536f0efb74aca902b2995e5bcd",
+    "model_type": "bert",
+    "dimensions": 768,
+    "maximum_tokens": 512,
+    "memory_bytes": 1073741824,
+    "files": ["config.json", "tokenizer.json", "tokenizer_config.json", "vocab.txt", "1_Pooling/config.json", "sentence_bert_config.json", "onnx/model.onnx"],
+    "checksums": {
+      "onnx/model.onnx": "157f97ef1957d34f52efa26f8031371bf9043acc45460cec7ebe94631ac0e96b"
+    },
+    "recipe": {
+      "id": "prefix-mean-retrieval-v1",
+      "tokenizer": "bert-wordpiece",
+      "pooling": "mean",
+      "output": "last_hidden_state",
+      "chunk_tokens": 512,
+      "document_prefix": "passage: ",
+      "beginning_token": 101,
+      "end_token": 102,
+      "padding_token": 0,
+      "queries": [{"id": "default", "label": "Retrieval query", "prefix": "query: "}]
+    }
+  },
+  {
+    "model_urls": ["https://huggingface.co/vectoriseai/e5-small-v2"],
+    "artifact_url": "https://huggingface.co/vectoriseai/e5-small-v2",
+    "revision": "a929c750d1f770cd2fd75fadf1d4609c4730e247",
+    "model_type": "bert",
+    "dimensions": 384,
+    "maximum_tokens": 512,
+    "memory_bytes": 805306368,
+    "files": ["config.json", "tokenizer.json", "tokenizer_config.json", "vocab.txt", "1_Pooling/config.json", "sentence_bert_config.json", "onnx/model.onnx"],
+    "checksums": {
+      "onnx/model.onnx": "20a0dbefd78b3e8a62955c0c95650907d7a0b8ccb5e1b052ce3e26c54900233b"
+    },
+    "recipe": {
+      "id": "prefix-mean-retrieval-v1",
+      "tokenizer": "bert-wordpiece",
+      "pooling": "mean",
+      "output": "last_hidden_state",
+      "chunk_tokens": 512,
+      "document_prefix": "passage: ",
+      "beginning_token": 101,
+      "end_token": 102,
+      "padding_token": 0,
+      "queries": [{"id": "default", "label": "Retrieval query", "prefix": "query: "}]
+    }
+  }
+]

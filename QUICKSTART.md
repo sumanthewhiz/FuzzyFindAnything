@@ -6,6 +6,8 @@ Release packages include the .NET and native runtimes. No separate Python, .NET,
 
 Model configuration and system-tray behavior described below require **1.2.0-dev.1 or later**. Use the matching development build or build this checkout; the earlier 1.1.0 package does not include these controls.
 
+The extensible Qwen/E5 recipes and adaptive model controls require **1.2.0-dev.2 or later**.
+
 [Project](README.md) · [Architecture](docs/ARCHITECTURE.md) · [Existing-user migration](docs/MIGRATION.md)
 
 ## Before you start
@@ -38,7 +40,7 @@ An Actions artifact may be an outer ZIP containing the application ZIP and check
 C:\Users\<you>\Apps\FuzzyFindAnything
 ```
 
-Keep `engine`, `inference`, `extractor`, `tools`, `third-party`, and `runtime.json` beside the executable. Do not copy the executable out by itself or run it from inside an archive.
+Keep `engine`, `inference`, `hf-inference`, `extractor`, `tools`, `third-party`, and `runtime.json` beside the executable. Do not copy the executable out by itself or run it from inside an archive.
 
 Compare the downloaded file's SHA-256 with the matching `.zip.sha256`:
 
@@ -145,14 +147,21 @@ Select **Apply model changes** once. The app validates the URL, required native 
 | `https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2` | Text and code |
 | `https://huggingface.co/sentence-transformers/paraphrase-MiniLM-L3-v2` | Text and code |
 | `https://huggingface.co/Xenova/clip-vit-base-patch32` | Text, code and images |
+| `https://huggingface.co/Qwen/Qwen3-Embedding-0.6B` | Text and code; pinned stateless Qdrant ONNX export, 1,024 dimensions |
+| `https://huggingface.co/intfloat/e5-base-v2` | Text and code; native mean pooling with correct retrieval prefixes |
+| `https://huggingface.co/vectoriseai/e5-small-v2` | Text and code; a second checkpoint using the same reviewed prefix recipe |
 
-These are examples, not a guarantee that every repository on Hugging Face is compatible. BERT models need the supported WordPiece/mean-pooling contract and `onnx/model.onnx`; CLIP models need the supported tokenizer/image processor and separate text/vision ONNX graphs. Other architectures, including currently unsupported Qwen exports, fail with an explanation rather than silently using another model.
+These are examples, not a guarantee that every Hugging Face repository is compatible. The app supports reviewed native recipes and compatible BERT mean/CLS/already-pooled export contracts; additional projections, unreviewed instructions, tokenizers or scoring metrics require another reviewed recipe/adapter. CLIP retains its supported direct image/text interface. Qwen Coder generators and Florence caption/OCR pipelines are not substitutes for these embedding models.
 
-Matching assignments share one DiskANN index. Different models get separate indexes, including when their embedding dimensions happen to match. Changing only the code model reindexes code, not unchanged document/image embeddings. Settings are saved in the existing XML file; cached model revisions and indexes reload on restart.
+EmbeddingGemma2 needs no extra setup. The three URL boxes remain the main configuration. Requirements are resolved automatically without downloading weights; **Model details** appears only where applicable, and approved query-purpose choices remain inside it unless a recipe genuinely requires a choice. Tokenizer, pooling, graph and image-pipeline setup are not user configuration fields. Switching back to a simple model discards inactive query choices.
+
+Compatible document encodings share a DiskANN index; query roles can remain different for text and code. Unrelated vector spaces do not share an index merely because dimensions match. A document-model change rebuilds only affected types; a query-only setting change retains existing vectors. The same XML file stores preferences, with pinned artifact manifests in the local model cache. New bindings use XML version 2 and catalog schema 6; see the [rollback policy](docs/MIGRATION.md).
 
 CPU, GPU and NPU eligibility is evaluated against actual local execution providers and an inference probe. Windows ML can activate compatible providers already installed on the device. A missing provider/driver can make an otherwise suitable model unavailable; this is not a ban on GPU/NPU-only models. CPU is tried first, followed by available local accelerators when needed. The tab displays the execution provider actually selected.
 
-Search is temporarily disabled while model changes are being validated/applied, then resumes while the affected files are reindexed in the background. Similarity scores differ between models; a threshold useful for EmbeddingGemma2 may be too high for CLIP.
+Search can continue against the applied configuration during downloading and device validation, with a short serialized commit boundary. **Cancel model validation** leaves the active assignment intact if it has not committed. After acceptance, affected results can be incomplete during background reindexing; the tab reports completion or failures. It does not retain a separate serving copy of the old affected index.
+
+Similarity scores differ between models; a threshold useful for EmbeddingGemma2 may be too high for CLIP. The application does not silently change your saved threshold. Qwen's reviewed fp32 artifact adds approximately 2.4 GB of model assets; allow space and memory for every selected model and for validation while the old models remain active.
 
 ## Storage
 

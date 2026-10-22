@@ -185,7 +185,8 @@ public sealed class EngineClient : IAsyncDisposable
                     if (root.GetProperty("ok").GetBoolean())
                         completion.TrySetResult(root.GetProperty("result").Clone());
                     else
-                        completion.TrySetException(new InvalidOperationException(root.GetProperty("error").GetString()));
+                        completion.TrySetException(new EngineRequestException(root.GetProperty("error").GetString() ?? "The engine request failed.",
+                            root.TryGetProperty("configuration_applied", out var applied) && applied.GetBoolean()));
                 }
             }
             if (!stopping)
@@ -298,6 +299,11 @@ public sealed class EngineClient : IAsyncDisposable
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool AssignProcessToJobObject(SafeFileHandle job, SafeProcessHandle process);
+}
+
+public sealed class EngineRequestException(string message, bool configurationApplied) : InvalidOperationException(message)
+{
+    public bool ConfigurationApplied { get; } = configurationApplied;
 }
 
 public sealed record EngineStatus(

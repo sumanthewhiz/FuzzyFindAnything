@@ -10,6 +10,7 @@ using System.Windows.Threading;
 using System.Xml.Linq;
 using FuzzyFindAnything.App.Services;
 using FuzzyFindAnything.App.ViewModels;
+using FuzzyFindAnything.Core;
 
 namespace FuzzyFindAnything.HeadlessTests;
 
@@ -30,7 +31,7 @@ internal static class VisualChecks
         var localResources = new XElement(presentation + "Grid.Resources",
             source.Element(presentation + "Window.Resources")!.Elements().Select(value => new XElement(value)));
         content.AddFirst(localResources);
-        var events = new HashSet<string> { "Click", "Checked", "Unchecked", "KeyDown", "ValueChanged", "SelectionChanged", "Loaded", "Closing" };
+        var events = new HashSet<string> { "Click", "Checked", "Unchecked", "KeyDown", "ValueChanged", "SelectionChanged", "TextChanged", "Loaded", "Closing" };
         foreach (var attribute in content.DescendantsAndSelf().Attributes().Where(attribute => events.Contains(attribute.Name.LocalName)).ToArray())
             attribute.Remove();
         var model = new MainViewModel { Query = "a red circle on a white background", Threshold = 0.35 };
@@ -79,6 +80,17 @@ internal static class VisualChecks
                 messages.Select(message => message.FontFamily.Source).Distinct().Count() != 1)
                 throw new InvalidOperationException($"Model guidance typography differs in {theme} mode.");
             Console.WriteLine($"PASS model tab icon and matching guidance typography in {theme} mode.");
+            const string encoder = "https://huggingface.co/Qwen/Qwen3-Embedding-0.6B";
+            var selection = ModelSelection.Default with { Code = encoder };
+            model.ApplyModels(selection);
+            var recipe = EmbeddingRecipes.Find(encoder)!.Recipe;
+            model.ApplyModelInspection(new(selection, [new("Code", encoder, "Available", "No additional model setup is required.",
+                "Reviewed native embedding recipe. Tokenizer, pooling and role formatting are automatic.",
+                recipe.QueryProfiles.ToArray(), recipe.CodeQuery, false)]));
+            Save(grid, Path.Combine(output, $"models-recipes-collapsed-{theme.ToLowerInvariant()}.png"));
+            foreach (var expander in Descendants(grid).OfType<Expander>()) expander.IsExpanded = true;
+            Save(grid, Path.Combine(output, $"models-recipes-expanded-{theme.ToLowerInvariant()}.png"));
+            model.ApplyModels(ModelSelection.Default);
         }
         Console.WriteLine("Rendered the actual XAML/resources with synthetic data; no application window, engine or live settings were started.");
     }
@@ -92,5 +104,15 @@ internal static class VisualChecks
         var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
         using var stream = File.Create(path);
         encoder.Save(stream);
+    }
+
+    private static IEnumerable<DependencyObject> Descendants(DependencyObject parent)
+    {
+        for (int index = 0; index < VisualTreeHelper.GetChildrenCount(parent); index++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, index);
+            yield return child;
+            foreach (var nested in Descendants(child)) yield return nested;
+        }
     }
 }

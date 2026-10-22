@@ -65,7 +65,7 @@ internal static class Fixtures
         File.WriteAllBytes(Path.Combine(root, "empty.txt"), []);
         File.WriteAllText(Path.Combine(root, "broken.pdf"), "%PDF-1.7\nThis is not a valid PDF object graph.");
     }
-    public static void Image(string path, bool red)
+    public static void Image(string path, bool red, int width = 256, int height = 256)
     {
         const int size = 256;
         byte[] pixels = Enumerable.Repeat((byte)255, size * size * 3).ToArray();
@@ -77,8 +77,9 @@ internal static class Fixtures
                     pixels[index] = red ? (byte)255 : (byte)0;
                     pixels[index + 1] = 0; pixels[index + 2] = red ? (byte)0 : (byte)255;
                 }
-        var image = BitmapSource.Create(size, size, 96, 96, PixelFormats.Rgb24, null, pixels, size * 3);
-        BitmapEncoder encoder = Path.GetExtension(path) == ".jpg" ? new JpegBitmapEncoder { QualityLevel = 94 } : new PngBitmapEncoder();
+        BitmapSource image = BitmapSource.Create(size, size, 96, 96, PixelFormats.Rgb24, null, pixels, size * 3);
+        if (width != size || height != size) image = new TransformedBitmap(image, new ScaleTransform(width / (double)size, height / (double)size));
+        BitmapEncoder encoder = Path.GetExtension(path) is ".jpg" or ".jpeg" ? new JpegBitmapEncoder { QualityLevel = 94 } : new PngBitmapEncoder();
         encoder.Frames.Add(BitmapFrame.Create(image));
         using var stream = File.Create(path); encoder.Save(stream);
     }

@@ -12,5 +12,6 @@
     <Content Include="..\..\artifacts\native\ffa_diskann.dll" Link="ffa_diskann.dll" CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\..\artifacts\native\ffa_diskann.dll')" />
     <Content Include="..\..\artifacts\native\libiomp5md.dll" Link="libiomp5md.dll" CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\..\artifacts\native\libiomp5md.dll')" />
     <EmbeddedResource Include="..\Fixtures\office\*" LogicalName="FuzzyFindAnything.Tests.Office.%(Filename)%(Extension)" />
+    <EmbeddedResource Include="..\Fixtures\embedding\*.json" LogicalName="FuzzyFindAnything.Tests.Embedding.%(Filename)%(Extension)" />
   </ItemGroup>
 </Project>

@@ -78,19 +78,39 @@ The **Model configuration** tab stores three Hugging Face model-card URLs in the
 
 Older XML without this element receives the EmbeddingGemma2 defaults in memory. Reading it does not replace the existing index or rewrite the configuration. Apply with unchanged normalized URLs is a no-op.
 
-The native adapters currently support the existing EmbeddingGemma2 bundle, mean-pooled BERT ONNX models with the standard WordPiece tokenizer, and CLIP ONNX models with separate text/image embedding graphs and the supported image processor. Text and code may share either adapter; images require a multimodal adapter. Unsupported tokenization/pooling/model families are rejected. Hugging Face Python model code is never downloaded for execution.
+The native adapters retain the existing EmbeddingGemma2 bundle and direct CLIP image/text graphs. Text/code models can use reviewed embedding recipes, or compatible standard BERT WordPiece mean/CLS/already-pooled contracts. Unknown tokenizers, model families, extra projection modules and unreviewed prompt/scoring contracts are rejected. Hugging Face Python model code is never downloaded for execution.
+
+### Reviewed embedding recipes
+
+`model-assets\embedding-recipes.json` is embedded into the native core; it is reviewed application data, not executable metadata supplied by an arbitrary model card. Entries map model-card URLs to a pinned artifact repository/revision, expected hashes and a bounded recipe. The recipe defines tokenization, special tokens, padding, tensor names, output selection, pooling, document formatting, approved query profiles, chunk size and batch-token limits. Adding a compatible checkpoint requires registry data and qualification, not UI/indexer model-name branches. A new algorithm/graph ABI still requires an adapter.
+
+The initial decoder recipe maps `Qwen/Qwen3-Embedding-0.6B` to Qdrant's stateless fp32 ONNX export at `af95f2c416ffe9379369ad64f9113e865db6112c`. It uses native byte-level BPE/NFC, the checkpoint's terminal token, left padding, last-real-token pooling and normalization into 1,024 dimensions. Query-purpose presets add approved instructions; documents do not receive a query instruction. The qualified input ceiling is 2,048 tokens and document chunks are bounded to 512 tokens, not the model card's full advertised context.
+
+Two E5 checkpoints demonstrate the same extensible path with a different recipe: WordPiece, mean pooling, `passage: ` document prefixes and `query: ` query prefixes. Mean, CLS, last-token and pre-pooled outputs share mask-aware validation; pre-pooled vectors are not pooled twice. Float16 outputs are converted explicitly when the recipe path permits them; the durable vector boundary remains normalized float32.
+
+Artifact caching and model sessions are distinct from document-vector identity. Legacy fingerprints/cache layouts remain unchanged. New document-space fingerprints include tokenizer, output/pooling and document-format contracts; indexing fingerprints also include chunking. Query-purpose changes do not rewrite document vectors. The same physical model can serve different query roles; shared-space search filters allowed source kinds before consuming a binding's result limit. A bounded in-memory query cache keys by space, full recipe contract, device and query profile.
+
+Model inspection reads cached descriptors or bounded Hub metadata, without downloading weights or changing applied settings. The UI starts with three URL fields. Simple/default models have no additional setup; applicable details are collapsed, and genuine unresolved choices are exposed through built-in controls rather than arbitrary forms from remote metadata. The actual artifact source, revision and limits are disclosed.
 
 New assets are fetched from the selected Hugging Face repository at a resolved commit, with bounded downloads, LFS SHA-256 verification where supplied and a complete local checksum manifest. Previously cached assets can be reused offline. Active models hold read leases on their assets. Model payloads remain outside Git and application ZIPs.
+
+Acquisition inspects bounded ONNX protobuf metadata to discover real external-data dependencies and validate their file bounds; it no longer guesses external weights from filename suffixes. Paths cannot escape the model directory. Transfers retain a 4 GiB per-file and 12 GiB total-asset budget, with byte progress and resumable verified staging.
 
 The compatible-model process uses the self-contained `Microsoft.Windows.AI.MachineLearning` runtime, separate from the pinned original EmbeddingGemma2 process. Windows ML enumerates real EP/device pairs, including DirectML GPUs and compatible installed vendor providers such as QNN for Qualcomm NPUs. Installed providers may be activated for the process; missing providers are reported instead of being represented as available.
 
 Selection tries CPU first for continuity and then available local GPU/NPU devices if CPU cannot execute the graph. Each candidate must create the required graph sessions and produce valid, distinguishable normalized embeddings for its supported modalities. For accelerator candidates, runtime profiling must show that the selected provider actually executed embedding kernels; an all-CPU fallback does not count as GPU/NPU support. CPU assistance for supported control/shape nodes is allowed. Cloud execution providers are excluded.
 
+New recipe hosts also execute a representative near-maximum token workload on each candidate before reporting readiness. Qualification runs again on worker startup/replacement; no stale persisted device certificate bypasses these checks. Memory admission includes the model estimate plus a system reserve, and the recipe's token budget bounds batching. An explicit device policy is a strict request: it does not silently fall back to another provider.
+
 Model changes are prepared before mutating the catalog. Only after asset, modality, memory and execution checks succeed are file workers paused, affected jobs/vectors removed, XML and routing state published, and processing restarted. Unchanged file types retain their vector IDs and committed passage batches. A failed validation leaves the applied XML and indexes intact.
+
+Preparation runs outside the short configuration commit gate and on a separate request task, so existing-index queries can continue while assets/devices are checked. Model changes remain serialized; cancellation before publication preserves the applied settings. A failure after commit is reported as an applied configuration with stopped indexing, not as a successful rollback. Query/device-only changes persist settings without invalidating vectors.
+
+The catalog also persists the affected file types and completion state for each accepted model change. Status waits for folder reconciliation and the affected queue to finish before reporting completion, including separate succeeded/failed counts. This tracking survives restart; a later validation error is not overwritten by an earlier completion message. Valid images that an older CLIP build rejected because resize rounding produced a 223-pixel short edge are retried on startup without invalidating successfully indexed files.
 
 There is one DiskANN graph per distinct pinned embedding space, not simply per vector dimension. The default graph retains its existing `diskann` location. Other graphs live under `model-indexes\<space-key>`; model assets live separately under `models\<space-key>` in the selected data directory. Counts and search results are aggregated, while the model tab lists each graph's file types, dimensions and actual execution device.
 
-Schema 4 is retained for unchanged default installations. The first model-assignment change upgrades the catalog to schema 5, recording embedding routes and independent graph generations. XML is published within the model-change transaction boundary; if a process exits between XML publication and SQLite commit, startup validates the saved intent, reconciles routing and schedules the affected files again. Older application versions must not be used against a schema-5 catalog; use a complete pre-change backup for rollback.
+Schema 4 is retained for unchanged default installations. Legacy model assignments use schema 5; new recipe/query/device bindings use schema 6 and XML version 2. Source roles, approved query profiles and device policy are persisted independently of the vector routes. XML is published within the model-change transaction boundary; if a process exits between XML publication and SQLite commit, startup validates the saved intent, reconciles routing and schedules affected files again. Older application versions must not be used against unsupported schemas; use a complete pre-change backup for rollback.
 
 ## Startup and resource budgeting
 
@@ -137,7 +157,7 @@ USN v2/v3 replay tracks file and parent identities. **Unprivileged records may o
 
 Directory notifications provide a complementary low-latency path. Overflow, journal identity/cursor gaps and unknown record versions trigger conservative reconciliation. Metadata reconciliation also runs periodically. Durable journal cursors advance only after detected changes have been represented by queued work or completed deletions, not before callback delivery.
 
-Search validates the query, produces a query embedding, retrieves DiskANN candidates, resolves their current ownership, filters missing files, reranks by cosine similarity and deduplicates by file. The default limit is 50 files. A selected similarity is a score, not a probability.
+Search validates the query, produces a query embedding, retrieves DiskANN candidates, resolves their current ownership, filters missing files, reranks by cosine similarity and deduplicates by file. The default limit is 50 files per active model index. Results are grouped by file type rather than applying a shared cross-model cutoff: a model with higher raw cosine scores must not suppress another model's matches. A selected similarity is a score, not a probability, and the same threshold can have different effects with different models.
 
 ## Persistence and recovery
 

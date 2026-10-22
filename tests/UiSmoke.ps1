@@ -3,7 +3,8 @@ param(
     [switch]$Enhanced,
     [switch]$Diagnose,
     [string]$ApplicationDirectory,
-    [string]$ModelCache
+    [string]$ModelCache,
+    [string]$EmbeddingModelCache
 )
 
 $ErrorActionPreference = 'Stop'
@@ -160,6 +161,28 @@ function Toggle-Control([string]$id) {
     ([System.Windows.Automation.TogglePattern]$control.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)).Toggle()
 }
 
+function Select-QueryPurpose([string]$label) {
+    $profiles = Find-Id 'QueryProfileChoice'
+    ([System.Windows.Automation.ExpandCollapsePattern]$profiles.GetCurrentPattern(
+        [System.Windows.Automation.ExpandCollapsePattern]::Pattern)).Expand()
+    $choices = $profiles.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+        (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::IsSelectionItemPatternAvailableProperty, $true)))
+    $choice = @($choices | Where-Object { $_.Current.Name -eq $label }) | Select-Object -First 1
+    if (-not $choice) { throw "Missing approved query purpose: $label" }
+    ([System.Windows.Automation.SelectionItemPattern]$choice.GetCurrentPattern(
+        [System.Windows.Automation.SelectionItemPattern]::Pattern)).Select()
+    ([System.Windows.Automation.ExpandCollapsePattern]$profiles.GetCurrentPattern(
+        [System.Windows.Automation.ExpandCollapsePattern]::Pattern)).Collapse()
+}
+
+function Read-QueryPurpose {
+    $profiles = Find-Id 'QueryProfileChoice'
+    $selection = ([System.Windows.Automation.SelectionPattern]$profiles.GetCurrentPattern(
+        [System.Windows.Automation.SelectionPattern]::Pattern)).Current.GetSelection()
+    if ($selection.Length -ne 1) { return '' }
+    $selection[0].Current.Name
+}
+
 function Read-FileHash([string]$path) {
     $hash = [Security.Cryptography.SHA256]::Create()
     $stream = [IO.File]::OpenRead($path)
@@ -178,6 +201,16 @@ function Close-ToTray {
         throw 'The close message could not be delivered to the current application window.'
     }
     Wait-Check { -not [FfaUiChecks]::IsWindowVisible([FfaUiChecks]::FindWindow($process.Id, $false)) } 'close to tray' 15
+}
+
+function Minimize-ToTray {
+    $handle = [FfaUiChecks]::FindWindow($process.Id, $false)
+    [void][FfaUiChecks]::ShowWindow($handle, 6)
+    Start-Sleep -Milliseconds 250
+    $current = [FfaUiChecks]::FindWindow($process.Id, $false)
+    Write-Output ('Minimize transition: handle={0}; current={1}; style=0x{2:X8}; visible={3}' -f
+        $handle, $current, [FfaUiChecks]::GetWindowLong($current, -16), [FfaUiChecks]::IsWindowVisible($current))
+    Wait-Check { -not [FfaUiChecks]::IsWindowVisible([FfaUiChecks]::FindWindow($process.Id, $false)) } 'minimize to tray' 15
 }
 
 function Invoke-TrayMenu([string]$name) {
@@ -201,6 +234,10 @@ try {
     & $fixtureTool ui-fixture $work
     if ($LASTEXITCODE -ne 0) { throw 'Could not prepare the isolated UI test corpus.' }
     if ($ModelCache) { Copy-Item -LiteralPath $ModelCache -Destination (Join-Path $data 'models') -Recurse }
+    if ($EmbeddingModelCache) {
+        New-Item -ItemType Directory -Force -Path (Join-Path $data 'models') | Out-Null
+        Get-ChildItem -LiteralPath $EmbeddingModelCache -Directory | Copy-Item -Destination (Join-Path $data 'models') -Recurse
+    }
     $process = Start-Process -FilePath $app -ArgumentList @('--data-dir', "`"$data`"") -PassThru
     Wait-Check {
         $script:window = [System.Windows.Automation.AutomationElement]::RootElement.FindFirst(
@@ -444,17 +481,89 @@ try {
         $codeModel.SetValue($alternate)
         Invoke-Button 'ApplyModelsButton'
         Wait-Check { (Find-Id 'ApplyModelsButton').Current.IsEnabled -and (Find-Id 'ModelConfigurationStatus').Current.Name -like 'Configuration saved*' } 'model configuration apply' 300
+        Wait-Check { (Find-Id 'ModelConfigurationStatus').Current.Name -like '*Reindexing complete*' } 'model reindex completion feedback' 300
         [xml]$configuration = Get-Content -LiteralPath (Join-Path $data 'settings.xml') -Raw
         if ($configuration.FuzzyFindAnythingConfiguration.Models.code -ne $alternate) { throw 'The selected code model was not saved.' }
         $codeModel.SetValue($defaultModel)
         Invoke-Button 'ApplyModelsButton'
         Wait-Check { (Find-Id 'ApplyModelsButton').Current.IsEnabled -and (Find-Id 'ModelConfigurationStatus').Current.Name -like 'Configuration saved*' } 'default model restore' 300
+        Wait-Check { (Find-Id 'ModelConfigurationStatus').Current.Name -like '*Reindexing complete*' } 'default model completion feedback' 300
         [xml]$configuration = Get-Content -LiteralPath (Join-Path $data 'settings.xml') -Raw
         if ($configuration.FuzzyFindAnythingConfiguration.Models.text -ne $defaultModel -or
             $configuration.FuzzyFindAnythingConfiguration.Models.code -ne $defaultModel -or
             $configuration.FuzzyFindAnythingConfiguration.Models.image -ne $defaultModel) { throw 'Model defaults were not restored.' }
     } else { $codeModel.SetValue($defaultModel) }
     Write-Output 'PASS model URL defaults, no-op Apply, invalid URL preservation and configured model changes'
+
+    if ($EmbeddingModelCache) {
+        if (Find-Id 'QueryProfileChoice') { throw 'Default Gemma configuration exposes unnecessary query/tokenizer setup.' }
+        $codeModel.SetValue('https://huggingface.co/Qwen/Qwen3-Embedding-0.6B')
+        Wait-Check { Find-Id 'ModelDetailsExpander' } 'automatic embedding requirements' 60
+        ([System.Windows.Automation.ExpandCollapsePattern](Find-Id 'ModelDetailsExpander').GetCurrentPattern(
+            [System.Windows.Automation.ExpandCollapsePattern]::Pattern)).Expand()
+        Wait-Check { Find-Id 'QueryProfileChoice' } 'applicable query profiles'
+        Invoke-Button 'ApplyModelsButton'
+        Select-Tab 'SearchTab'
+        Wait-Check { (Find-Id 'SearchButton').Current.IsEnabled } 'nonblocking model validation' 30
+        Select-Tab 'ModelsTab'
+        Wait-Check { (Find-Id 'ApplyModelsButton').Current.IsEnabled -and
+            (Find-Id 'ModelConfigurationStatus').Current.Name -like '*Reindexing complete*' } 'native Qwen code reindex' 360
+        [xml]$configuration = Get-Content -LiteralPath (Join-Path $data 'settings.xml') -Raw
+        if ($configuration.FuzzyFindAnythingConfiguration.version -ne '2' -or
+            $configuration.FuzzyFindAnythingConfiguration.Models.Code.modelUrl -ne 'https://huggingface.co/Qwen/Qwen3-Embedding-0.6B') {
+            throw 'The extended model binding was not persisted.'
+        }
+        Wait-Check { Find-Id 'ModelDetailsExpander' } 'saved embedding details'
+        ([System.Windows.Automation.ExpandCollapsePattern](Find-Id 'ModelDetailsExpander').GetCurrentPattern(
+            [System.Windows.Automation.ExpandCollapsePattern]::Pattern)).Expand()
+        $profiles = Find-Id 'QueryProfileChoice'
+        ([System.Windows.Automation.ExpandCollapsePattern]$profiles.GetCurrentPattern(
+            [System.Windows.Automation.ExpandCollapsePattern]::Pattern)).Expand()
+        $selectableProfiles = $profiles.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+            (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::IsSelectionItemPatternAvailableProperty, $true)))
+        $documentProfile = @($selectableProfiles | Where-Object {
+            $_.Current.Name -eq 'Document search' -or $_.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
+                (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Document search')))
+        }) | Select-Object -First 1
+        if (-not $documentProfile) { throw 'The approved document query profile is missing.' }
+        ([System.Windows.Automation.SelectionItemPattern]$documentProfile.GetCurrentPattern(
+            [System.Windows.Automation.SelectionItemPattern]::Pattern)).Select()
+        ([System.Windows.Automation.ExpandCollapsePattern]$profiles.GetCurrentPattern(
+            [System.Windows.Automation.ExpandCollapsePattern]::Pattern)).Collapse()
+        Invoke-Button 'ApplyModelsButton'
+        Wait-Check { (Find-Id 'ApplyModelsButton').Current.IsEnabled -and
+            (Find-Id 'ModelConfigurationStatus').Current.Name -like '*existing embeddings were retained*' } 'query-only setting update' 120
+        [xml]$configuration = Get-Content -LiteralPath (Join-Path $data 'settings.xml') -Raw
+        if ($configuration.FuzzyFindAnythingConfiguration.Models.Code.queryProfile -ne 'document-search-v1') {
+            throw 'The query-only choice was lost.'
+        }
+        Start-Sleep -Milliseconds 1200
+        if ((Read-QueryPurpose) -ne 'Document search') { throw 'Apply cleared the visible non-default query purpose.' }
+        Select-QueryPurpose 'Code search'
+        Invoke-Button 'ApplyModelsButton'
+        Wait-Check { (Find-Id 'ApplyModelsButton').Current.IsEnabled -and
+            (Find-Id 'ModelConfigurationStatus').Current.Name -like '*existing embeddings were retained*' } 'explicit default query purpose' 120
+        Start-Sleep -Milliseconds 1200
+        [xml]$configuration = Get-Content -LiteralPath (Join-Path $data 'settings.xml') -Raw
+        if ($configuration.FuzzyFindAnythingConfiguration.Models.Code.queryProfile -ne 'code-search-v1' -or
+            (Read-QueryPurpose) -ne 'Code search') { throw 'Apply cleared the explicit default query purpose.' }
+        $retainedConfig = Read-FileHash (Join-Path $data 'settings.xml')
+        Invoke-Button 'ApplyModelsButton'
+        Start-Sleep -Milliseconds 300
+        if ((Read-QueryPurpose) -ne 'Code search' -or (Read-FileHash (Join-Path $data 'settings.xml')) -ne $retainedConfig) {
+            throw 'No-op Apply changed the query-purpose selection.'
+        }
+        Write-Output 'PASS visible Query Purpose retained after Apply, refresh and no-op'
+        $codeModel.SetValue($defaultModel)
+        Wait-Check { -not (Find-Id 'QueryProfileChoice') } 'simple default model form'
+        Invoke-Button 'ApplyModelsButton'
+        Wait-Check { (Find-Id 'ApplyModelsButton').Current.IsEnabled -and
+            (Find-Id 'ModelConfigurationStatus').Current.Name -like '*Reindexing complete*' } 'restored default binding' 300
+        [xml]$configuration = Get-Content -LiteralPath (Join-Path $data 'settings.xml') -Raw
+        if ($configuration.FuzzyFindAnythingConfiguration.Models.Code.modelUrl -ne $defaultModel -or
+            $configuration.FuzzyFindAnythingConfiguration.Models.Code.queryProfile) { throw 'Hidden model-specific settings leaked into Gemma.' }
+        Write-Output 'PASS progressive disclosure, native Qwen Apply, query-only settings and default simplicity'
+    }
 
     Select-Tab 'FoldersTab'
     Wait-Check {
@@ -463,8 +572,7 @@ try {
     } 'model reindex completion' 180
     Select-Tab 'SearchTab'
     $filesBeforeTray = [int]([regex]::Match((Find-Id 'IndexCounts').Current.Name, '^\d+').Value)
-    $windowPattern.SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Minimized)
-    Wait-Check { -not [FfaUiChecks]::IsWindowVisible([FfaUiChecks]::FindWindow($process.Id, $false)) } 'background tray state' 15
+    Minimize-ToTray
     $trayFile = Join-Path $corpus 'Tray background.txt'
     [IO.File]::WriteAllText($trayFile, 'This document was indexed while the window was hidden in the system tray.', [Text.Encoding]::UTF8)
     Wait-Check {
@@ -496,8 +604,7 @@ try {
     if (-not (Test-Path (Join-Path $corpus 'Shape guide.txt'))) { throw 'Removing a folder deleted an original file.' }
     Write-Output 'PASS checkbox removal and no-match UI; original files retained'
 
-    $windowPattern.SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Minimized)
-    Wait-Check { -not [FfaUiChecks]::IsWindowVisible([FfaUiChecks]::FindWindow($process.Id, $false)) } 'minimize to tray' 15
+    Minimize-ToTray
     $hiddenHandle = [FfaUiChecks]::FindWindow($process.Id, $false)
     if (([FfaUiChecks]::GetWindowLong($hiddenHandle, -20) -band 0x40000) -ne 0) { throw 'The hidden app still has a taskbar button.' }
     [FfaUiChecks]::TrayClick($trayHandle, $false)

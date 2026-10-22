@@ -6,6 +6,10 @@
 
 Configurable-model builds (1.2.0 and later) leave an unchanged default-model catalog at schema 4. Applying a different model assignment upgrades it to schema 5. Restoring the default model does not downgrade the schema; use a complete pre-change backup to return to an older application build.
 
+Extensible embedding builds (`1.2.0-dev.2` and later) also read existing XML version 1 and catalog schemas 4/5. New recipe or query/device bindings use XML version 2 and schema 6. Merely opening an unchanged installation does not rewrite its preferences, change legacy vector fingerprints, or re-embed its files. Saving unrelated preferences preserves additional XML sections. A query-only change updates the binding without advancing vector generations; document-encoding or chunking changes invalidate only affected file types.
+
+Old binaries must not open version-2/schema-6 data. Restore a complete pre-upgrade backup if rolling back; changing the XML version number by hand is not a downgrade. Returning to the default models keeps the newer schema/configuration format and removes irrelevant query options, rather than silently restoring an older binary's compatibility.
+
 The application retains the established model fingerprint, schema-4 catalog, folder ownership, file/vector identifiers, prepared passages and committed embedding batches. Tokenization, chunk decoding, embeddings and retrieval have explicit parity gates; matching dimensions alone is not treated as compatibility proof.
 
 Native graph loading is attempted only after checksums, model identity and generation agree. A missing, incompatible or damaged graph is reconstructed from SQLite vectors without re-embedding completed content. The native graph format is not a reason to clear the catalog or folder list.

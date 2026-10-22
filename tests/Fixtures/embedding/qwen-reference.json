@@ -1,0 +1,25 @@
+{
+  "artifact": "https://huggingface.co/Qdrant/Qwen3-Embedding-0.6B-onnx",
+  "revision": "af95f2c416ffe9379369ad64f9113e865db6112c",
+  "tokenizer_sha256": "def76fb086971c7867b829c23a26261e38d9d74e02139253b38aeb9df8b4b50a",
+  "samples": [
+    { "text": "a", "ids": [64, 151643] },
+    { "text": "Hello, world!", "ids": [9707, 11, 1879, 0, 151643] },
+    { "text": "def parse_csv(row):\n    return row.split(',')\n", "ids": [750, 4715, 14020, 7835, 982, 262, 470, 2802, 5289, 61265, 151643] },
+    { "text": "caf\u00e9 cafe\u0301 \u4e2d\u6587 \u0928\u092e\u0938\u094d\u0924\u0947", "ids": [924, 58858, 51950, 72858, 16744, 14925, 101, 87244, 78368, 30484, 97, 34370, 151643] },
+    { "text": "\ud83d\ude00 \ud840\udc00x \ud835\udc00abc 12345\r\n\t", "ids": [141334, 220, 172, 63219, 222, 87, 81250, 238, 222, 13683, 220, 16, 17, 18, 19, 20, 319, 197, 151643] },
+    { "text": "<|im_start|>hello<|im_end|>", "ids": [151644, 14990, 151645, 151643] },
+    { "text": "<think>read code</think>", "ids": [151667, 878, 2038, 151668, 151643] }
+  ],
+  "queries": ["What is the capital of China?", "Explain gravity"],
+  "documents": [
+    "The capital of China is Beijing.",
+    "Gravity is a force that attracts two bodies towards each other. It gives weight to physical objects and is responsible for the movement of planets around the sun."
+  ],
+  "scores": [
+    [0.7645590305328369, 0.14142560958862305],
+    [0.13549776375293732, 0.599955141544342]
+  ],
+  "maximum_score_error": 0.0001,
+  "minimum_batch_cosine": 0.99999
+}

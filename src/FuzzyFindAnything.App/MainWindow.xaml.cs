@@ -24,6 +24,9 @@ public partial class MainWindow : Window
     private CancellationTokenSource thumbnailLifetime = new();
     private CancellationTokenSource? searchLifetime;
     private long searchGeneration;
+    private CancellationTokenSource? modelInspection;
+    private long inspectionGeneration;
+    private bool modelInspectionStarted;
 
     public MainWindow(string dataDirectory, SettingsService settings)
     {
@@ -35,7 +38,11 @@ public partial class MainWindow : Window
         SourceInitialized += (_, _) => ThemeService.ApplyTitleBar(this, viewModel.IsDarkMode);
         DataContext = viewModel;
         engine = new EngineClient(dataDirectory, settings.Current);
-        engine.StatusChanged += status => Dispatcher.InvokeAsync(() => viewModel.Apply(status));
+        engine.StatusChanged += status => Dispatcher.InvokeAsync(() =>
+        {
+            viewModel.Apply(status);
+            if (!modelInspectionStarted) { modelInspectionStarted = true; _ = InspectModelsAsync(); }
+        });
         engine.StartupChanged += status => Dispatcher.InvokeAsync(() => viewModel.ApplyStartup(status));
         engine.Warning += message => Dispatcher.InvokeAsync(() => viewModel.Error = message);
         engine.ModelStatusChanged += message => Dispatcher.InvokeAsync(() => viewModel.ModelConfigurationMessage = message);
@@ -135,27 +142,90 @@ public partial class MainWindow : Window
         if (!viewModel.CanApplyModels) return;
         try
         {
-            var selection = new ModelSelection(viewModel.TextModelUrl, viewModel.CodeModelUrl, viewModel.ImageModelUrl).Normalize();
+            var selection = viewModel.DraftModels;
             if (selection == settings.Current.ModelSelection.Normalize()) return;
             viewModel.Error = "";
             viewModel.ConfigurationBusy = true;
-            viewModel.ModelConfigurationMessage = "Validating models and available execution devices...";
+            viewModel.BeginModelConfiguration();
             var result = await engine.RequestAsync<ModelApplyResult>("apply_models", selection, TimeSpan.FromMinutes(30));
             settings.Reload();
             viewModel.ApplySettings(settings.Current, settings.FilePath);
-            viewModel.ApplyModels(result.Selection);
+            viewModel.FinishModelConfiguration(result);
             if (result.Changed)
             {
                 CancelPendingSearch(); thumbnailLifetime.Cancel(); viewModel.ClearResults();
-                viewModel.ModelConfigurationMessage = "Configuration saved. Affected files are being reindexed in the background.";
             }
         }
         catch (Exception exception)
         {
-            viewModel.ModelConfigurationMessage = "Model configuration was not applied: " + exception.Message;
+            viewModel.ModelConfigurationMessage = exception is EngineRequestException { ConfigurationApplied: true }
+                ? "Configuration applied, but indexing did not finish: " + exception.Message
+                : "Model configuration was not applied: " + exception.Message;
             ShowError(viewModel.ModelConfigurationMessage);
         }
-        finally { viewModel.ConfigurationBusy = false; }
+        finally { viewModel.ConfigurationBusy = false; _ = InspectModelsAsync(); }
+    }
+
+    private void ModelUrl_Changed(object sender, TextChangedEventArgs args)
+    {
+        if (engineStarted && !viewModel.ConfigurationBusy) _ = InspectModelsAsync();
+    }
+    private async Task InspectModelsAsync()
+    {
+        modelInspection?.Cancel();
+        var request = new CancellationTokenSource();
+        modelInspection = request;
+        long generation = ++inspectionGeneration;
+        try
+        {
+            await Task.Delay(450, request.Token);
+            if (!viewModel.IsConnected || viewModel.ConfigurationBusy) return;
+            ModelSelection selection;
+            try { selection = viewModel.DraftModels; }
+            catch (ArgumentException error)
+            {
+                foreach (var (kind, url, target) in new[]
+                {
+                    ("Document", viewModel.TextModelUrl, viewModel.TextRequirements),
+                    ("Code", viewModel.CodeModelUrl, viewModel.CodeRequirements),
+                    ("Image", viewModel.ImageModelUrl, viewModel.ImageRequirements)
+                })
+                {
+                    try { _ = ModelSelection.Canonical(url); }
+                    catch (ArgumentException) { target.Unavailable(kind, url, error.Message); }
+                }
+                return;
+            }
+            var result = await engine.RequestAsync<ModelInspection>("inspect_models", selection,
+                TimeSpan.FromSeconds(45), request.Token);
+            if (generation == inspectionGeneration) viewModel.ApplyModelInspection(result);
+        }
+        catch (OperationCanceledException) when (request.IsCancellationRequested) { }
+        catch (Exception error) when (error is InvalidOperationException or TimeoutException or IOException)
+        {
+            if (generation == inspectionGeneration)
+            {
+                viewModel.TextRequirements.Unavailable("Document", viewModel.TextModelUrl, error.Message);
+                viewModel.CodeRequirements.Unavailable("Code", viewModel.CodeModelUrl, error.Message);
+                viewModel.ImageRequirements.Unavailable("Image", viewModel.ImageModelUrl, error.Message);
+            }
+        }
+        finally
+        {
+            if (ReferenceEquals(modelInspection, request)) modelInspection = null;
+            request.Dispose();
+        }
+    }
+    private async void CancelModelChange_Click(object sender, RoutedEventArgs args)
+    {
+        try
+        {
+            var result = await engine.RequestAsync<JsonElement>("cancel_model_change");
+            viewModel.ModelConfigurationMessage = result.GetProperty("cancelled").GetBoolean()
+                ? "Cancelling model validation. The applied configuration will be retained."
+                : "The configuration is already applied. Background indexing will resume after restart if you exit.";
+        }
+        catch (Exception error) { ShowError("Could not cancel the model change: " + error.Message); }
     }
 
     private async void SearchInput_KeyDown(object sender, KeyEventArgs args)
@@ -416,6 +486,7 @@ public partial class MainWindow : Window
         if (quitting)
             return;
         quitting = true;
+        modelInspection?.Cancel();
         CancelPendingSearch();
         thumbnailLifetime.Cancel();
         IsEnabled = false;

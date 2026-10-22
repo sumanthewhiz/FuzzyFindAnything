@@ -7,6 +7,81 @@
         Icon="Assets/app.ico" Loaded="Window_Loaded" Closing="Window_Closing"
         AutomationProperties.AutomationId="MainWindow">
   <Window.Resources>
+    <Style x:Key="ModelQuerySelector" TargetType="ComboBox">
+      <Setter Property="Background" Value="{DynamicResource Surface}" />
+      <Setter Property="Foreground" Value="{DynamicResource Ink}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource Line}" />
+      <Setter Property="MinWidth" Value="250" />
+      <Setter Property="HorizontalAlignment" Value="Left" />
+      <Setter Property="ItemContainerStyle">
+        <Setter.Value>
+          <Style TargetType="ComboBoxItem">
+            <Setter Property="AutomationProperties.Name" Value="{Binding Label}" />
+            <Setter Property="Foreground" Value="{DynamicResource Ink}" />
+            <Setter Property="Background" Value="{DynamicResource Surface}" />
+            <Setter Property="Padding" Value="10,7" />
+            <Style.Triggers>
+              <Trigger Property="IsHighlighted" Value="True"><Setter Property="Background" Value="{DynamicResource AccentSurface}" /></Trigger>
+              <Trigger Property="IsSelected" Value="True"><Setter Property="Background" Value="{DynamicResource AccentSurface}" /></Trigger>
+            </Style.Triggers>
+          </Style>
+        </Setter.Value>
+      </Setter>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ComboBox">
+            <Grid>
+              <ToggleButton Focusable="False" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                            IsChecked="{Binding IsDropDownOpen, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}">
+                <ToggleButton.Template>
+                  <ControlTemplate TargetType="ToggleButton">
+                    <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1"
+                            CornerRadius="6" MinHeight="36">
+                      <TextBlock Text="&#xE70D;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Foreground="{DynamicResource Muted}"
+                                 HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0" />
+                    </Border>
+                  </ControlTemplate>
+                </ToggleButton.Template>
+              </ToggleButton>
+              <TextBlock Text="{Binding SelectedItem.Label, RelativeSource={RelativeSource TemplatedParent}}"
+                         Margin="10,7,32,7" VerticalAlignment="Center" IsHitTestVisible="False" />
+              <Popup x:Name="PART_Popup" IsOpen="{TemplateBinding IsDropDownOpen}" Placement="Bottom" AllowsTransparency="True"
+                     Focusable="False">
+                <Border Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Line}" BorderThickness="1"
+                        MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}">
+                  <ScrollViewer MaxHeight="240"><ItemsPresenter /></ScrollViewer>
+                </Border>
+              </Popup>
+            </Grid>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <DataTemplate x:Key="ModelRequirementTemplate">
+      <StackPanel Margin="0,0,0,14" Visibility="{Binding IsVisible, Converter={StaticResource BoolToVisibility}}">
+        <TextBlock Text="{Binding Summary}" Foreground="{DynamicResource Muted}" FontSize="12" TextWrapping="Wrap" />
+        <TextBlock Text="{Binding Error}" Foreground="{DynamicResource ErrorText}" TextWrapping="Wrap" FontSize="12" Margin="0,5,0,0"
+                   Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}" AutomationProperties.AutomationId="ModelRequirementError" />
+        <StackPanel Margin="0,8,0,0" Visibility="{Binding RequiresQueryChoice, Converter={StaticResource BoolToVisibility}}">
+          <TextBlock Text="Query purpose (required)" />
+          <ComboBox ItemsSource="{Binding QueryProfiles}" DisplayMemberPath="Label" SelectedValuePath="Id"
+                    SelectedValue="{Binding SelectedQueryProfile}" Style="{StaticResource ModelQuerySelector}"
+                    AutomationProperties.Name="Required query purpose" />
+        </StackPanel>
+        <Expander Header="Model details" Margin="0,6,0,0" Visibility="{Binding HasDetails, Converter={StaticResource BoolToVisibility}}"
+                  AutomationProperties.AutomationId="ModelDetailsExpander">
+          <StackPanel Margin="0,8,0,0">
+            <TextBlock Text="{Binding Details}" TextWrapping="Wrap" Foreground="{DynamicResource Muted}" FontSize="12" />
+            <StackPanel Margin="0,8,0,0" Visibility="{Binding HasQueryOptions, Converter={StaticResource BoolToVisibility}}">
+              <TextBlock Text="Query purpose" Foreground="{DynamicResource Muted}" FontSize="12" />
+              <ComboBox ItemsSource="{Binding QueryProfiles}" DisplayMemberPath="Label" SelectedValuePath="Id"
+                        SelectedValue="{Binding SelectedQueryProfile}" Style="{StaticResource ModelQuerySelector}"
+                        AutomationProperties.AutomationId="QueryProfileChoice" AutomationProperties.Name="Query purpose" />
+            </StackPanel>
+          </StackPanel>
+        </Expander>
+      </StackPanel>
+    </DataTemplate>
     <DataTemplate x:Key="TextResultTemplate">
       <Button Click="Result_Click" HorizontalContentAlignment="Stretch" Padding="12"
               ToolTip="{Binding Path}" AutomationProperties.Name="{Binding Name}">
@@ -505,13 +580,19 @@
               <StackPanel>
                 <TextBlock Text="Documents / text" FontWeight="SemiBold" />
                 <TextBox Text="{Binding TextModelUrl, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding IsConfigurationIdle}"
-                         Margin="0,8,0,18" AutomationProperties.AutomationId="TextModelUrl" AutomationProperties.Name="Text model Hugging Face URL" />
+                         TextChanged="ModelUrl_Changed" Margin="0,8,0,18" AutomationProperties.AutomationId="TextModelUrl" AutomationProperties.Name="Text model Hugging Face URL" />
+                <ContentControl Content="{Binding TextRequirements}" ContentTemplate="{StaticResource ModelRequirementTemplate}"
+                                IsEnabled="{Binding IsConfigurationIdle}" AutomationProperties.AutomationId="TextModelRequirements" />
                 <TextBlock Text="Source code" FontWeight="SemiBold" />
                 <TextBox Text="{Binding CodeModelUrl, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding IsConfigurationIdle}"
-                         Margin="0,8,0,18" AutomationProperties.AutomationId="CodeModelUrl" AutomationProperties.Name="Code model Hugging Face URL" />
+                         TextChanged="ModelUrl_Changed" Margin="0,8,0,18" AutomationProperties.AutomationId="CodeModelUrl" AutomationProperties.Name="Code model Hugging Face URL" />
+                <ContentControl Content="{Binding CodeRequirements}" ContentTemplate="{StaticResource ModelRequirementTemplate}"
+                                IsEnabled="{Binding IsConfigurationIdle}" AutomationProperties.AutomationId="CodeModelRequirements" />
                 <TextBlock Text="Images" FontWeight="SemiBold" />
                 <TextBox Text="{Binding ImageModelUrl, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding IsConfigurationIdle}"
-                         Margin="0,8,0,18" AutomationProperties.AutomationId="ImageModelUrl" AutomationProperties.Name="Image model Hugging Face URL" />
+                         TextChanged="ModelUrl_Changed" Margin="0,8,0,18" AutomationProperties.AutomationId="ImageModelUrl" AutomationProperties.Name="Image model Hugging Face URL" />
+                <ContentControl Content="{Binding ImageRequirements}" ContentTemplate="{StaticResource ModelRequirementTemplate}"
+                                IsEnabled="{Binding IsConfigurationIdle}" AutomationProperties.AutomationId="ImageModelRequirements" />
                 <TextBlock Text="Matching model assignments share an index. Only affected embeddings are replaced when you apply a change."
                            TextWrapping="Wrap" Foreground="{DynamicResource Muted}" />
                 <TextBlock Text="A model must provide a supported native ONNX embedding export and pass local CPU, GPU or NPU execution checks. No hosted inference or remote model code is used."
@@ -539,6 +620,9 @@
             <Button Content="Apply model changes" Click="ApplyModels_Click" IsEnabled="{Binding CanApplyModels}"
                     Style="{StaticResource PrimaryButton}" HorizontalAlignment="Left" Margin="0,16,0,24"
                     AutomationProperties.AutomationId="ApplyModelsButton" />
+            <Button Content="Cancel model validation" Click="CancelModelChange_Click" HorizontalAlignment="Left" Margin="0,0,0,20"
+                    Visibility="{Binding ConfigurationBusy, Converter={StaticResource BoolToVisibility}}"
+                    AutomationProperties.AutomationId="CancelModelChangeButton" />
           </StackPanel>
         </ScrollViewer>
       </TabItem>

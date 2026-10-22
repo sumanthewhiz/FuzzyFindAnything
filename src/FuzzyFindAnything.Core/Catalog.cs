@@ -15,12 +15,13 @@ public sealed class Catalog : IDisposable
     private Dictionary<string, EmbeddingSpace> routes = new(StringComparer.Ordinal)
     { ["Document"] = EmbeddingSpace.Default, ["Code"] = EmbeddingSpace.Default, ["Image"] = EmbeddingSpace.Default };
     private readonly int threads;
+    private ModelSelection? configuredSelection;
     private bool disposed;
     public string DirectoryPath { get; }
     public string IndexDirectory { get; }
     public string Recovery => string.Join(" ", shards.Values.Select(shard => shard.Recovery).Where(value => value.Length > 0));
     public IReadOnlyList<EmbeddingSpace> Spaces { get { lock (gate) return routes.Values.DistinctBy(space => space.Key).ToArray(); } }
-    public ModelSelection Selection { get { lock (gate) return new(routes["Document"].ModelUrl, routes["Code"].ModelUrl, routes["Image"].ModelUrl); } }
+    public ModelSelection Selection { get { lock (gate) return configuredSelection ?? new(routes["Document"].ModelUrl, routes["Code"].ModelUrl, routes["Image"].ModelUrl); } }
     public EmbeddingSpace SpaceFor(string kind) { lock (gate) return routes[kind]; }
 
     public Catalog(string directory, int nativeThreads, Action<string>? diagnostic = null)
@@ -47,6 +48,13 @@ public sealed class Catalog : IDisposable
                 routes = JsonSerializer.Deserialize<Dictionary<string, EmbeddingSpace>>(saved, Protocol.Json)
                     ?? throw new InvalidDataException("Invalid saved model configuration.");
                 ValidateRoutes(routes);
+            }
+            if (Setting("model_selection") is { } selected)
+            {
+                configuredSelection = JsonSerializer.Deserialize<ModelSelection>(selected, Protocol.Json)?.Normalize()
+                    ?? throw new InvalidDataException("Invalid saved model bindings.");
+                if (routes.Any(pair => configuredSelection.ForKind(pair.Key) != pair.Value.ModelUrl))
+                    throw new InvalidDataException("Saved model bindings do not match their vector routes.");
             }
             foreach (var row in Query("SELECT path,path_key FROM files UNION SELECT path,path_key FROM index_jobs",
                          reader => (Path: reader.GetString(0), Key: reader.GetString(1))))
@@ -135,7 +143,7 @@ public sealed class Catalog : IDisposable
             INSERT OR IGNORE INTO settings VALUES('schema_version','1');
             """);
         string version = Setting("schema_version")!;
-        if (version is not ("1" or "2" or "3" or "4" or "5"))
+        if (version is not ("1" or "2" or "3" or "4" or "5" or "6"))
             throw new InvalidDataException($"Unsupported catalog schema: {version}.");
         string? model = Setting("model");
         if (model is not null && model != ModelContract.Fingerprint)
@@ -150,7 +158,7 @@ public sealed class Catalog : IDisposable
             })
                 if (!columns.Contains(column.Name)) Execute($"ALTER TABLE files ADD COLUMN {column.Name} {column.Definition}");
             if (version is "1" or "2") Execute("UPDATE files SET retry_after=0 WHERE error IS NOT NULL");
-            SetSetting("schema_version", version == "5" ? "5" : "4");
+            SetSetting("schema_version", version is "5" or "6" ? version : "4");
             SetSetting("model", ModelContract.Fingerprint);
         });
     }
@@ -166,7 +174,7 @@ public sealed class Catalog : IDisposable
     {
         var generations = changed.DistinctBy(space => space.Key).ToDictionary(space => space.Key, GenerationFor);
         Execute("UPDATE settings SET value=CAST(value AS INTEGER)+1 WHERE key='generation'");
-        if (Setting("schema_version") == "5")
+        if (Setting("schema_version") is "5" or "6")
             foreach (var pair in generations) SetSetting("generation:" + pair.Key, (pair.Value + 1).ToString(CultureInfo.InvariantCulture));
         SetSetting("last_refreshed", DateTimeOffset.UtcNow.ToString("O"));
     }
@@ -460,6 +468,57 @@ public sealed class Catalog : IDisposable
         lock (gate) return Query("SELECT COUNT(*),COALESCE(SUM(state='active'),0) FROM index_jobs",
             row => (row.GetInt32(0), row.GetInt32(1)))[0];
     }
+    private ModelReindexState? ReadModelReindex()
+    {
+        if (Setting("model_reindex") is not { } saved) return null;
+        var state = JsonSerializer.Deserialize<ModelReindexState>(saved, Protocol.Json)
+            ?? throw new InvalidDataException("Invalid saved model reindex status.");
+        if (state.Kinds is not { Length: > 0 and <= 3 } ||
+            state.Kinds.Any(kind => kind is not ("Document" or "Code" or "Image")))
+            throw new InvalidDataException("Invalid file types in saved model reindex status.");
+        return state;
+    }
+    public ModelReindexState? ModelReindex(bool canComplete)
+    {
+        lock (gate)
+        {
+            var state = ReadModelReindex();
+            if (state is null || state.Completed) return state;
+            string kinds = string.Join(",", state.Kinds.Select(kind => "'" + kind + "'"));
+            var counts = Query($"""
+                SELECT COALESCE(SUM(f.error IS NULL),0),COALESCE(SUM(f.error IS NOT NULL),0)
+                FROM files f WHERE f.kind IN ({kinds}) AND EXISTS(SELECT 1 FROM folder_files WHERE file_id=f.id)
+                AND NOT EXISTS(SELECT 1 FROM index_jobs j WHERE j.path_key=f.path_key)
+                """, row => (Succeeded: row.GetInt64(0), Failed: row.GetInt64(1)))[0];
+            bool completed = canComplete && Scalar<long>($"SELECT COUNT(*) FROM index_jobs WHERE kind IN ({kinds})") == 0 &&
+                Folders().All(folder => string.IsNullOrEmpty(Setting("scan_error:" + folder.Id)));
+            var next = state with { Completed = completed, Succeeded = counts.Succeeded, Failed = counts.Failed };
+            if (completed) SetSetting("model_reindex", JsonSerializer.Serialize(next, Protocol.Json));
+            return next;
+        }
+    }
+    public int RetryClipResizeFailures()
+    {
+        int retried = 0;
+        Transaction(() =>
+        {
+            if (routes["Image"].Adapter != "clip") return;
+            // Older CLIP builds could round the short edge to 223 pixels and permanently fail a valid image.
+            retried = Execute("""
+                UPDATE files SET retry_after=0 WHERE kind='Image' AND error_code='model_inference'
+                AND error='Index was outside the bounds of the array.' AND retry_after IS NULL
+                """);
+            if (retried > 0) TrackModelReindex(["Image"]);
+        });
+        return retried;
+    }
+    private void TrackModelReindex(string[] changed)
+    {
+        var previous = ReadModelReindex();
+        string[] kinds = previous is { Completed: false }
+            ? previous.Kinds.Concat(changed).Distinct(StringComparer.Ordinal).ToArray() : changed;
+        SetSetting("model_reindex", JsonSerializer.Serialize(new ModelReindexState(kinds), Protocol.Json));
+    }
     public (long Files, long Vectors) Counts()
     {
         lock (gate) return (Scalar<long>("SELECT COUNT(*) FROM files WHERE error IS NULL"), Scalar<long>("SELECT COUNT(*) FROM vectors"));
@@ -515,11 +574,14 @@ public sealed class Catalog : IDisposable
                 counts.Documents, counts.Images, size, Setting("last_refreshed"), counts.Code);
         }
     }
-    public List<ResultFile> Search(float[] query, int limit, double threshold, EmbeddingSpace? space = null)
+    public List<ResultFile> Search(float[] query, int limit, double threshold, EmbeddingSpace? space = null,
+        IReadOnlyCollection<string>? kinds = null)
     {
         if (limit is < 1 or > 100 || !double.IsFinite(threshold) || threshold is < 0 or > 1)
             throw new ArgumentException("Search limit must be 1-100 and similarity 0-1.");
         space ??= EmbeddingSpace.Default;
+        if (kinds is not null && (kinds.Count == 0 || kinds.Any(kind => kind is not ("Document" or "Code" or "Image"))))
+            throw new ArgumentException("Choose supported source kinds for the embedding query.");
         query = space.Normalize(query);
         lock (gate)
         {
@@ -539,7 +601,7 @@ public sealed class Catalog : IDisposable
                             Mtime: row.GetInt64(4), Snippet: row.GetString(5), Vector: space.Vector((byte[])row[6])), id);
                     if (records.Count == 0) continue;
                     var record = records[0];
-                    if (!File.Exists(record.Path) || routes[record.Kind].Key != space.Key) continue;
+                    if (!File.Exists(record.Path) || routes[record.Kind].Key != space.Key || kinds is not null && !kinds.Contains(record.Kind)) continue;
                     double score = ModelContract.Similarity(query, record.Vector);
                     if (score < threshold || matches.TryGetValue(record.Id, out var old) && old.Score >= score) continue;
                     matches[record.Id] = new(record.Path, Path.GetFileName(record.Path), record.Kind, record.Size, record.Mtime, record.Snippet, score);
@@ -552,7 +614,7 @@ public sealed class Catalog : IDisposable
     }
 
     private sealed record RemovedVector(uint Id, EmbeddingSpace Space);
-    private long GenerationFor(EmbeddingSpace space) => Setting("schema_version") == "5"
+    private long GenerationFor(EmbeddingSpace space) => Setting("schema_version") is "5" or "6"
         ? long.Parse(Setting("generation:" + space.Key) ?? "0", CultureInfo.InvariantCulture) : Generation;
     private string KindsSql(EmbeddingSpace space)
     {
@@ -577,16 +639,19 @@ public sealed class Catalog : IDisposable
             throw new InvalidDataException("A model is required for documents, code and images.");
         foreach (var space in value.Values) space.Validate();
         if (!value["Image"].SupportsImages) throw new InvalidDataException("The selected image model cannot create image embeddings.");
-        if (value.Values.GroupBy(space => space.ModelUrl).Any(group => group.Select(space => space.Key).Distinct().Count() != 1))
-            throw new InvalidDataException("The same model URL must use the same pinned embedding space for every assigned type.");
     }
-    public string[] ReconfigureModels(IReadOnlyDictionary<string, EmbeddingSpace> next, Action persistConfiguration, Action? configurationCommitted = null)
+    public string[] ReconfigureModels(IReadOnlyDictionary<string, EmbeddingSpace> next, Action persistConfiguration,
+        Action? configurationCommitted = null, ModelSelection? selection = null)
     {
         ValidateRoutes(next);
         lock (gate)
         {
-            string[] changed = routes.Keys.Where(kind => routes[kind].Fingerprint != next[kind].Fingerprint).ToArray();
-            if (changed.Length == 0) return [];
+            selection ??= new(next["Document"].ModelUrl, next["Code"].ModelUrl, next["Image"].ModelUrl);
+            selection = selection.Normalize();
+            if (next.Any(pair => selection.ForKind(pair.Key) != pair.Value.ModelUrl))
+                throw new InvalidDataException("The selected model URLs do not match the prepared routes.");
+            string[] changed = routes.Keys.Where(kind => routes[kind].IndexingFingerprint != next[kind].IndexingFingerprint).ToArray();
+            if (changed.Length == 0 && selection == Selection) return [];
             var prepared = new Dictionary<string, VectorShard>();
             try
             {
@@ -605,13 +670,24 @@ public sealed class Catalog : IDisposable
                         Execute("DELETE FROM index_jobs WHERE kind=$p0", kind);
                         Execute("DELETE FROM files WHERE kind=$p0", kind);
                     }
-                    SetSetting("schema_version", "5");
+                    SetSetting("schema_version", Setting("schema_version") == "6" || next.Values.Any(space => space.Recipe is not null) ||
+                        selection.RequiresVersion2 ? "6" : "5");
                     SetSetting("embedding_routes", JsonSerializer.Serialize(next, Protocol.Json));
-                    Bump(changed.Select(kind => routes[kind]).Concat(changed.Select(kind => next[kind])));
+                    SetSetting("model_selection", JsonSerializer.Serialize(selection, Protocol.Json));
+                    SetSetting("model_apply_message", changed.Length == 0
+                        ? "Configuration saved. Query/device settings updated; existing embeddings were retained." : "");
+                    if (changed.Length > 0)
+                    {
+                        TrackModelReindex(changed);
+                        Bump(changed.Select(kind => routes[kind]).Concat(changed.Select(kind => next[kind])));
+                    }
+                    else if (ReadModelReindex() is not { Completed: false })
+                        Execute("DELETE FROM settings WHERE key='model_reindex'");
                     // XML is published before the SQL commit; a crash is reconciled against the saved intent on restart.
                     persistConfiguration();
                 });
                 routes = next.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
+                configuredSelection = selection;
                 configurationCommitted?.Invoke();
                 foreach (var pair in prepared) shards.Add(pair.Key, pair.Value);
                 prepared.Clear();

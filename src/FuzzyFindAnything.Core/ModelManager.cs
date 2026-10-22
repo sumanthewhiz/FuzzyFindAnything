@@ -9,6 +9,8 @@ public sealed class ModelManager : IEmbeddings
     private readonly Action<string> log;
     private Dictionary<string, ModelPool> pools = [];
     private Dictionary<string, EmbeddingSpace> routes = [];
+    private Dictionary<string, ModelPool> kindPools = [];
+    private ModelSelection applied = ModelSelection.Default;
     private Catalog? catalog;
     private CancellationTokenSource? lifetime;
     private bool disposed;
@@ -22,10 +24,22 @@ public sealed class ModelManager : IEmbeddings
         cache = new(Path.Combine(dataDirectory, "models"), modelDirectory);
     }
     public void Bind(Catalog store) => catalog = store;
-    public ModelSelection Selection => catalog?.Selection ?? ModelSelection.Default;
+    public ModelSelection Selection { get { lock (gate) return applied; } }
     public IReadOnlyDictionary<string, EmbeddingSpace> Routes { get { lock (gate) return new Dictionary<string, EmbeddingSpace>(routes); } }
     public IReadOnlyList<IEmbeddings> ActiveModels { get { lock (gate) return pools.Values.Cast<IEmbeddings>().ToArray(); } }
-    public IEmbeddings ForKind(string kind) { lock (gate) return pools[routes[kind].Key]; }
+    public IEmbeddings ForKind(string kind) { lock (gate) return kindPools[kind]; }
+    public IReadOnlyList<EmbeddingSearchBinding> SearchBindings
+    {
+        get
+        {
+            lock (gate)
+                return routes.Keys.GroupBy(kind => (Pool: kindPools[kind], Profile: QueryFor(kind, routes[kind], applied.OptionsFor(kind))))
+                    .Select(group => new EmbeddingSearchBinding(group.Key.Pool, group.Key.Profile, group.ToArray())).ToArray();
+        }
+    }
+    private static string QueryFor(string kind, EmbeddingSpace space, ModelOptions options) =>
+        options.QueryProfile.Length > 0 ? options.QueryProfile : space.Recipe?.DefaultQuery(kind) ?? "default";
+    private static string SessionKey(EmbeddingSpace space, ModelOptions options) => space.CacheKey + ":" + options.Device;
     public int ReadyWorkers => ActiveModels.Sum(model => model.ReadyWorkers);
     public int Threads => ActiveModels.Select(model => model.Threads).DefaultIfEmpty(1).Max();
     public int BatchConcurrency => Math.Max(1, Math.Min(budget.Processors, ReadyWorkers * 2));
@@ -47,19 +61,26 @@ public sealed class ModelManager : IEmbeddings
         var spaces = new Dictionary<string, EmbeddingSpace>();
         foreach (string url in wanted.DistinctUrls)
             spaces[url] = catalog?.Spaces.FirstOrDefault(space => space.ModelUrl == url) ?? cache.FindCached(url);
+        wanted = NormalizeSelection(wanted, spaces);
         var next = BuildRoutes(wanted, spaces);
         var started = new Dictionary<string, ModelPool>();
+        var byKind = new Dictionary<string, ModelPool>();
         try
         {
-            int completed = 0, total = spaces.Count;
-            foreach (var space in spaces.Values)
+            int completed = 0, total = next.Select(pair => SessionKey(pair.Value, wanted.OptionsFor(pair.Key))).Distinct().Count();
+            foreach (var (kind, space) in next)
             {
-                var pool = CreatePool(space, total);
-                started.Add(space.Key, pool);
-                await pool.StartAsync((step, stage) => progress((completed * 6 + step) / total, $"{stage}"), lifetime.Token);
-                completed++;
+                string key = SessionKey(space, wanted.OptionsFor(kind));
+                if (!started.TryGetValue(key, out var pool))
+                {
+                    pool = CreatePool(space, total, wanted.OptionsFor(kind));
+                    started.Add(key, pool);
+                    await pool.StartAsync((step, stage) => progress((completed * 6 + step) / total, $"{stage}"), lifetime.Token);
+                    completed++;
+                }
+                byKind[kind] = pool;
             }
-            lock (gate) { pools = started; routes = next; }
+            lock (gate) { pools = started; routes = next; kindPools = byKind; applied = wanted; }
         }
         catch
         {
@@ -67,10 +88,38 @@ public sealed class ModelManager : IEmbeddings
             throw;
         }
     }
-    private ModelPool CreatePool(EmbeddingSpace space, int count) => new(
+    private ModelPool CreatePool(EmbeddingSpace space, int count, ModelOptions options) => new(
         space == EmbeddingSpace.Default ? legacyHost : compatibleHost, cache.DirectoryFor(space), budget, log,
         space: space, workerLimit: count > 1 || space != EmbeddingSpace.Default ? 1 : null,
-        threadLimit: count > 1 ? Math.Max(1, budget.Processors / count) : null);
+        threadLimit: count > 1 ? Math.Max(1, budget.Processors / count) : null,
+        requiredProvider: space == EmbeddingSpace.Default ? null : options.ProviderSelector);
+
+    internal static ModelSelection NormalizeSelection(ModelSelection selection, IReadOnlyDictionary<string, EmbeddingSpace> spaces)
+    {
+        ModelOptions? Options(string kind)
+        {
+            var space = spaces[selection.ForKind(kind)];
+            var value = selection.OptionsFor(kind);
+            string profile = QueryFor(kind, space, value);
+            if (profile == "choose") throw new ArgumentException($"Choose an approved query purpose for {kind} before applying this model.");
+            if (space.Recipe is { } recipe) _ = recipe.Query(profile);
+            else if (profile != "default") throw new NotSupportedException("This legacy model does not expose configurable query profiles.");
+            if (space == EmbeddingSpace.Default && value.Device is not ("Automatic" or "CPU"))
+                throw new NotSupportedException("The bundled EmbeddingGemma2 artifact is CPU-only. Choose a separately qualified accelerator artifact rather than forcing this export onto another device.");
+            if (space.Recipe is null && profile == "default") value = value with { QueryProfile = "" };
+            return value == ModelOptions.Default ? null : value;
+        }
+        return selection with { TextOptions = Options("Document"), CodeOptions = Options("Code"), ImageOptions = Options("Image") };
+    }
+
+    public async Task<ModelInspection> InspectAsync(ModelSelection selection, CancellationToken cancellation)
+    {
+        selection = selection.Normalize();
+        var requirements = new List<ModelRequirement>();
+        foreach (string kind in new[] { "Document", "Code", "Image" })
+            requirements.Add(await cache.InspectAsync(kind, selection.ForKind(kind), cancellation));
+        return new(selection, requirements.ToArray());
+    }
 
     private static Dictionary<string, EmbeddingSpace> BuildRoutes(ModelSelection selection, IReadOnlyDictionary<string, EmbeddingSpace> spaces)
     {
@@ -92,18 +141,24 @@ public sealed class ModelManager : IEmbeddings
             lock (gate) existing = routes.Values.FirstOrDefault(space => space.ModelUrl == url);
             spaces[url] = existing ?? cache.FindVerified(url, progress) ?? await cache.ResolveAsync(url, progress, linked.Token);
         }
+        selection = NormalizeSelection(selection, spaces);
+        if (selection == Selection) return null;
         var nextRoutes = BuildRoutes(selection, spaces);
         var next = new Dictionary<string, ModelPool>();
+        var byKind = new Dictionary<string, ModelPool>();
         var created = new List<ModelPool>();
         try
         {
-            foreach (var space in spaces.Values)
+            int count = nextRoutes.Select(pair => SessionKey(pair.Value, selection.OptionsFor(pair.Key))).Distinct().Count();
+            foreach (var (kind, space) in nextRoutes)
             {
+                string key = SessionKey(space, selection.OptionsFor(kind));
+                if (next.TryGetValue(key, out var shared)) { byKind[kind] = shared; continue; }
                 ModelPool? existing;
-                lock (gate) existing = pools.GetValueOrDefault(space.Key);
-                if (existing is not null && existing.ReadyWorkers > 0) { next[space.Key] = existing; continue; }
+                lock (gate) existing = pools.GetValueOrDefault(key);
+                if (existing is not null && existing.ReadyWorkers > 0) { next[key] = existing; byKind[kind] = existing; continue; }
                 progress($"Checking local hardware and inference for {space.ModelUrl}");
-                var pool = CreatePool(space, spaces.Count);
+                var pool = CreatePool(space, count, selection.OptionsFor(kind));
                 created.Add(pool);
                 await pool.StartAsync((_, stage) => progress(stage), linked.Token);
                 _ = await pool.QueryAsync("local model compatibility check", linked.Token);
@@ -117,9 +172,11 @@ public sealed class ModelManager : IEmbeddings
                     }
                     finally { File.Delete(probe); }
                 }
-                next[space.Key] = pool;
+                next[key] = pool; byKind[kind] = pool;
             }
-            return new(selection, nextRoutes, next, created);
+            foreach (var kind in nextRoutes.Keys)
+                _ = await byKind[kind].QueryAsync("local model compatibility check", QueryFor(kind, nextRoutes[kind], selection.OptionsFor(kind)), linked.Token);
+            return new(selection, nextRoutes, next, byKind, created);
         }
         catch
         {
@@ -141,7 +198,7 @@ public sealed class ModelManager : IEmbeddings
         lock (gate)
         {
             retired = pools.Values.Except(prepared.Pools.Values).ToArray();
-            pools = prepared.Pools; routes = prepared.Routes; prepared.Committed = true;
+            pools = prepared.Pools; routes = prepared.Routes; kindPools = prepared.KindPools; applied = prepared.Selection; prepared.Committed = true;
         }
         foreach (var pool in retired)
         {
@@ -153,12 +210,13 @@ public sealed class ModelManager : IEmbeddings
     public ModelConfigurationState State()
     {
         var indexes = catalog?.ModelIndexes() ?? [];
-        var active = ActiveModels;
+        Dictionary<string, ModelPool> active;
+        lock (gate) active = new(kindPools);
         return new(Selection, indexes.Select(index =>
         {
-            var model = active.FirstOrDefault(value => value.Space.ModelUrl == index.ModelUrl);
+            var model = index.Kinds.Length > 0 ? active.GetValueOrDefault(index.Kinds[0]) : null;
             return index with { Provider = model?.Provider ?? "", Device = model?.Device ?? "" };
-        }).ToArray());
+        }).ToArray(), catalog?.Setting("model_apply_message") ?? "");
     }
     public Task<string[]> SplitAsync(string text, CancellationToken cancellation) => ForKind("Document").SplitAsync(text, cancellation);
     public Task<float[][]> DocumentsAsync(string title, string[] passages, CancellationToken cancellation) => ForKind("Document").DocumentsAsync(title, passages, cancellation);
@@ -173,11 +231,12 @@ public sealed class ModelManager : IEmbeddings
     }
 
     public sealed class PreparedModels(ModelSelection selection, Dictionary<string, EmbeddingSpace> routes,
-        Dictionary<string, ModelPool> pools, List<ModelPool> created) : IAsyncDisposable
+        Dictionary<string, ModelPool> pools, Dictionary<string, ModelPool> kindPools, List<ModelPool> created) : IAsyncDisposable
     {
         public ModelSelection Selection { get; } = selection;
         public Dictionary<string, EmbeddingSpace> Routes { get; } = routes;
         internal Dictionary<string, ModelPool> Pools { get; } = pools;
+        internal Dictionary<string, ModelPool> KindPools { get; } = kindPools;
         internal bool Committed { get; set; }
         public async ValueTask DisposeAsync()
         {

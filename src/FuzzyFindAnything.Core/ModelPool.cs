@@ -10,6 +10,7 @@ public interface IEmbeddings : IAsyncDisposable
     string Device => RuntimeInformation.ProcessArchitecture + " CPU";
     IEmbeddings ForKind(string kind) => this;
     IReadOnlyList<IEmbeddings> ActiveModels => new[] { this };
+    IReadOnlyList<EmbeddingSearchBinding> SearchBindings => ActiveModels.Select(model => new EmbeddingSearchBinding(model, "default", null)).ToArray();
     int ReadyWorkers { get; }
     int Threads { get; }
     int BatchConcurrency { get; }
@@ -20,10 +21,15 @@ public interface IEmbeddings : IAsyncDisposable
     Task<float[][]> DocumentsAsync(string title, string[] passages, CancellationToken cancellation);
     Task<float[]> ImageAsync(string path, CancellationToken cancellation);
     Task<float[]> QueryAsync(string text, CancellationToken cancellation);
+    Task<float[]> QueryAsync(string text, string profile, CancellationToken cancellation) => profile == "default"
+        ? QueryAsync(text, cancellation) : throw new NotSupportedException("This model does not support role-aware query profiles.");
 }
 
+public sealed record EmbeddingSearchBinding(IEmbeddings Model, string Profile, string[]? Kinds);
+
 public sealed class ModelPool(string executable, string modelDirectory, CpuBudget budget, Action<string> log,
-    Func<long>? memoryAvailable = null, EmbeddingSpace? space = null, int? workerLimit = null, int? threadLimit = null) : IEmbeddings
+    Func<long>? memoryAvailable = null, EmbeddingSpace? space = null, int? workerLimit = null, int? threadLimit = null,
+    string? requiredProvider = null) : IEmbeddings
 {
     public EmbeddingSpace Space { get; } = space ?? EmbeddingSpace.Default;
     public string Provider { get; private set; } = "CPUExecutionProvider";
@@ -63,20 +69,29 @@ public sealed class ModelPool(string executable, string modelDirectory, CpuBudge
         if (threadLimit is { } compute) Threads = Math.Clamp(compute, 1, budget.Processors);
         else Threads = Math.Max(1, budget.Processors / desired);
         log($"Native inference plan: {desired} model processes, {Threads} threads each, {memory / (double)(1L << 30):0.0} GiB available.");
-        var client = await InferenceClient.StartAsync(executable, modelDirectory, Threads, progress, log, lifetime.Token);
-        try
-        {
-            var capabilities = await client.RequestAsync("capabilities", new { }, lifetime.Token);
-            var actual = capabilities.GetProperty("space").Deserialize<EmbeddingSpace>(Protocol.Json);
-            if (actual?.Fingerprint != Space.Fingerprint) throw new InvalidDataException("The model worker loaded a different embedding space.");
-            Provider = capabilities.GetProperty("provider").GetString()!;
-            Device = capabilities.GetProperty("device").GetString()!;
-        }
-        catch { await client.DisposeAsync(); throw; }
+        var client = await StartClientAsync(progress, lifetime.Token);
         lock (gate) { clients.Add(client); available.Enqueue(client); Wake(); }
         batches = new InferenceBatcher(EncodeAsync, log, lifetime.Token);
         batches.AddWorker();
         if (desired > 1) warmup = Task.Run(WarmAsync);
+    }
+    private async Task<InferenceClient> StartClientAsync(Action<int, string>? progress, CancellationToken cancellation)
+    {
+        var client = await InferenceClient.StartAsync(executable, modelDirectory, Threads, progress, log, cancellation,
+            requiredProvider: requiredProvider);
+        try
+        {
+            var capabilities = await client.RequestAsync("capabilities", new { }, cancellation);
+            var actual = capabilities.GetProperty("space").Deserialize<EmbeddingSpace>(Protocol.Json);
+            if (actual?.Fingerprint != Space.Fingerprint) throw new InvalidDataException("The model worker loaded a different embedding space.");
+            if (Space.Recipe is not null && (!capabilities.TryGetProperty("protocol_version", out var version) || version.GetInt32() != 2 ||
+                actual.Recipe?.ContractFingerprint != Space.Recipe.ContractFingerprint))
+                throw new InvalidDataException("The native worker does not implement the required embedding recipe/protocol.");
+            Provider = capabilities.GetProperty("provider").GetString()!;
+            Device = capabilities.GetProperty("device").GetString()!;
+            return client;
+        }
+        catch { await client.DisposeAsync(); throw; }
     }
     internal static (int Workers, int Threads) Plan(int processors, long memory)
     {
@@ -92,7 +107,7 @@ public sealed class ModelPool(string executable, string modelDirectory, CpuBudge
         try
         {
             if ((memoryAvailable ?? AvailableMemory)() < 5L << 30) throw new IOException("Available memory became too low for an additional model.");
-            var client = await InferenceClient.StartAsync(executable, modelDirectory, Threads, null, log, lifetime!.Token);
+            var client = await StartClientAsync(null, lifetime!.Token);
             lock (gate)
             {
                 if (!closed) { clients.Add(client); available.Enqueue(client); Wake(); }
@@ -133,7 +148,7 @@ public sealed class ModelPool(string executable, string modelDirectory, CpuBudge
             if (!client.Alive)
             {
                 await client.DisposeAsync();
-                var replacement = await InferenceClient.StartAsync(executable, modelDirectory, Threads, null, log, cancellation);
+                var replacement = await StartClientAsync(null, cancellation);
                 lock (gate) clients[clients.IndexOf(client)] = replacement;
                 client = replacement;
             }
@@ -166,8 +181,9 @@ public sealed class ModelPool(string executable, string modelDirectory, CpuBudge
             ? $"title: {FilePaths.ScalarPrefix(title, 160)} | text: {passage}" : passage).ToArray(), cancellation);
     public async Task<float[]> ImageAsync(string path, CancellationToken cancellation) =>
         (await batches!.SubmitAsync("images", [path], cancellation))[0];
-    public Task<float[]> QueryAsync(string text, CancellationToken cancellation) => WithClientAsync(true, async client =>
-        Space.Normalize((await client.RequestAsync("query", new { text }, cancellation)).Deserialize<float[]>()
+    public Task<float[]> QueryAsync(string text, CancellationToken cancellation) => QueryAsync(text, Space.Recipe?.TextQuery ?? "default", cancellation);
+    public Task<float[]> QueryAsync(string text, string profile, CancellationToken cancellation) => WithClientAsync(true, async client =>
+        Space.Normalize((await client.RequestAsync("query", Space.Recipe is null ? new { text } : (object)new { text, profile }, cancellation)).Deserialize<float[]>()
             ?? throw new InvalidDataException("Empty query embedding.")), cancellation);
 
     public async ValueTask DisposeAsync()

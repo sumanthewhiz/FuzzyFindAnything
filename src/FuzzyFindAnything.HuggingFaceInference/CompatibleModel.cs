@@ -27,7 +27,9 @@ internal sealed class CompatibleModel : IDisposable
             foreach (var file in HuggingFaceModels.Load(directory).Files)
                 assets.Add(new FileStream(Path.Combine(directory, CachedModel.LocalName(file.Name)), FileMode.Open, FileAccess.Read, FileShare.Read));
             using var options = DeviceExecution.Options(device, threads);
-            text = new InferenceSession(Path.Combine(directory, space.Adapter == "clip" ? @"onnx\text_model.onnx" : @"onnx\model.onnx"), options);
+            text = new InferenceSession(Path.Combine(directory, space.Recipe is { } recipe ? CachedModel.LocalName(recipe.Graph) :
+                space.Adapter == "clip" ? @"onnx\text_model.onnx" : @"onnx\model.onnx"), options);
+            ValidateTextGraph();
             if (space.SupportsImages)
             {
                 if (device.NativeDevice is not null)
@@ -65,6 +67,20 @@ internal sealed class CompatibleModel : IDisposable
                 var values = candidate.Texts(["red circles and blue squares", "quarterly financial report"]);
                 if (values.Length != 2 || ModelContract.Similarity(values[0], values[1]) > 0.9999)
                     throw new InvalidDataException("The model did not produce distinguishable text embeddings.");
+                if (space.Recipe is { } recipe)
+                {
+                    progress($"Checking qualified {space.MaximumTokens}-token workload on {device.Type}");
+                    string probeText = string.Concat(Enumerable.Repeat(" test", Math.Max(1, space.MaximumTokens - 32)));
+                    int count = candidate.RawTokenIds(recipe.DocumentPrefix + probeText).Length;
+                    while (count < space.MaximumTokens)
+                    {
+                        string next = probeText + " test";
+                        int nextCount = candidate.RawTokenIds(recipe.DocumentPrefix + next).Length;
+                        if (nextCount > space.MaximumTokens || nextCount <= count) break;
+                        probeText = next; count = nextCount;
+                    }
+                    _ = candidate.Texts([probeText]);
+                }
                 if (space.SupportsImages)
                 {
                     string probe = Path.Combine(Path.GetTempPath(), "ffa-model-probe-" + Guid.NewGuid().ToString("N") + ".png");
@@ -127,7 +143,7 @@ internal sealed class CompatibleModel : IDisposable
     public string[] Split(string content)
     {
         if (string.IsNullOrWhiteSpace(content)) throw new ContentException("No searchable text was extracted.", "no_text");
-        int budget = space.MaximumTokens - 2, start = 0;
+        int budget = space.Recipe?.ChunkTokens ?? space.MaximumTokens - 2, start = 0;
         var result = new List<string>();
         var seen = new HashSet<string>();
         while (start < content.Length)
@@ -138,7 +154,10 @@ internal sealed class CompatibleModel : IDisposable
                 int middle = low + (high - low) / 2;
                 int length = middle;
                 if (start + length < content.Length && char.IsHighSurrogate(content[start + length - 1])) length--;
-                if (length == 0 || tokenizer.Encode(content.Substring(start, length)).Length > budget) high = middle - 1;
+                int count = length == 0 ? int.MaxValue : space.Recipe is { } recipe
+                    ? RawTokenIds(recipe.DocumentPrefix + content.Substring(start, length)).Length
+                    : tokenizer.Encode(content.Substring(start, length)).Length;
+                if (count > budget) high = middle - 1;
                 else { fit = length; low = middle + 1; }
             }
             if (fit == 0) throw new ContentException("A text fragment exceeds the tokenizer's native input bound.", "resource_limit");
@@ -152,68 +171,93 @@ internal sealed class CompatibleModel : IDisposable
         }
         return result.ToArray();
     }
-    public float[] Query(string query) => Texts([query])[0];
-    public int[] TokenIds(string value) => new[] { tokenizer.Beginning }.Concat(tokenizer.Encode(value).Take(space.MaximumTokens - 2)).Append(tokenizer.End).ToArray();
-    public float[][] Texts(IReadOnlyList<string> inputs)
+    public float[] Query(string query, string? profile = null)
+    {
+        if (space.Recipe is null)
+        {
+            if (profile is not (null or "" or "default")) throw new NotSupportedException("This legacy model has no configurable query profiles.");
+            return Texts([query], false)[0];
+        }
+        return Texts([space.Recipe.Query(profile ?? space.Recipe.TextQuery).Prefix + query], false)[0];
+    }
+    private int[] RawTokenIds(string value)
+    {
+        IEnumerable<int> tokens = tokenizer.Encode(value);
+        if (tokenizer.Beginning >= 0) tokens = tokens.Prepend(tokenizer.Beginning);
+        if (tokenizer.End >= 0) tokens = tokens.Append(tokenizer.End);
+        return tokens.ToArray();
+    }
+    public int[] TokenIds(string value) => space.Recipe is null
+        ? new[] { tokenizer.Beginning }.Concat(tokenizer.Encode(value).Take(space.MaximumTokens - 2)).Append(tokenizer.End).ToArray()
+        : RawTokenIds(value);
+
+    private void ValidateTextGraph()
+    {
+        var recipe = space.Recipe;
+        string ids = recipe?.InputIds ?? "input_ids";
+        string output = recipe?.Output ?? (space.Adapter == "clip" ? "text_embeds" : "last_hidden_state");
+        var allowed = new[] { ids, recipe?.AttentionMask ?? "attention_mask", recipe?.TokenTypeIds ?? "token_type_ids",
+            recipe?.PositionIds ?? "position_ids" };
+        if (!text.InputMetadata.ContainsKey(ids) || text.InputNames.Any(name => !allowed.Contains(name)))
+            throw new NotSupportedException("The text graph input interface needs a different reviewed adapter.");
+        foreach (var input in text.InputMetadata.Values)
+            if (input.Dimensions.Length != 2 || input.ElementType != typeof(long) && input.ElementType != typeof(int) ||
+                input.Dimensions[0] > 1 || input.Dimensions[1] > space.MaximumTokens)
+                throw new NotSupportedException("Unsupported embedding input type or fixed batch/sequence shape.");
+        if (!text.OutputMetadata.TryGetValue(output, out var tensor) ||
+            tensor.Dimensions.Length != (recipe?.Pooling == "pooled" || space.Adapter == "clip" ? 2 : 3) ||
+            tensor.Dimensions[^1] > 0 && tensor.Dimensions[^1] != space.Dimensions ||
+            tensor.ElementType != typeof(float) && (recipe is null || tensor.ElementType != typeof(Float16)))
+            throw new NotSupportedException("The graph's embedding output does not match the native recipe.");
+    }
+
+    public float[][] Texts(IReadOnlyList<string> inputs, bool documents = true)
     {
         if (inputs.Count is < 1 or > 8) throw new ArgumentException("A text batch must contain 1-8 inputs.");
-        if (text.InputMetadata["input_ids"].Dimensions[0] == 1 && inputs.Count > 1)
-            return inputs.Select(value => Texts([value])[0]).ToArray();
-        int sequence = space.MaximumTokens;
+        var recipe = space.Recipe;
+        string idsName = recipe?.InputIds ?? "input_ids";
+        if (text.InputMetadata[idsName].Dimensions[0] == 1 && inputs.Count > 1)
+            return inputs.Select(value => Texts([value], documents)[0]).ToArray();
+        int[][] rows = inputs.Select(value => TokenIds((documents ? recipe?.DocumentPrefix ?? "" : "") + value)).ToArray();
+        if (rows.Any(tokens => tokens.Length == 0 || tokens.Length > space.MaximumTokens))
+            throw new ContentException("The embedding input exceeds the qualified token limit. Shorten the query or re-prepare the document passages.", "resource_limit");
+        int sequence = recipe is null ? space.MaximumTokens : text.InputMetadata[idsName].Dimensions[1] > 0
+            ? text.InputMetadata[idsName].Dimensions[1] : rows.Max(value => value.Length);
+        if (rows.Any(tokens => tokens.Length > sequence)) throw new NotSupportedException("The graph's fixed sequence length is too short.");
+        if (recipe is not null && inputs.Count > 1 && inputs.Count * sequence > recipe.MaximumBatchTokens)
+            return inputs.Select(value => Texts([value], documents)[0]).ToArray();
         long[] ids = Enumerable.Repeat((long)tokenizer.Padding, inputs.Count * sequence).ToArray();
-        long[] masks = new long[ids.Length], segments = new long[ids.Length];
+        long[] masks = new long[ids.Length], segments = new long[ids.Length], positions = new long[ids.Length];
         for (int row = 0; row < inputs.Count; row++)
         {
-            int[] tokens = tokenizer.Encode(inputs[row]);
-            int count = Math.Min(tokens.Length, sequence - 2);
-            ids[row * sequence] = tokenizer.Beginning;
-            for (int index = 0; index < count; index++) ids[row * sequence + index + 1] = tokens[index];
-            ids[row * sequence + count + 1] = tokenizer.End;
-            Array.Fill(masks, 1L, row * sequence, count + 2);
+            int offset = row * sequence + (recipe?.Padding == "left" ? sequence - rows[row].Length : 0);
+            for (int index = 0; index < rows[row].Length; index++)
+            { ids[offset + index] = rows[row][index]; positions[offset + index] = index; }
+            Array.Fill(masks, 1L, offset, rows[row].Length);
         }
         var values = new Dictionary<string, OrtValue>();
         try
         {
             foreach (string name in text.InputNames)
             {
-                long[] data = name switch
-                {
-                    "input_ids" => ids,
-                    "attention_mask" => masks,
-                    "token_type_ids" => segments,
-                    _ => throw new NotSupportedException("Unsupported text graph input: " + name)
-                };
+                long[] data = name == idsName ? ids : name == (recipe?.AttentionMask ?? "attention_mask") ? masks :
+                    name == (recipe?.TokenTypeIds ?? "token_type_ids") ? segments :
+                    name == (recipe?.PositionIds ?? "position_ids") ? positions :
+                    throw new NotSupportedException("Unsupported text graph input: " + name);
                 values[name] = text.InputMetadata[name].ElementType == typeof(long)
                     ? OrtValue.CreateTensorValueFromMemory(data, [inputs.Count, sequence])
                     : text.InputMetadata[name].ElementType == typeof(int)
                         ? OrtValue.CreateTensorValueFromMemory(data.Select(value => checked((int)value)).ToArray(), [inputs.Count, sequence])
                         : throw new NotSupportedException("Unsupported text token tensor type.");
             }
-            string output = space.Adapter == "clip" ? "text_embeds" : "last_hidden_state";
+            string output = recipe?.Output ?? (space.Adapter == "clip" ? "text_embeds" : "last_hidden_state");
             if (!text.OutputNames.Contains(output)) throw new NotSupportedException("The ONNX graph has no expected embedding output: " + output);
             using var options = new RunOptions();
             using var encoded = text.Run(options, values, [output]);
-            float[] tensor = encoded[0].GetTensorDataAsSpan<float>().ToArray();
-            var result = new float[inputs.Count][];
-            int expected = inputs.Count * space.Dimensions * (space.Adapter == "clip" ? 1 : sequence);
-            if (tensor.Length != expected) throw new InvalidDataException("The native embedding output has incompatible dimensions.");
-            for (int row = 0; row < inputs.Count; row++)
-            {
-                if (space.Adapter == "clip") result[row] = space.Normalize(tensor.AsSpan(row * space.Dimensions, space.Dimensions));
-                else
-                {
-                    float[] pooled = new float[space.Dimensions];
-                    int length = (int)masks.AsSpan(row * sequence, sequence).ToArray().Sum();
-                    for (int column = 0; column < pooled.Length; column++)
-                    {
-                        double sum = 0;
-                        for (int token = 0; token < length; token++) sum += tensor[(row * sequence + token) * pooled.Length + column];
-                        pooled[column] = (float)(sum / length);
-                    }
-                    result[row] = space.Normalize(pooled);
-                }
-            }
-            return result;
+            float[] tensor = text.OutputMetadata[output].ElementType == typeof(float) ? encoded[0].GetTensorDataAsSpan<float>().ToArray()
+                : encoded[0].GetTensorDataAsSpan<Float16>().ToArray().Select(value => (float)value).ToArray();
+            return EmbeddingPooling.Normalize(tensor, masks, inputs.Count, sequence, space.Dimensions,
+                recipe?.Pooling ?? (space.Adapter == "clip" ? "pooled" : "mean"));
         }
         finally { foreach (var value in values.Values) value.Dispose(); }
     }
@@ -234,13 +278,14 @@ internal sealed class CompatibleModel : IDisposable
         foreach (string path in paths)
         {
             var original = ImagePipeline.Decode(path);
-            double scale = edge / (double)Math.Min(original.Width, original.Height);
-            int resizedWidth = checked((int)(original.Width * scale)), resizedHeight = checked((int)(original.Height * scale));
-            if ((long)resizedWidth * resizedHeight > 16_000_000)
+            long resizedWidth = original.Width <= original.Height ? edge : (long)original.Width * edge / original.Height;
+            long resizedHeight = original.Height <= original.Width ? edge : (long)original.Height * edge / original.Width;
+            if (resizedWidth * resizedHeight > 16_000_000)
                 throw new ContentException("The image aspect ratio exceeds the CLIP preprocessing memory limit.", "resource_limit");
-            var resized = ImagePipeline.Resize(original, resizedWidth, resizedHeight);
+            var resized = ImagePipeline.Resize(original, checked((int)resizedWidth), checked((int)resizedHeight));
+            if (resized.Width < width || resized.Height < height)
+                throw new NotSupportedException("This image processor requires unsupported padding.");
             int left = (resized.Width - width) / 2, top = (resized.Height - height) / 2;
-            if (left < 0 || top < 0) throw new NotSupportedException("This image processor requires unsupported padding.");
             float[] pixels = new float[3 * width * height];
             for (int channel = 0; channel < 3; channel++)
                 for (int y = 0; y < height; y++)

@@ -23,6 +23,9 @@ internal static class Program
         Run("Loading indicator state", LoadingState);
         Run("Startup reconciliation does not disable search", ReconciliationState);
         Run("Model defaults and XML round-trip", ModelsRoundTrip);
+        Run("Model reindex completion, errors and validation feedback", ModelReindexFeedback);
+        Run("Adaptive model requirements and extended XML bindings", AdaptiveModels);
+        Run("WPF query-purpose selection survives Apply refresh", QueryPurposeBinding);
         Run("Footer alignment and results layout", () => LayoutContracts(args[0]));
         Console.WriteLine("All headless checks passed. No application window or engine was started.");
         return 0;
@@ -233,5 +236,116 @@ internal static class Program
             catch (ArgumentException) { return; }
             throw new InvalidOperationException("An unsupported model host was accepted.");
         }
+    });
+
+    private static void ModelReindexFeedback()
+    {
+        var selection = ModelSelection.Default with { Image = "https://huggingface.co/Xenova/clip-vit-base-patch32" };
+        EngineStatus Status(ModelSelection current, ModelReindexState reindex) => new("Ready", "Ready", "", [], 3, 3, "", "",
+            new IndexMetadata("DiskANN", @"C:\fixtures", 3, 1, 1, 1024, null, 1),
+            new CpuStatus(12, 6, 1, 3, 6, 0), 0, 0, [], new LoggingStatus(false, "", ""),
+            Models: new(current, [], Reindex: reindex));
+        var model = new MainViewModel();
+        model.BeginModelConfiguration();
+        model.FinishModelConfiguration(new(true, selection, ["Image"]));
+        string pending = model.ModelConfigurationMessage;
+        model.Apply(Status(ModelSelection.Default, new(["Image"], true, 20)));
+        Require(model.ModelConfigurationMessage == pending, "A stale model selection completed the new reindex.");
+        model.Apply(Status(selection, new(["Image"])));
+        Require(model.ModelConfigurationMessage.Contains("background"), "The active reindex message disappeared.");
+        model.Apply(Status(selection, new(["Image"], true, 22)));
+        Require(model.ModelConfigurationMessage.Contains("Reindexing complete") && model.ModelConfigurationMessage.Contains("22"),
+            "Model reindex completion was not shown.");
+        model.Apply(Status(selection, new(["Image"], true, 22, 1)));
+        Require(model.ModelConfigurationMessage.Contains("finished with errors") && model.ModelConfigurationMessage.Contains("1 failed"),
+            "Partial failure was incorrectly reported as successful completion.");
+        var restarted = new MainViewModel();
+        restarted.Apply(Status(selection, new(["Image"], true, 22)));
+        Require(restarted.ModelConfigurationMessage.Contains("Reindexing complete"), "Saved completion was not restored after restart.");
+        model.BeginModelConfiguration();
+        model.ModelConfigurationMessage = "Model configuration was not applied: incompatible model.";
+        model.Apply(Status(selection, new(["Image"], true, 22)));
+        Require(model.ModelConfigurationMessage.StartsWith("Model configuration was not applied:", StringComparison.Ordinal),
+            "An old completion snapshot hid a newer validation failure.");
+        model.Apply(Status(selection, new(["Image"])) with
+        {
+            ModelState = "Error",
+            Error = "Indexing stopped after a storage failure.",
+            Startup = new(9, 100, 9, 9, "Previously ready", "Ready", "")
+        });
+        Require(model.ModelState == "Error" && !model.CanSearch, "A stale startup-ready snapshot hid a post-commit engine failure.");
+    }
+
+    private static void QueryPurposeBinding()
+    {
+        var model = new ModelRequirementViewModel();
+        var recipe = EmbeddingRecipes.Find("https://huggingface.co/Qwen/Qwen3-Embedding-0.6B")!.Recipe;
+        var requirement = new ModelRequirement("Code", "https://huggingface.co/Qwen/Qwen3-Embedding-0.6B",
+            "Available", "Automatic", "Native model", recipe.QueryProfiles.ToArray(), recipe.CodeQuery, false);
+        model.Apply(requirement);
+        var selector = new System.Windows.Controls.ComboBox
+        {
+            DataContext = model,
+            DisplayMemberPath = nameof(QueryProfile.Label),
+            SelectedValuePath = nameof(QueryProfile.Id)
+        };
+        selector.SetBinding(System.Windows.Controls.ItemsControl.ItemsSourceProperty,
+            new System.Windows.Data.Binding(nameof(ModelRequirementViewModel.QueryProfiles)));
+        selector.SetBinding(System.Windows.Controls.Primitives.Selector.SelectedValueProperty,
+            new System.Windows.Data.Binding(nameof(ModelRequirementViewModel.SelectedQueryProfile))
+            { Mode = System.Windows.Data.BindingMode.TwoWay, UpdateSourceTrigger = System.Windows.Data.UpdateSourceTrigger.PropertyChanged });
+        foreach (string profile in new[] { "document-search-v1", "code-search-v1", "" })
+        {
+            selector.SetCurrentValue(System.Windows.Controls.Primitives.Selector.SelectedValueProperty, profile);
+            selector.GetBindingExpression(System.Windows.Controls.Primitives.Selector.SelectedValueProperty)!.UpdateSource();
+            Require(model.SelectedQueryProfile == profile, "The simulated user selection did not reach the binding.");
+            model.Restore(new ModelOptions(profile));
+            model.Apply(requirement);
+            System.Windows.Threading.Dispatcher.CurrentDispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.DataBind);
+            Require(selector.SelectedItem is QueryProfile selected && selected.Id == profile &&
+                model.SelectedQueryProfile == profile, "The visible Query Purpose selection was cleared by the post-Apply requirement refresh.");
+        }
+        model.Reset(false);
+        model.Restore(new("document-search-v1"));
+        model.Apply(requirement);
+        System.Windows.Threading.Dispatcher.CurrentDispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.DataBind);
+        Require(selector.SelectedItem is QueryProfile { Id: "document-search-v1" },
+            "A saved query purpose was not selected when requirements arrived after settings reload.");
+    }
+
+    private static void AdaptiveModels() => InTemporaryDirectory(directory =>
+    {
+        var settings = new SettingsService(directory);
+        var document = XDocument.Load(settings.FilePath);
+        document.Root!.Add(new XElement("ExtensionPreference", new XAttribute("preserve", "true")));
+        document.Save(settings.FilePath);
+        var chosen = ModelSelection.Default with
+        { Code = "https://huggingface.co/Qwen/Qwen3-Embedding-0.6B", CodeOptions = new("document-search-v1", "CPU") };
+        settings.Save(settings.Current with { Models = chosen });
+        settings.Reload();
+        Require(settings.Current.ModelSelection == chosen &&
+            XDocument.Load(settings.FilePath).Root!.Element("ExtensionPreference")?.Attribute("preserve")?.Value == "true",
+            "Extended settings lost query/device options or unrelated XML.");
+        var model = new MainViewModel();
+        model.ApplyModels(chosen);
+        Require(model.DraftModels == chosen && !model.TextRequirements.IsVisible && !model.ImageRequirements.IsVisible,
+            "Simple Gemma fields acquired unnecessary setup or saved query choices were lost.");
+        var recipe = EmbeddingRecipes.Find(chosen.Code)!.Recipe;
+        model.ApplyModelInspection(new(chosen, [new("Code", chosen.Code, "Available", "Automatic", "Native model",
+            recipe.QueryProfiles.ToArray(), recipe.CodeQuery, false)]));
+        Require(model.CodeRequirements.HasQueryOptions && !model.CodeRequirements.RequiresQueryChoice &&
+            model.DraftModels == chosen, "Optional model-specific query profiles were not restored.");
+        model.CodeModelUrl = ModelSelection.DefaultUrl;
+        model.ApplyModelInspection(new(chosen, [new("Code", chosen.Code, "Available", "Stale", "Stale",
+            recipe.QueryProfiles.ToArray(), "choose", false)]));
+        Require(!model.CodeRequirements.IsVisible && model.DraftModels == ModelSelection.Default,
+            "Switching back to Gemma retained hidden options or accepted stale requirement responses.");
+        model.CodeModelUrl = chosen.Code;
+        model.ApplyModelInspection(new(chosen, [new("Code", chosen.Code, "Available", "Choose a purpose", "Native",
+            recipe.QueryProfiles.ToArray(), "choose", false)]));
+        Require(model.CodeRequirements.RequiresQueryChoice, "A genuine unresolved requirement was hidden.");
+        model.CodeRequirements.Unavailable("Code", chosen.Code, "Metadata unavailable offline.");
+        Require(model.CodeRequirements.HasError && !model.CodeRequirements.HasDetails &&
+            !model.CodeRequirements.RequiresQueryChoice, "An offline failure exposed an expert form instead of a blocker.");
     });
 }

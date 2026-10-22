@@ -60,7 +60,8 @@ public static class CatalogMaintenance
                 DELETE FROM vectors;
                 DELETE FROM files;
                 DELETE FROM sqlite_sequence WHERE name IN ('files','vectors','index_jobs');
-                DELETE FROM settings WHERE key LIKE 'usn:%' OR key LIKE 'scan_error:%' OR key LIKE 'generation:%' OR key='last_refreshed';
+                DELETE FROM settings WHERE key LIKE 'usn:%' OR key LIKE 'scan_error:%' OR key LIKE 'generation:%'
+                  OR key IN ('last_refreshed','model_reindex');
                 UPDATE settings SET value=CAST(value AS INTEGER)+1 WHERE key='generation';
                 """;
             command.ExecuteNonQuery();

@@ -20,7 +20,12 @@ internal static class Program
         if (args.Length > 0 && args[0] == "monitoring") { MonitoringTests.RunAsync().GetAwaiter().GetResult(); return 0; }
         if (args.Length > 0 && args[0] == "assets") { AssetTests.RunAsync().GetAwaiter().GetResult(); return 0; }
         if (args.Length > 0 && args[0] == "model-config") { ModelConfigurationTests.Run(); return 0; }
+        if (args.Length > 0 && args[0] == "embedding-recipes") { EmbeddingRecipeTests.Run(); return 0; }
+        if (args.Length > 0 && args[0] == "extensible-models") { ExtensibleModelTests.RunAsync(args[1], args[2], args[3], args[4]).GetAwaiter().GetResult(); return 0; }
+        if (args.Length > 0 && args[0] == "embedding-outputs") { ExtensibleModelTests.OutputsAsync(args[1], args[2], args[3]).GetAwaiter().GetResult(); return 0; }
+        if (args.Length > 0 && args[0] == "embedding-runtime") { ExtensibleModelTests.RunAsync(args[1], "", args[2], args[3], runtimeOnly: true).GetAwaiter().GetResult(); return 0; }
         if (args.Length > 0 && args[0] == "model-permutations") { ModelPermutationTests.RunAsync(args[1], args[2], args[3], args[4]).GetAwaiter().GetResult(); return 0; }
+        if (args.Length > 0 && args[0] == "clip-images") { ModelPermutationTests.ClipImagesAsync(args[1], args[2]).GetAwaiter().GetResult(); return 0; }
         if (args.Length > 0 && args[0] == "ui-fixture") { Fixtures.Ui(args[1]); return 0; }
         if (args.Length > 0 && args[0] == "fixtures") { Fixtures.Corpus(args[1]); return 0; }
         if (args.Length > 0 && args[0] == "numeric-fixture") { Fixtures.NumericWorkbook(args[1]); return 0; }
@@ -36,6 +41,7 @@ internal static class Program
         Run("Native source extraction", () => Extraction().GetAwaiter().GetResult());
         StorageTests.Run();
         ModelConfigurationTests.Run();
+        EmbeddingRecipeTests.Run();
         SchedulingTests.RunAsync().GetAwaiter().GetResult();
         MonitoringTests.RunAsync().GetAwaiter().GetResult();
         AssetTests.RunAsync().GetAwaiter().GetResult();

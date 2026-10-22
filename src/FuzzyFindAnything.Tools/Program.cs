@@ -13,7 +13,7 @@ internal static class Program
         Console.CancelKeyPress += (_, value) => { value.Cancel = true; cancellation.Cancel(); };
         try
         {
-            if (args.Length == 0) throw new ArgumentException("Commands: acquire-model, verify-model, reset-index, native-smoke, verify-release.");
+            if (args.Length == 0) throw new ArgumentException("Commands: acquire-model, verify-model, prepare-hf-model, reset-index, native-smoke, verify-release.");
             var options = new Dictionary<string, string>(StringComparer.Ordinal);
             for (int index = 1; index < args.Length; index++)
             {

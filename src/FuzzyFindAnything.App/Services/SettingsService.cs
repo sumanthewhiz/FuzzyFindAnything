@@ -39,7 +39,7 @@ public sealed class SettingsService
                 MaxCharactersInDocument = 1_048_576
             });
             var root = XDocument.Load(reader).Root;
-            if (root?.Name != "FuzzyFindAnythingConfiguration" || (string?)root.Attribute("version") != "1")
+            if (root?.Name != "FuzzyFindAnythingConfiguration" || (string?)root.Attribute("version") is not ("1" or "2"))
                 throw new InvalidDataException("The configuration has an unsupported format or version.");
             string theme = (string?)root.Element("Appearance")?.Attribute("theme") ?? "Light";
             var logging = root.Element("Logging");
@@ -61,7 +61,7 @@ public sealed class SettingsService
     public void Save(ApplicationSettings settings)
     {
         Validate(settings);
-        settings = settings with { LogDirectory = Path.GetFullPath(settings.LogDirectory) };
+        settings = settings with { LogDirectory = Path.GetFullPath(settings.LogDirectory), Models = settings.ModelSelection.Normalize() };
         if (settings.LoggingEnabled && (!File.Exists(FilePath) || !Current.LoggingEnabled ||
             !settings.LogDirectory.Equals(Current.LogDirectory, StringComparison.OrdinalIgnoreCase)))
             ValidateLogDirectory(settings.LogDirectory);
@@ -70,13 +70,28 @@ public sealed class SettingsService
         string temporary = Path.Combine(directory, $".settings-{Guid.NewGuid():N}.tmp");
         try
         {
-            var document = new XDocument(
-                new XElement("FuzzyFindAnythingConfiguration", new XAttribute("version", "1"),
-                    new XElement("Appearance", new XAttribute("theme", settings.Theme)),
-                    new XElement("Search", new XAttribute("minimumSimilarity", settings.MinimumSimilarity)),
-                    settings.ModelSelection.Normalize().ToXml(),
-                    new XElement("Logging", new XAttribute("enabled", settings.LoggingEnabled),
-                        new XAttribute("directory", settings.LogDirectory))));
+            XDocument document;
+            if (File.Exists(FilePath))
+            {
+                using var reader = XmlReader.Create(FilePath, new XmlReaderSettings
+                { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null, MaxCharactersInDocument = 1_048_576 });
+                document = XDocument.Load(reader);
+            }
+            else document = new XDocument(new XElement("FuzzyFindAnythingConfiguration", new XAttribute("version", "1")));
+            var root = document.Root!;
+            bool version2 = settings.ModelSelection.RequiresVersion2 || (string?)root.Attribute("version") == "2";
+            root.SetAttributeValue("version", version2 ? "2" : "1");
+            XElement Section(string name)
+            {
+                if (root.Element(name) is { } existing) return existing;
+                var created = new XElement(name); root.Add(created); return created;
+            }
+            Section("Appearance").SetAttributeValue("theme", settings.Theme);
+            Section("Search").SetAttributeValue("minimumSimilarity", settings.MinimumSimilarity);
+            root.Element("Models")?.Remove();
+            root.Add(settings.ModelSelection.Normalize().ToXml(version2));
+            Section("Logging").SetAttributeValue("enabled", settings.LoggingEnabled);
+            Section("Logging").SetAttributeValue("directory", settings.LogDirectory);
             using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None,
                        4096, FileOptions.WriteThrough))
             {

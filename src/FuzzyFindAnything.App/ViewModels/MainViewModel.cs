@@ -51,6 +51,11 @@ public sealed class FolderViewModel : ObservableObject
 
 public sealed class MainViewModel : ObservableObject
 {
+    public MainViewModel()
+    {
+        foreach (var requirement in new[] { TextRequirements, CodeRequirements, ImageRequirements })
+            requirement.PropertyChanged += (_, _) => Changed(nameof(CanApplyModels));
+    }
     private string query = "";
     private double threshold = 0.60;
     private bool searching;
@@ -80,12 +85,33 @@ public sealed class MainViewModel : ObservableObject
     private string codeModelUrl = ModelSelection.DefaultUrl;
     private string imageModelUrl = ModelSelection.DefaultUrl;
     private string modelConfigurationMessage = "Models are checked for native embedding and device compatibility before indexes are changed.";
-    public string TextModelUrl { get => textModelUrl; set => Set(ref textModelUrl, value); }
-    public string CodeModelUrl { get => codeModelUrl; set => Set(ref codeModelUrl, value); }
-    public string ImageModelUrl { get => imageModelUrl; set => Set(ref imageModelUrl, value); }
+    private bool showModelReindexStatus = true;
+    private ModelSelection? expectedReindexSelection;
+    public ModelRequirementViewModel TextRequirements { get; } = new();
+    public ModelRequirementViewModel CodeRequirements { get; } = new();
+    public ModelRequirementViewModel ImageRequirements { get; } = new();
+    public string TextModelUrl
+    {
+        get => textModelUrl;
+        set { if (textModelUrl != value) TextRequirements.Reset(value.Trim().TrimEnd('/') == ModelSelection.DefaultUrl); Set(ref textModelUrl, value); }
+    }
+    public string CodeModelUrl
+    {
+        get => codeModelUrl;
+        set { if (codeModelUrl != value) CodeRequirements.Reset(value.Trim().TrimEnd('/') == ModelSelection.DefaultUrl); Set(ref codeModelUrl, value); }
+    }
+    public string ImageModelUrl
+    {
+        get => imageModelUrl;
+        set { if (imageModelUrl != value) ImageRequirements.Reset(value.Trim().TrimEnd('/') == ModelSelection.DefaultUrl); Set(ref imageModelUrl, value); }
+    }
+    public ModelSelection DraftModels => new ModelSelection(TextModelUrl, CodeModelUrl, ImageModelUrl,
+        TextRequirements.Options, CodeRequirements.Options, ImageRequirements.Options).Normalize();
     public string ModelConfigurationMessage { get => modelConfigurationMessage; set => Set(ref modelConfigurationMessage, value); }
     public ObservableCollection<ModelIndexState> ModelIndexes { get; } = [];
-    public bool CanApplyModels => CanConfigure && !IsEngineLoading && !FoldersBusy;
+    public bool CanApplyModels => CanConfigure && !IsEngineLoading && !FoldersBusy &&
+        new[] { TextRequirements, CodeRequirements, ImageRequirements }.All(requirement =>
+            !requirement.RequiresQueryChoice || requirement.SelectedQueryProfile.Length > 0);
 
     public ObservableCollection<FolderViewModel> Folders { get; } = [];
     public ObservableCollection<SearchResult> Results { get; } = [];
@@ -120,7 +146,7 @@ public sealed class MainViewModel : ObservableObject
     public bool ConfigurationBusy
     {
         get => configurationBusy;
-        set { Set(ref configurationBusy, value); Changed(nameof(CanConfigure)); Changed(nameof(IsConfigurationIdle)); Changed(nameof(CanApplyModels)); Changed(nameof(CanSearch)); }
+        set { Set(ref configurationBusy, value); Changed(nameof(CanConfigure)); Changed(nameof(IsConfigurationIdle)); Changed(nameof(CanApplyModels)); Changed(nameof(CanSearch)); Changed(nameof(CanManageFolders)); Changed(nameof(CanRemove)); }
     }
     public bool IsConfigurationIdle => !ConfigurationBusy;
     public bool CanConfigure => IsConnected && !ConfigurationBusy;
@@ -142,8 +168,8 @@ public sealed class MainViewModel : ObservableObject
         get => foldersBusy;
         set { Set(ref foldersBusy, value); Changed(nameof(CanSearch)); Changed(nameof(CanRemove)); Changed(nameof(CanManageFolders)); Changed(nameof(CanApplyModels)); }
     }
-    public bool CanManageFolders => IsConnected && !FoldersBusy;
-    public bool CanSearch => IsConnected && ready && !IsSearching && !FoldersBusy && !ConfigurationBusy;
+    public bool CanManageFolders => IsConnected && !FoldersBusy && !ConfigurationBusy;
+    public bool CanSearch => IsConnected && ready && !IsSearching && !FoldersBusy;
     public bool CanRemove => CanManageFolders && Folders.Any(folder => folder.IsSelected);
     public bool HasFolders => Folders.Count > 0;
     public bool NoFolders => !HasFolders;
@@ -181,6 +207,11 @@ public sealed class MainViewModel : ObservableObject
             ready = status.ModelState == "Ready";
             ModelState = status.ModelState;
         }
+        if (status.ModelState == "Error")
+        {
+            ready = false;
+            ModelState = "Error";
+        }
         EngineMessage = IsEngineLoading ? StartupStage : status.Activities.Count > 0
             ? string.Join("  |  ", status.Activities.Select(item =>
                 $"{item.Stage}: {Path.GetFileName(item.Path)}" +
@@ -193,6 +224,12 @@ public sealed class MainViewModel : ObservableObject
         {
             ModelIndexes.Clear();
             foreach (var index in models.Indexes) ModelIndexes.Add(index);
+            if (showModelReindexStatus && !ConfigurationBusy && status.ModelState == "Ready" &&
+                (expectedReindexSelection is null || expectedReindexSelection == models.Selection))
+            {
+                if (models.Reindex is { } reindex) ModelConfigurationMessage = reindex.Message;
+                else if (models.Message.Length > 0) ModelConfigurationMessage = models.Message;
+            }
         }
         Counts = $"{status.FileCount:N0} files | {status.VectorCount:N0} passages";
         CpuSummary = $"CPU limit: {status.Cpu.CoreLimit}/{status.Cpu.TotalCores}";
@@ -244,6 +281,42 @@ public sealed class MainViewModel : ObservableObject
     public void ApplyModels(ModelSelection selection)
     {
         TextModelUrl = selection.Text; CodeModelUrl = selection.Code; ImageModelUrl = selection.Image;
+        TextRequirements.Restore(selection.OptionsFor("Document"));
+        CodeRequirements.Restore(selection.OptionsFor("Code"));
+        ImageRequirements.Restore(selection.OptionsFor("Image"));
+    }
+    public void ApplyModelInspection(ModelInspection inspection)
+    {
+        ModelSelection current;
+        try { current = DraftModels; }
+        catch (ArgumentException) { return; }
+        foreach (var requirement in inspection.Requirements)
+        {
+            if (current.ForKind(requirement.Kind) != requirement.ModelUrl) continue;
+            var target = requirement.Kind switch
+            {
+                "Document" => TextRequirements,
+                "Code" => CodeRequirements,
+                "Image" => ImageRequirements,
+                _ => throw new InvalidDataException("Unknown model requirement kind.")
+            };
+            target.Apply(requirement);
+        }
+    }
+    public void BeginModelConfiguration()
+    {
+        showModelReindexStatus = false;
+        expectedReindexSelection = null;
+        ModelConfigurationMessage = "Validating models and available execution devices...";
+    }
+    public void FinishModelConfiguration(ModelApplyResult result)
+    {
+        ApplyModels(result.Selection);
+        showModelReindexStatus = true;
+        expectedReindexSelection = result.Selection;
+        ModelConfigurationMessage = !result.Changed ? "Model configuration is already applied."
+            : result.ReindexedKinds.Length > 0 ? new ModelReindexState(result.ReindexedKinds).Message
+            : "Configuration saved. Query/device settings updated; existing embeddings were retained.";
     }
 
     public void ApplyStartup(StartupStatus status)

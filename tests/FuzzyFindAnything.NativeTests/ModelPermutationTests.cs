@@ -18,6 +18,7 @@ internal static class ModelPermutationTests
         string gemma = ModelSelection.DefaultUrl;
         var cases = new[]
         {
+            ("default text and code with CLIP images", new ModelSelection(gemma, gemma, clip), 2),
             ("three different models", new ModelSelection(bert, small, clip), 3),
             ("shared text and code", new ModelSelection(bert, bert, clip), 2),
             ("one multimodal model", new ModelSelection(clip, clip, clip), 1),
@@ -49,7 +50,8 @@ internal static class ModelPermutationTests
                     var applied = await engine.RequestAsync<ModelApplyResult>("apply_models", selection);
                     Program.Require(applied.Changed, "A changed model configuration was treated as a no-op.");
                     await engine.WaitAsync(value => value.FileCount == 3 && value.QueueCount == 0 && value.ReconcilingFolders == 0 &&
-                        value.Models?.Selection == selection, "Model permutation did not finish indexing: " + label, 300000);
+                        value.Models?.Selection == selection && value.Models.Reindex is { Completed: true, Failed: 0 },
+                        "Model permutation did not finish indexing: " + label, 300000);
                     var state = await engine.RequestAsync<EngineState>("status");
                     Program.Require(state.Models!.Indexes.Count == count && state.Models.Indexes.Sum(index => index.Files) == 3,
                         "Incorrect index partition: " + label);
@@ -70,6 +72,13 @@ internal static class ModelPermutationTests
                         var matches = await engine.RequestAsync<List<ResultFile>>("search", new { query = phrase, threshold = 0 });
                         Program.Require(matches.Where(value => value.Kind == kind).FirstOrDefault()?.Name == file,
                             $"The {kind} model did not retrieve its matching file in {label}.");
+                    }
+                    if (label == "default text and code with CLIP images")
+                    {
+                        var limited = await engine.RequestAsync<List<ResultFile>>("search",
+                            new { query = "a red circle on a white background", threshold = 0, limit = 1 });
+                        Program.Require(limited.Count == 2 && limited.Any(value => value.Kind == "Image" && value.Name == "red.png"),
+                            "The real CLIP image was suppressed by the Gemma index's higher score.");
                     }
                     long generation = Check.Scalar(data, "SELECT CAST(value AS INTEGER) FROM settings WHERE key='generation'");
                     string xml = FilePaths.Hash(Path.Combine(data, "settings.xml"));
@@ -93,7 +102,8 @@ internal static class ModelPermutationTests
                             "Non-default model configuration did not resume.");
                         var restored = await engine.RequestAsync<EngineState>("status");
                         Program.Require(restored.Models?.Selection == selection && restored.Models.Indexes.Count == count &&
-                            restored.InferenceBatches.CompletedInputs == 0, "Non-default model restart rebuilt or lost its indexes.");
+                            restored.InferenceBatches.CompletedInputs == 0 && restored.Models.Reindex is { Completed: true },
+                            "Non-default model restart rebuilt or lost its indexes/completion status.");
                         Console.WriteLine("PASS non-default XML/index restart without re-embedding");
                     }
                 }
@@ -132,9 +142,27 @@ internal static class ModelPermutationTests
         File.WriteAllText(Path.Combine(output, "model-permutations.json"), JsonSerializer.Serialize(new { failures = 0, cases = results },
             new JsonSerializerOptions { WriteIndented = true }));
     }
+    public static Task ClipImagesAsync(string package, string cachedModels) => Check.TemporaryAsync(async root =>
+    {
+        var cache = new HuggingFaceModels(cachedModels, "");
+        var space = cache.FindCached("https://huggingface.co/Xenova/clip-vit-base-patch32");
+        string landscape = Path.Combine(root, "landscape.jpeg"), portrait = Path.Combine(root, "portrait.jpeg");
+        Fixtures.Image(landscape, true, 474, 373);
+        Fixtures.Image(portrait, false, 373, 474);
+        var budget = CpuBudget.Apply();
+        await using var pool = new ModelPool(Path.Combine(package, "hf-inference", "FuzzyFindAnything.HuggingFaceInference.exe"),
+            cache.DirectoryFor(space), budget, Console.Error.WriteLine, space: space, workerLimit: 1, threadLimit: Math.Min(2, budget.Processors));
+        await pool.StartAsync((_, _) => { }, CancellationToken.None);
+        foreach (string path in new[] { landscape, portrait })
+        {
+            float[] vector = await pool.ImageAsync(path, CancellationToken.None);
+            Program.Require(vector.Length == space.Dimensions && vector.All(float.IsFinite), "CLIP failed on a non-square image.");
+        }
+        Console.WriteLine("PASS CLIP landscape/portrait images with a 373-pixel source short edge");
+    });
     private static long VectorId(string directory, string kind) => Check.Scalar(directory,
         $"SELECT MIN(v.id) FROM vectors v JOIN files f ON f.id=v.file_id WHERE f.kind='{kind}'");
-    private static void Copy(string source, string destination)
+    internal static void Copy(string source, string destination)
     {
         Directory.CreateDirectory(destination);
         foreach (string file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
