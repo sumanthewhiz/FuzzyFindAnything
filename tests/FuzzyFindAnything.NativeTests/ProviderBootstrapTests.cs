@@ -8,7 +8,29 @@ namespace FuzzyFindAnything.NativeTests;
 
 internal static class ProviderBootstrapTests
 {
-    public static void Run() => Program.Temporary(root =>
+    public static void Run()
+    {
+        Channel();
+        Packages();
+    }
+
+    private static void Channel()
+    {
+        JsonElement Repository(long id = 1146158066, bool restricted = true, string visibility = "internal") =>
+            JsonSerializer.SerializeToElement(new { id, @private = restricted, visibility });
+        JsonElement Release(string tag, bool draft = false) =>
+            JsonSerializer.SerializeToElement(new { tag_name = tag, draft, prerelease = true });
+        ProviderBootstrap.ValidateRepository(Repository());
+        ProviderBootstrap.ValidateRelease(Release(ProviderBootstrap.ReleaseTag));
+        Check.Throws<InvalidDataException>(() => ProviderBootstrap.ValidateRepository(Repository(visibility: "private")));
+        Check.Throws<InvalidDataException>(() => ProviderBootstrap.ValidateRepository(Repository(restricted: false, visibility: "public")));
+        Check.Throws<InvalidDataException>(() => ProviderBootstrap.ValidateRepository(Repository(id: 1)));
+        Check.Throws<InvalidDataException>(() => ProviderBootstrap.ValidateRelease(Release("another-project-v1.0.0")));
+        Check.Throws<InvalidDataException>(() => ProviderBootstrap.ValidateRelease(Release(ProviderBootstrap.ReleaseTag, draft: true)));
+        Console.WriteLine("PASS enterprise-wide internal channel, repository identity and isolated pinned release boundaries");
+    }
+
+    private static void Packages() => Program.Temporary(root =>
     {
         const string executable = "FuzzyFindAnything.MicrosoftProvider.exe";
         string current = RuntimeInformation.ProcessArchitecture == Architecture.Arm64 ? "win-arm64" : "win-x64";

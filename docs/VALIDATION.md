@@ -4,6 +4,8 @@
 
 ## Current development acceptance
 
+**1.5.0-dev.4** adds employee-accessible companion distribution. Tests reject public or owner-only private channels, incorrect repository identities, unrelated release tags and drafts while allowing the explicitly pinned published companion prerelease. Both architecture packages passed inventory/checksum/PE checks. A clean authenticated installation from the Internal channel passed relocated live-registry discovery. Unauthenticated API access returned 404, and the package endpoint redirected to Microsoft enterprise SSO without returning the archive. The shared repository's default branch and unrelated release were unchanged.
+
 The **1.5.0-dev.3** checks cover pressure-aware model loading and restoration, active-batch draining without starvation, provider memory handoff, registry-gated source choices, discovery-error cleanup and authenticated private companion installation. Full native/headless regressions passed. Four real mixed CPU/NPU configurations exercised retrieval, selective reindexing, rejected-device preservation, no-op Apply and restart without re-embedding, including current-drop NPU document/code and image execution.
 
 Four concurrent catalog requests completed through the serialized discovery queue without a busy error. A disconnected child-process proxy returned no selectable provider models or versions without changing the parent environment. Both private companion packages passed complete inventory/checksum/PE checks; a clean authenticated download, relocated installation and live registry discovery also passed. These runs used isolated test data rather than clearing the production index.

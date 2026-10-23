@@ -4,7 +4,7 @@
 
 Release packages include the .NET and native runtimes. No separate Python, .NET, compiler or package manager is required.
 
-These instructions describe **1.5.0-dev.3**, including per-type search, content-aware chunking, regional image search, independent model sources and memory-aware native workers. Use a matching development build or build this checkout; earlier packages may lack these controls. Read the [chunking guide](docs/CHUNKING.md) for how app-owned boundaries differ from model tokenization, including EmbeddingGemma2.
+These instructions describe **1.5.0-dev.4**, including per-type search, content-aware chunking, regional image search, independent model sources and memory-aware native workers. Use a matching development build or build this checkout; earlier packages may lack these controls. Read the [chunking guide](docs/CHUNKING.md) for how app-owned boundaries differ from model tokenization, including EmbeddingGemma2.
 
 [Project](README.md) · [Architecture](docs/ARCHITECTURE.md) · [Existing-user migration](docs/MIGRATION.md)
 
@@ -141,7 +141,7 @@ If the tray icon is not immediately visible, open Windows' notification-area ove
 
 Open **Model configuration** and enter HTTPS model-card URLs for **Documents / text**, **Source code** and **Images**. All three initially contain `https://huggingface.co/google/embeddinggemma-2`.
 
-**Refresh model sources** checks optional local providers without changing your applied models. Authorized users can retrieve the separate [private companion](https://github.com/sumghosh_microsoft/FuzzyFindAnything-MicrosoftProvider) using an installed, authenticated GitHub CLI. Explicit repository access is required. The Microsoft source appears only after live registry access is also verified; other installations retain Hugging Face alone. A discovery notice clears when discovery completes, without dismissing unrelated errors.
+**Refresh model sources** checks optional local providers without changing your applied models. Microsoft GitHub enterprise members can retrieve the separate [internal companion release](https://github.com/experiences-and-devices/APT/releases/tag/ffa-microsoft-provider-v1.5.0-internal.3) using an installed GitHub CLI signed in with their work account. No personal-repository collaborator invitation is required. The Microsoft source appears only after live registry access is also verified; other installations retain Hugging Face alone. A discovery notice clears when discovery completes, without dismissing unrelated errors.
 
 Select **Apply model changes** once. The app validates the URL, required native assets, modality, available memory and local execution before replacing any embeddings. Downloads and device checks are shown in the tab. If the selections are unchanged, Apply does nothing.
 

@@ -14,8 +14,10 @@ internal sealed record ProviderPackage(string Id, string Runtime, string Version
 
 internal static class ProviderBootstrap
 {
-    internal const string Repository = "sumghosh_microsoft/FuzzyFindAnything-MicrosoftProvider";
-    private const long RepositoryId = 1431030185;
+    internal const string Repository = "experiences-and-devices/APT";
+    internal const string Version = "1.5.0-internal.3";
+    internal const string ReleaseTag = "ffa-microsoft-provider-v" + Version;
+    private const long RepositoryId = 1146158066;
     private static readonly SemaphoreSlim installing = new(1, 1);
 
     internal static async Task<bool> InstallAsync(string registrationRoot, Action<string> log, CancellationToken cancellation)
@@ -31,18 +33,11 @@ internal static class ProviderBootstrap
             string? metadata = await GitHubAsync(["api", "repos/" + Repository], log, deadline.Token);
             if (metadata is null) return false;
             using (var repository = JsonDocument.Parse(metadata))
-            {
-                if (repository.RootElement.GetProperty("id").GetInt64() != RepositoryId ||
-                    !repository.RootElement.GetProperty("private").GetBoolean())
-                    throw new InvalidDataException("The optional provider repository is not the approved non-public repository.");
-            }
-            string? latest = await GitHubAsync(["api", "repos/" + Repository + "/releases/latest"], log, deadline.Token);
-            if (latest is null) return false;
-            using var release = JsonDocument.Parse(latest);
-            string tag = release.RootElement.GetProperty("tag_name").GetString() ?? "";
-            if (!Regex.IsMatch(tag, @"^v\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$") ||
-                release.RootElement.GetProperty("draft").GetBoolean() || release.RootElement.GetProperty("prerelease").GetBoolean())
-                throw new InvalidDataException("The optional provider release is not an approved stable package.");
+                ValidateRepository(repository.RootElement);
+            string? selected = await GitHubAsync(["api", "repos/" + Repository + "/releases/tags/" + ReleaseTag], log, deadline.Token);
+            if (selected is null) return false;
+            using var release = JsonDocument.Parse(selected);
+            ValidateRelease(release.RootElement);
             string runtime = RuntimeInformation.OSArchitecture switch
             {
                 Architecture.Arm64 => "win-arm64",
@@ -61,7 +56,7 @@ internal static class ProviderBootstrap
             staging = Path.Combine(root, "install-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(staging);
             log("Acquiring an authorized optional model provider from its private release channel.");
-            if (await GitHubAsync(["release", "download", tag, "--repo", Repository, "--dir", staging,
+            if (await GitHubAsync(["release", "download", ReleaseTag, "--repo", Repository, "--dir", staging,
                 "--pattern", name, "--pattern", name + ".sha256"], log, deadline.Token) is null) return false;
             string zip = Path.Combine(staging, name);
             string checksumPath = Path.Combine(staging, name + ".sha256");
@@ -73,6 +68,7 @@ internal static class ProviderBootstrap
                 throw new InvalidDataException("The optional provider archive failed its size/checksum check.");
             string extracted = Path.Combine(staging, "payload");
             var package = Extract(zip, extracted, runtime);
+            if (package.Version != Version) throw new InvalidDataException("The companion package does not match the approved release version.");
             string destination = Path.Combine(root, "packages", runtime + "-" + hash[..16].ToLowerInvariant());
             Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
             try { Directory.Move(extracted, destination); }
@@ -98,6 +94,20 @@ internal static class ProviderBootstrap
         }
     }
 
+    internal static void ValidateRepository(JsonElement repository)
+    {
+        if (repository.GetProperty("id").GetInt64() != RepositoryId ||
+            !repository.GetProperty("private").GetBoolean() ||
+            repository.GetProperty("visibility").GetString() != "internal")
+            throw new InvalidDataException("The optional provider channel is not the approved enterprise-internal repository.");
+    }
+
+    internal static void ValidateRelease(JsonElement release)
+    {
+        if (release.GetProperty("tag_name").GetString() != ReleaseTag || release.GetProperty("draft").GetBoolean())
+            throw new InvalidDataException("The optional provider release is not the approved published companion package.");
+    }
+
     private static async Task<string?> GitHubAsync(string[] arguments, Action<string> log, CancellationToken cancellation)
     {
         var start = new ProcessStartInfo("gh")
@@ -108,6 +118,7 @@ internal static class ProviderBootstrap
             RedirectStandardError = true,
             WorkingDirectory = AppContext.BaseDirectory
         };
+        start.Environment["GH_HOST"] = "github.com";
         start.Environment["GH_PROMPT_DISABLED"] = "1";
         foreach (string argument in arguments) start.ArgumentList.Add(argument);
         Process process;

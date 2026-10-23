@@ -4,6 +4,8 @@
 
 ## Compatibility policy
 
+**1.5.0-dev.4** moves new companion downloads to a pinned release in a Microsoft enterprise-internal channel. It does not replace existing provider registrations, model bindings, folder scope or vectors. Microsoft GitHub enterprise members can retrieve the companion without an invitation to the maintainer's personal repository. A public, owner-only private, wrong-repository or wrong-release response is rejected; registry access remains a separate check.
+
 The memory-lifecycle update in **1.5.0-dev.3** retains existing folders, model assignments, vectors and schema versions. Idle workers can become cold and restart on demand; this is not a database reset or a model change. New provider preparations require the approved companion's protocol version 2 so temporary qualification participates in the same memory admission as production workers. Update that separately installed companion alongside the application; an older companion receives an explicit update diagnostic rather than an uncoordinated model switch.
 
 Provider-aware builds use **XML version 4** and **catalog schema 10** when Microsoft/local-provider models are applied. Bindings store separate `provider`, `modelId` and exact `version` attributes rather than fake Hugging Face URLs. Optional execution policies are retained. Saving appearance, logging or per-kind search settings preserves these bindings. Existing XML versions 1-3 and default/HF vector fingerprints remain readable and unchanged.
