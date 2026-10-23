@@ -29,7 +29,15 @@ internal static class Program
         if (args.Length == 2 && args[0] == "provider-bootstrap") { ProviderBootstrapTests.InstallAsync(args[1]).GetAwaiter().GetResult(); return 0; }
         if (args.Length == 3 && args[0] == "provider-package")
         {
-            Temporary(root => ProviderBootstrap.Extract(args[1], Path.Combine(root, "package"), args[2]));
+            Temporary(root =>
+            {
+                var package = ProviderBootstrap.Extract(args[1], Path.Combine(root, "package"), args[2]);
+                if (package.Version == ProviderBootstrap.Version)
+                {
+                    string hash = FilePaths.Hash(args[1]);
+                    ProviderBootstrap.ValidateArchive(args[2], hash, hash);
+                }
+            });
             Console.WriteLine("PASS complete private provider package integrity and architecture");
             return 0;
         }

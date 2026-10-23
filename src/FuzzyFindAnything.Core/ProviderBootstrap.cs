@@ -63,9 +63,9 @@ internal static class ProviderBootstrap
             if (new FileInfo(checksumPath).Length > 4096) throw new InvalidDataException("The package checksum file exceeds its bound.");
             string hash = File.ReadAllText(checksumPath).Split((char[]?)null,
                 StringSplitOptions.RemoveEmptyEntries)[0];
-            if (!Regex.IsMatch(hash, "^[a-fA-F0-9]{64}$") || new FileInfo(zip).Length != size ||
-                !FilePaths.Hash(zip).Equals(hash, StringComparison.OrdinalIgnoreCase))
+            if (new FileInfo(zip).Length != size)
                 throw new InvalidDataException("The optional provider archive failed its size/checksum check.");
+            ValidateArchive(runtime, hash, FilePaths.Hash(zip));
             string extracted = Path.Combine(staging, "payload");
             var package = Extract(zip, extracted, runtime);
             if (package.Version != Version) throw new InvalidDataException("The companion package does not match the approved release version.");
@@ -106,6 +106,19 @@ internal static class ProviderBootstrap
     {
         if (release.GetProperty("tag_name").GetString() != ReleaseTag || release.GetProperty("draft").GetBoolean())
             throw new InvalidDataException("The optional provider release is not the approved published companion package.");
+    }
+
+    internal static void ValidateArchive(string runtime, string advertised, string actual)
+    {
+        string expected = runtime switch
+        {
+            "win-arm64" => "e3be8e5cdce55c21a9b6027b4abbbfac4077c0899d9b3c609b4d1b6621b27ec7",
+            "win-x64" => "7920da89da958e1c919c2160f04170cd8a16c96722b6de368dc7fcfb313967b0",
+            _ => throw new InvalidDataException("The companion package targets an unsupported architecture.")
+        };
+        if (!expected.Equals(advertised, StringComparison.OrdinalIgnoreCase) ||
+            !expected.Equals(actual, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("The companion archive does not match the application's approved package checksum.");
     }
 
     private static async Task<string?> GitHubAsync(string[] arguments, Action<string> log, CancellationToken cancellation)

@@ -27,6 +27,8 @@ internal static class ProviderBootstrapTests
         Check.Throws<InvalidDataException>(() => ProviderBootstrap.ValidateRepository(Repository(id: 1)));
         Check.Throws<InvalidDataException>(() => ProviderBootstrap.ValidateRelease(Release("another-project-v1.0.0")));
         Check.Throws<InvalidDataException>(() => ProviderBootstrap.ValidateRelease(Release(ProviderBootstrap.ReleaseTag, draft: true)));
+        foreach (string runtime in new[] { "win-arm64", "win-x64" })
+            Check.Throws<InvalidDataException>(() => ProviderBootstrap.ValidateArchive(runtime, new string('a', 64), new string('a', 64)));
         Console.WriteLine("PASS enterprise-wide internal channel, repository identity and isolated pinned release boundaries");
     }
 
