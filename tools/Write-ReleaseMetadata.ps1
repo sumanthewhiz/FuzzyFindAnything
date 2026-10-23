@@ -51,6 +51,11 @@ foreach ($file in Get-ChildItem -LiteralPath $Package -Recurse -File -Filter '*.
         if ($name -eq 'Microsoft.Windows.SDK.NET.Ref') {
             Copy-Item -LiteralPath (Join-Path $licenses 'windows-sdk.rtf') -Destination (Join-Path $noticeDirectory 'LICENSE.rtf')
         }
+        if ($name -eq 'TreeSitter.DotNet') {
+            foreach ($source in $sources | Where-Object name -Like 'tree-sitter*') {
+                Copy-Item -LiteralPath (Join-Path $licenses ($source.name + '.txt')) -Destination $noticeDirectory
+            }
+        }
         $specPath = Get-ChildItem -LiteralPath $directory -File -Filter '*.nuspec' | Select-Object -First 1
         [xml]$spec = Get-Content -LiteralPath $specPath.FullName -Raw
         $components[$identity] = @{

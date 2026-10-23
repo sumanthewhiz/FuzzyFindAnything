@@ -40,7 +40,7 @@ public sealed class InferenceClient : IAsyncDisposable
 
     public static async Task<InferenceClient> StartAsync(string executable, string model, int threads,
         Action<int, string>? progress, Action<string> log, CancellationToken cancellation, TimeSpan? startupTimeout = null,
-        string? requiredProvider = null)
+        string? requiredProvider = null, bool imageUnderstanding = false)
     {
         var start = new ProcessStartInfo(executable)
         {
@@ -54,7 +54,7 @@ public sealed class InferenceClient : IAsyncDisposable
             StandardErrorEncoding = new UTF8Encoding(false),
             WorkingDirectory = Path.GetDirectoryName(executable)!
         };
-        foreach (string argument in new[] { "--model", model, "--threads", threads.ToString() }) start.ArgumentList.Add(argument);
+        foreach (string argument in new[] { imageUnderstanding ? "--image-model" : "--model", model, "--threads", threads.ToString() }) start.ArgumentList.Add(argument);
         if (requiredProvider is not null) { start.ArgumentList.Add("--provider"); start.ArgumentList.Add(requiredProvider); }
         var process = Process.Start(start) ?? throw new IOException("Could not start native inference.");
         var client = new InferenceClient(process, log);

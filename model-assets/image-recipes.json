@@ -1,0 +1,58 @@
+[
+  {
+    "model_urls": ["https://huggingface.co/microsoft/Florence-2-base-ft", "https://huggingface.co/onnx-community/Florence-2-base-ft"],
+    "artifact_url": "https://huggingface.co/onnx-community/Florence-2-base-ft",
+    "revision": "e88a44eaf3791a35eae0c5a47b3dbcd36e67eb6f",
+    "source_revision": "f6c1a25888ffc1d945ee8a1a77ac833c7303d46e",
+    "model_type": "florence2",
+    "memory_bytes": 2684354560,
+    "recipe": {
+      "id": "vision-text-seq2seq-bpe-v1",
+      "vision_graph": "onnx/vision_encoder.onnx",
+      "token_graph": "onnx/embed_tokens.onnx",
+      "encoder_graph": "onnx/encoder_model.onnx",
+      "decoder_graph": "onnx/decoder_model_merged.onnx",
+      "width": 768, "height": 768, "hidden_size": 768, "heads": 12, "layers": 6, "head_size": 64,
+      "mean": [0.485, 0.456, 0.406], "deviation": [0.229, 0.224, 0.225]
+    },
+    "tasks": [
+      {"id": "caption", "label": "Caption", "prompt": "Describe in detail what is shown in the image.", "maximum_new_tokens": 256},
+      {"id": "ocr", "label": "OCR", "prompt": "What is the text in the image?", "maximum_new_tokens": 512}
+    ],
+    "files": ["config.json", "generation_config.json", "tokenizer.json", "tokenizer_config.json", "vocab.json", "merges.txt", "preprocessor_config.json", "README.md", "onnx/vision_encoder.onnx", "onnx/embed_tokens.onnx", "onnx/encoder_model.onnx", "onnx/decoder_model_merged.onnx"],
+    "checksums": {
+      "onnx/vision_encoder.onnx": "d67258cdfdebfa21285dad9e7bd4bd99725236d0aaef9e474a1b24a6ec471351",
+      "onnx/embed_tokens.onnx": "90cae3deb6406938c676a35b5246db02b478c9cc8cf93508361be80c05babf95",
+      "onnx/encoder_model.onnx": "cb0bccc232c64290397f5e1235eb3e1fa6ccf8c5afed9216480ee4eed80737fc",
+      "onnx/decoder_model_merged.onnx": "5207affad8815294233b8679ee9ecb614906f819a1890d95a01b9ca68c392a79"
+    }
+  },
+  {
+    "model_urls": ["https://huggingface.co/microsoft/Florence-2-base", "https://huggingface.co/onnx-community/Florence-2-base"],
+    "artifact_url": "https://huggingface.co/onnx-community/Florence-2-base",
+    "revision": "d59e079711c57174f29265539fb4cc9f0f335916",
+    "source_revision": "5ca5edf5bd017b9919c05d08aebef5e4c7ac3bac",
+    "model_type": "florence2",
+    "memory_bytes": 2684354560,
+    "recipe": {
+      "id": "vision-text-seq2seq-bpe-v1",
+      "vision_graph": "onnx/vision_encoder.onnx",
+      "token_graph": "onnx/embed_tokens.onnx",
+      "encoder_graph": "onnx/encoder_model.onnx",
+      "decoder_graph": "onnx/decoder_model_merged.onnx",
+      "width": 768, "height": 768, "hidden_size": 768, "heads": 12, "layers": 6, "head_size": 64,
+      "mean": [0.485, 0.456, 0.406], "deviation": [0.229, 0.224, 0.225]
+    },
+    "tasks": [
+      {"id": "caption", "label": "Caption", "prompt": "Describe in detail what is shown in the image.", "maximum_new_tokens": 256},
+      {"id": "ocr", "label": "OCR", "prompt": "What is the text in the image?", "maximum_new_tokens": 512}
+    ],
+    "files": ["config.json", "generation_config.json", "tokenizer.json", "tokenizer_config.json", "vocab.json", "merges.txt", "preprocessor_config.json", "README.md", "onnx/vision_encoder.onnx", "onnx/embed_tokens.onnx", "onnx/encoder_model.onnx", "onnx/decoder_model_merged.onnx"],
+    "checksums": {
+      "onnx/vision_encoder.onnx": "2c7464fce495ea43b415b48afe7dbe84a9ebbe0cfe3c31fdd81c6dd66b39ff75",
+      "onnx/embed_tokens.onnx": "fec0fd20276af861afb6a23a11544bf1378c05e2a41001b610cc281e244c4b20",
+      "onnx/encoder_model.onnx": "b155b5a0e56a4244c62060751bb1b70dfe481015d0dbfa6d19b1912d9e58da0d",
+      "onnx/decoder_model_merged.onnx": "6d6e1266d7f94f5d4ec9cc07d9c1f7b3e47049c9b0de7bbe82a91e62dfd152af"
+    }
+  }
+]

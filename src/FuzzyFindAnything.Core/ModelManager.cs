@@ -4,6 +4,7 @@ public sealed class ModelManager : IEmbeddings
 {
     private readonly object gate = new();
     private readonly HuggingFaceModels cache;
+    private readonly ImageModelAssets imageAssets;
     private readonly string legacyHost, compatibleHost, dataDirectory;
     private readonly CpuBudget budget;
     private readonly Action<string> log;
@@ -11,6 +12,8 @@ public sealed class ModelManager : IEmbeddings
     private Dictionary<string, EmbeddingSpace> routes = [];
     private Dictionary<string, ModelPool> kindPools = [];
     private ModelSelection applied = ModelSelection.Default;
+    private ModelSelection embeddingSelection = ModelSelection.Default;
+    private ImageUnderstandingPool? imageUnderstanding;
     private Catalog? catalog;
     private CancellationTokenSource? lifetime;
     private bool disposed;
@@ -22,25 +25,29 @@ public sealed class ModelManager : IEmbeddings
         this.dataDirectory = dataDirectory; this.legacyHost = legacyHost; this.compatibleHost = compatibleHost;
         this.budget = budget; this.log = log;
         cache = new(Path.Combine(dataDirectory, "models"), modelDirectory);
+        imageAssets = new(Path.Combine(dataDirectory, "models", "image-understanding"));
     }
     public void Bind(Catalog store) => catalog = store;
     public ModelSelection Selection { get { lock (gate) return applied; } }
     public IReadOnlyDictionary<string, EmbeddingSpace> Routes { get { lock (gate) return new Dictionary<string, EmbeddingSpace>(routes); } }
     public IReadOnlyList<IEmbeddings> ActiveModels { get { lock (gate) return pools.Values.Cast<IEmbeddings>().ToArray(); } }
     public IEmbeddings ForKind(string kind) { lock (gate) return kindPools[kind]; }
+    public IImageUnderstanding? ImageUnderstanding { get { lock (gate) return imageUnderstanding; } }
+    public bool SupportsStructuredChunking => ActiveModels.Count > 0 && ActiveModels.All(model => model.SupportsStructuredChunking);
     public IReadOnlyList<EmbeddingSearchBinding> SearchBindings
     {
         get
         {
             lock (gate)
-                return routes.Keys.GroupBy(kind => (Pool: kindPools[kind], Profile: QueryFor(kind, routes[kind], applied.OptionsFor(kind))))
+                return routes.Keys.GroupBy(kind => (Pool: kindPools[kind], Profile: QueryFor(kind, routes[kind], embeddingSelection.OptionsFor(kind)),
+                    Channel: kind == "Image" && imageUnderstanding is not null ? "Image" : "Shared"))
                     .Select(group => new EmbeddingSearchBinding(group.Key.Pool, group.Key.Profile, group.ToArray())).ToArray();
         }
     }
     private static string QueryFor(string kind, EmbeddingSpace space, ModelOptions options) =>
         options.QueryProfile.Length > 0 ? options.QueryProfile : space.Recipe?.DefaultQuery(kind) ?? "default";
     private static string SessionKey(EmbeddingSpace space, ModelOptions options) => space.CacheKey + ":" + options.Device;
-    public int ReadyWorkers => ActiveModels.Sum(model => model.ReadyWorkers);
+    public int ReadyWorkers => ActiveModels.Sum(model => model.ReadyWorkers) + (ImageUnderstanding?.IsLoaded == true ? 1 : 0);
     public int Threads => ActiveModels.Select(model => model.Threads).DefaultIfEmpty(1).Max();
     public int BatchConcurrency => Math.Max(1, Math.Min(budget.Processors, ReadyWorkers * 2));
     public string Warning => string.Join(" ", ActiveModels.Select(model => model.Warning).Append(warning).Where(value => value.Length > 0));
@@ -58,29 +65,34 @@ public sealed class ModelManager : IEmbeddings
     {
         lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
         var wanted = ModelSelection.Load(dataDirectory);
+        var encoded = wanted.EmbeddingSelection();
         var spaces = new Dictionary<string, EmbeddingSpace>();
-        foreach (string url in wanted.DistinctUrls)
+        foreach (string url in encoded.DistinctUrls)
             spaces[url] = catalog?.Spaces.FirstOrDefault(space => space.ModelUrl == url) ?? cache.FindCached(url);
-        wanted = NormalizeSelection(wanted, spaces);
-        var next = BuildRoutes(wanted, spaces);
+        encoded = NormalizeSelection(encoded, spaces);
+        wanted = wanted.WithEmbeddingOptions(encoded);
+        var next = BuildRoutes(encoded, spaces, wanted.UsesImageUnderstanding);
         var started = new Dictionary<string, ModelPool>();
         var byKind = new Dictionary<string, ModelPool>();
         try
         {
-            int completed = 0, total = next.Select(pair => SessionKey(pair.Value, wanted.OptionsFor(pair.Key))).Distinct().Count();
+            int completed = 0, total = next.Select(pair => SessionKey(pair.Value, encoded.OptionsFor(pair.Key))).Distinct().Count();
             foreach (var (kind, space) in next)
             {
-                string key = SessionKey(space, wanted.OptionsFor(kind));
+                string key = SessionKey(space, encoded.OptionsFor(kind));
                 if (!started.TryGetValue(key, out var pool))
                 {
-                    pool = CreatePool(space, total, wanted.OptionsFor(kind));
+                    pool = CreatePool(space, total, encoded.OptionsFor(kind));
                     started.Add(key, pool);
                     await pool.StartAsync((step, stage) => progress((completed * 6 + step) / total, $"{stage}"), lifetime.Token);
                     completed++;
                 }
                 byKind[kind] = pool;
             }
-            lock (gate) { pools = started; routes = next; kindPools = byKind; applied = wanted; }
+            ImageUnderstandingPool? images = null;
+            if (wanted.UsesImageUnderstanding)
+                images = CreateImagePool(Pipeline(wanted, next["Image"]), lifetime.Token);
+            lock (gate) { pools = started; routes = next; kindPools = byKind; applied = wanted; embeddingSelection = encoded; imageUnderstanding = images; }
         }
         catch
         {
@@ -117,48 +129,80 @@ public sealed class ModelManager : IEmbeddings
         selection = selection.Normalize();
         var requirements = new List<ModelRequirement>();
         foreach (string kind in new[] { "Document", "Code", "Image" })
-            requirements.Add(await cache.InspectAsync(kind, selection.ForKind(kind), cancellation));
+        {
+            if (kind == "Image" && ImageModelRecipes.Find(selection.Image) is { } image)
+            {
+                var options = selection.EffectiveImagePipeline;
+                foreach (string task in options.Tasks) _ = image.Task(task);
+                string embedder = options.EmbeddingModel ?? selection.Text;
+                var target = await cache.InspectAsync("Document", embedder, cancellation);
+                requirements.Add(new("Image", selection.Image, target.State,
+                    $"Image descriptions ({string.Join(" + ", options.Tasks)}) -> {embedder}",
+                    $"Native image-understanding recipe {image.Recipe.Id}; {image.ArtifactUrl}@{image.Revision}. " +
+                    "Task prompts, tokenizer and stages are automatic. Generated text is searched with the selected text embedder.",
+                    target.QueryProfiles, target.DefaultQuery, false, target.Error, image, embedder));
+            }
+            else requirements.Add(await cache.InspectAsync(kind, selection.ForKind(kind), cancellation));
+        }
         return new(selection, requirements.ToArray());
     }
 
-    private static Dictionary<string, EmbeddingSpace> BuildRoutes(ModelSelection selection, IReadOnlyDictionary<string, EmbeddingSpace> spaces)
+    private static Dictionary<string, EmbeddingSpace> BuildRoutes(ModelSelection selection, IReadOnlyDictionary<string, EmbeddingSpace> spaces,
+        bool describedImages = false)
     {
         var result = new Dictionary<string, EmbeddingSpace>
         { ["Document"] = spaces[selection.Text], ["Code"] = spaces[selection.Code], ["Image"] = spaces[selection.Image] };
-        if (!result["Image"].SupportsImages)
+        if (!describedImages && !result["Image"].SupportsImages)
             throw new NotSupportedException($"The image selection is a text-only model: {selection.Image}. The current indexes were not changed.");
         return result;
     }
+    private static ImagePipelineDescriptor Pipeline(ModelSelection selection, EmbeddingSpace embedder)
+    {
+        var model = ImageModelRecipes.Find(selection.Image) ?? throw new NotSupportedException("The image-understanding adapter is unavailable.");
+        var options = selection.EffectiveImagePipeline;
+        foreach (string task in options.Tasks) _ = model.Task(task);
+        return new(selection.Image, model, options.Tasks, embedder, selection.EmbeddingSelection().OptionsFor("Image"), selection.OptionsFor("Image").Device);
+    }
+    private ImageUnderstandingPool CreateImagePool(ImagePipelineDescriptor descriptor, CancellationToken cancellation) =>
+        new(descriptor, compatibleHost, imageAssets.DirectoryFor(descriptor.Model), Math.Max(1, Math.Min(2, budget.Processors)),
+            log, cancellation);
     public async Task<PreparedModels?> PrepareAsync(ModelSelection selection, Action<string> progress, CancellationToken cancellation)
     {
         selection = selection.Normalize();
         if (selection == Selection) return null;
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellation, lifetime?.Token ?? default);
+        if (!selection.UsesImageUnderstanding && ImageUnderstanding is ImageUnderstandingPool previousImages)
+            await previousImages.ReleaseIfIdleAsync();
+        var encoded = selection.EmbeddingSelection();
         var spaces = new Dictionary<string, EmbeddingSpace>();
-        foreach (string url in selection.DistinctUrls)
+        foreach (string url in encoded.DistinctUrls)
         {
             EmbeddingSpace? existing;
             lock (gate) existing = routes.Values.FirstOrDefault(space => space.ModelUrl == url);
             spaces[url] = existing ?? cache.FindVerified(url, progress) ?? await cache.ResolveAsync(url, progress, linked.Token);
         }
-        selection = NormalizeSelection(selection, spaces);
+        encoded = NormalizeSelection(encoded, spaces);
+        selection = selection.WithEmbeddingOptions(encoded);
         if (selection == Selection) return null;
-        var nextRoutes = BuildRoutes(selection, spaces);
+        var nextRoutes = BuildRoutes(encoded, spaces, selection.UsesImageUnderstanding);
         var next = new Dictionary<string, ModelPool>();
         var byKind = new Dictionary<string, ModelPool>();
         var created = new List<ModelPool>();
+        ImageUnderstandingPool? generator = null;
+        ImagePipelineDescriptor? pipeline = null;
+        bool ownsGenerator = false;
         try
         {
-            int count = nextRoutes.Select(pair => SessionKey(pair.Value, selection.OptionsFor(pair.Key))).Distinct().Count();
+            int count = nextRoutes.Select(pair => SessionKey(pair.Value, encoded.OptionsFor(pair.Key))).Distinct().Count();
             foreach (var (kind, space) in nextRoutes)
             {
-                string key = SessionKey(space, selection.OptionsFor(kind));
+                string key = SessionKey(space, encoded.OptionsFor(kind));
                 if (next.TryGetValue(key, out var shared)) { byKind[kind] = shared; continue; }
                 ModelPool? existing;
                 lock (gate) existing = pools.GetValueOrDefault(key);
                 if (existing is not null && existing.ReadyWorkers > 0) { next[key] = existing; byKind[kind] = existing; continue; }
                 progress($"Checking local hardware and inference for {space.ModelUrl}");
-                var pool = CreatePool(space, count, selection.OptionsFor(kind));
+                var pool = CreatePool(space, count, encoded.OptionsFor(kind));
                 created.Add(pool);
                 await pool.StartAsync((_, stage) => progress(stage), linked.Token);
                 _ = await pool.QueryAsync("local model compatibility check", linked.Token);
@@ -175,12 +219,25 @@ public sealed class ModelManager : IEmbeddings
                 next[key] = pool; byKind[kind] = pool;
             }
             foreach (var kind in nextRoutes.Keys)
-                _ = await byKind[kind].QueryAsync("local model compatibility check", QueryFor(kind, nextRoutes[kind], selection.OptionsFor(kind)), linked.Token);
-            return new(selection, nextRoutes, next, byKind, created);
+                _ = await byKind[kind].QueryAsync("local model compatibility check", QueryFor(kind, nextRoutes[kind], encoded.OptionsFor(kind)), linked.Token);
+            if (selection.UsesImageUnderstanding)
+            {
+                pipeline = Pipeline(selection, nextRoutes["Image"]);
+                lock (gate) generator = imageUnderstanding;
+                if (generator?.Descriptor.Model.Fingerprint != pipeline.Model.Fingerprint || generator.Descriptor.GenerationDevice != pipeline.GenerationDevice)
+                {
+                    if (generator is not null) await generator.ReleaseIfIdleAsync();
+                    _ = await imageAssets.AcquireAsync(selection.Image, progress, linked.Token);
+                    generator = CreateImagePool(pipeline, lifetime?.Token ?? cancellation); ownsGenerator = true;
+                }
+                await generator.ValidateAsync(progress, linked.Token);
+            }
+            return new(selection, encoded, nextRoutes, next, byKind, created, generator, pipeline, ownsGenerator);
         }
         catch
         {
             foreach (var pool in created) await pool.DisposeAsync();
+            if (ownsGenerator && generator is not null) await generator.DisposeAsync();
             throw;
         }
     }
@@ -195,11 +252,17 @@ public sealed class ModelManager : IEmbeddings
     public async Task CommitAsync(PreparedModels prepared)
     {
         ModelPool[] retired;
+        ImageUnderstandingPool? previousGenerator;
         lock (gate)
         {
             retired = pools.Values.Except(prepared.Pools.Values).ToArray();
-            pools = prepared.Pools; routes = prepared.Routes; kindPools = prepared.KindPools; applied = prepared.Selection; prepared.Committed = true;
+            previousGenerator = imageUnderstanding;
+            pools = prepared.Pools; routes = prepared.Routes; kindPools = prepared.KindPools; applied = prepared.Selection;
+            embeddingSelection = prepared.EmbeddingSelection; imageUnderstanding = prepared.Generator;
+            if (imageUnderstanding is not null && prepared.Pipeline is not null) imageUnderstanding.Rebind(prepared.Pipeline);
+            prepared.Committed = true;
         }
+        if (previousGenerator is not null && !ReferenceEquals(previousGenerator, imageUnderstanding)) await previousGenerator.DisposeAsync();
         foreach (var pool in retired)
         {
             try { await pool.DisposeAsync(); }
@@ -216,7 +279,9 @@ public sealed class ModelManager : IEmbeddings
         {
             var model = index.Kinds.Length > 0 ? active.GetValueOrDefault(index.Kinds[0]) : null;
             return index with { Provider = model?.Provider ?? "", Device = model?.Device ?? "" };
-        }).ToArray(), catalog?.Setting("model_apply_message") ?? "");
+        }).ToArray(), catalog?.Setting("model_apply_message") ?? "", ImagePipeline: imageUnderstanding is { } generator
+            ? new(generator.Descriptor.ModelUrl, generator.Descriptor.Embedder.ModelUrl, generator.Descriptor.Tasks,
+                generator.Provider, generator.Device, IsLoaded: generator.IsLoaded) : null);
     }
     public Task<string[]> SplitAsync(string text, CancellationToken cancellation) => ForKind("Document").SplitAsync(text, cancellation);
     public Task<float[][]> DocumentsAsync(string title, string[] passages, CancellationToken cancellation) => ForKind("Document").DocumentsAsync(title, passages, cancellation);
@@ -227,20 +292,26 @@ public sealed class ModelManager : IEmbeddings
         lock (gate) { if (disposed) return; disposed = true; }
         lifetime?.Cancel();
         foreach (var model in ActiveModels) await model.DisposeAsync();
+        if (imageUnderstanding is not null) await imageUnderstanding.DisposeAsync();
         lifetime?.Dispose();
     }
 
-    public sealed class PreparedModels(ModelSelection selection, Dictionary<string, EmbeddingSpace> routes,
-        Dictionary<string, ModelPool> pools, Dictionary<string, ModelPool> kindPools, List<ModelPool> created) : IAsyncDisposable
+    public sealed class PreparedModels(ModelSelection selection, ModelSelection embeddingSelection, Dictionary<string, EmbeddingSpace> routes,
+        Dictionary<string, ModelPool> pools, Dictionary<string, ModelPool> kindPools, List<ModelPool> created,
+        ImageUnderstandingPool? generator, ImagePipelineDescriptor? pipeline, bool ownsGenerator) : IAsyncDisposable
     {
         public ModelSelection Selection { get; } = selection;
+        public ModelSelection EmbeddingSelection { get; } = embeddingSelection;
         public Dictionary<string, EmbeddingSpace> Routes { get; } = routes;
         internal Dictionary<string, ModelPool> Pools { get; } = pools;
         internal Dictionary<string, ModelPool> KindPools { get; } = kindPools;
+        internal ImageUnderstandingPool? Generator { get; } = generator;
+        public ImagePipelineDescriptor? Pipeline { get; } = pipeline;
         internal bool Committed { get; set; }
         public async ValueTask DisposeAsync()
         {
             if (!Committed) foreach (var pool in created) await pool.DisposeAsync();
+            if (!Committed && ownsGenerator && Generator is not null) await Generator.DisposeAsync();
         }
     }
 }

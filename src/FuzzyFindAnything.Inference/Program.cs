@@ -48,7 +48,10 @@ internal static class Program
                     object? result = operation switch
                     {
                         "query" => model.Query(data.GetProperty("text").GetString()!),
+                        "tokens" => model.TokenIds(data.GetProperty("text").GetString()!),
                         "split" => model.Split(data.GetProperty("text").GetString()!),
+                        "split_content" => model.SplitContent(data.GetProperty("text").GetString()!,
+                            data.GetProperty("context").Deserialize<ChunkingContext>(Protocol.Json)!),
                         "documents" => model.EncodeTexts(data.GetProperty("texts").Deserialize<string[]>()!),
                         "images" => model.EncodeImages(data.GetProperty("paths").Deserialize<string[]>()!),
                         "capabilities" => new
@@ -56,7 +59,8 @@ internal static class Program
                             space = EmbeddingSpace.Default,
                             provider = "CPUExecutionProvider",
                             device = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture + " CPU",
-                            device_type = "CPU"
+                            device_type = "CPU",
+                            structured_chunking = 1
                         },
                         "shutdown" => null,
                         _ => throw new ArgumentException("Unknown inference operation: " + operation)

@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using FuzzyFindAnything.Core;
+using FuzzyFindAnything.Chunking;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.Tokenizers;
 
@@ -85,6 +86,16 @@ public sealed class NativeModel : IDisposable
                 if (start + ModelContract.PassageTokens >= ids.Length) break;
             }
             return chunks.ToArray();
+        }
+    }
+
+    public ChunkingResult SplitContent(string text, ChunkingContext context)
+    {
+        lock (gate)
+        {
+            string framing = $"title: {FilePaths.ScalarPrefix(context.Title, 160)} | text: ";
+            int budget = Math.Min(8192, ModelContract.PassageTokens + TokenIds(framing).Length);
+            return ContentChunker.Split(text, context, budget, value => TokenIds(framing + value).Length);
         }
     }
 

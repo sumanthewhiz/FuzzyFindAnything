@@ -8,6 +8,10 @@ Model configuration and system-tray behavior described below require **1.2.0-dev
 
 The extensible Qwen/E5 recipes and adaptive model controls require **1.2.0-dev.2 or later**.
 
+Image-understanding pipelines require **1.3.0-dev.1 or later**.
+
+Content-aware chunking and per-type search preferences require **1.4.0-dev.1 or later**. Read the [chunking guide](docs/CHUNKING.md) for how app-owned boundaries differ from model tokenization, including EmbeddingGemma2.
+
 [Project](README.md) · [Architecture](docs/ARCHITECTURE.md) · [Existing-user migration](docs/MIGRATION.md)
 
 ## Before you start
@@ -116,7 +120,11 @@ For a predictable first test, save this text in `budget.txt`:
 
 Search for **planning spending for travel and equipment**. For code, try **function that reads a CSV file** against a matching source file. For photos, describe visible content such as **mountains beside a lake**.
 
-Minimum similarity starts at **0.60**, and slider changes survive restarts. Lower it if results are too narrow. Similarity is a ranking score, not a probability.
+Documents, code and images are all selected on first launch. Uncheck any types you do not want to search; the final selected type cannot be unchecked. These are search filters, not changes to indexing scope.
+
+Each type has its own minimum similarity, initially **0.60**. All selections and thresholds survive restart. An existing global threshold is migrated to all three values. Lower only the relevant threshold if that type's results are too narrow; similarity is a score, not a probability.
+
+Hover over **Matched chunk** at the bottom of a document/code result to read the full matched chunk, with symbol/line information where available. Older retained vectors without full provenance say **Matched excerpt**. Code line numbers refer to source; document line numbers refer to extracted text, not original Office/PDF page numbers.
 
 ## Everyday controls
 
@@ -151,7 +159,7 @@ Select **Apply model changes** once. The app validates the URL, required native 
 | `https://huggingface.co/intfloat/e5-base-v2` | Text and code; native mean pooling with correct retrieval prefixes |
 | `https://huggingface.co/vectoriseai/e5-small-v2` | Text and code; a second checkpoint using the same reviewed prefix recipe |
 
-These are examples, not a guarantee that every Hugging Face repository is compatible. The app supports reviewed native recipes and compatible BERT mean/CLS/already-pooled export contracts; additional projections, unreviewed instructions, tokenizers or scoring metrics require another reviewed recipe/adapter. CLIP retains its supported direct image/text interface. Qwen Coder generators and Florence caption/OCR pipelines are not substitutes for these embedding models.
+These are examples, not a guarantee that every Hugging Face repository is compatible. The app supports reviewed native recipes and compatible BERT mean/CLS/already-pooled export contracts; additional projections, unreviewed instructions, tokenizers or scoring metrics require another reviewed recipe/adapter. CLIP retains its supported direct image/text interface. Qwen Coder generators are not substitutes for embedding models.
 
 EmbeddingGemma2 needs no extra setup. The three URL boxes remain the main configuration. Requirements are resolved automatically without downloading weights; **Model details** appears only where applicable, and approved query-purpose choices remain inside it unless a recipe genuinely requires a choice. Tokenizer, pooling, graph and image-pipeline setup are not user configuration fields. Switching back to a simple model discards inactive query choices.
 
@@ -162,6 +170,18 @@ CPU, GPU and NPU eligibility is evaluated against actual local execution provide
 Search can continue against the applied configuration during downloading and device validation, with a short serialized commit boundary. **Cancel model validation** leaves the active assignment intact if it has not committed. After acceptance, affected results can be incomplete during background reindexing; the tab reports completion or failures. It does not retain a separate serving copy of the old affected index.
 
 Similarity scores differ between models; a threshold useful for EmbeddingGemma2 may be too high for CLIP. The application does not silently change your saved threshold. Qwen's reviewed fp32 artifact adds approximately 2.4 GB of model assets; allow space and memory for every selected model and for validation while the old models remain active.
+
+### Image descriptions and OCR
+
+Set the **Images** URL to `https://huggingface.co/microsoft/Florence-2-base-ft` or `https://huggingface.co/microsoft/Florence-2-base`. The app resolves a pinned ONNX export and automatically configures an image-understanding stage followed by the Documents/text embedder. Each generator adds approximately 1.1 GB of model assets. It requires enough available memory for its qualified profile and a system reserve; a running older deployment or other large models can reduce that headroom.
+
+No manual pipeline or tokenizer setup is required. **Image description options** appears only for a compatible understanding model. Caption is the default task; enable OCR there if needed. **Use the Documents / text model** is an explicit dependency: changing Text will also re-embed image descriptions, without regenerating still-valid captions/OCR. Uncheck it to choose a separate compatible text model.
+
+Select **Apply model changes** and watch the stage/count feedback. Images may have complete, partial, failed or empty/skipped task outcomes. Valid partial results remain searchable with warnings; **Retry incomplete image tasks** retries failed/truncated stages without discarding successful sibling tasks. OCR finding no text is a skipped/no-searchable-text result, not a fabricated embedding.
+
+Search results remain in the image gallery and open the original image. **Generated caption** or **OCR text** identifies the matching evidence; hover for the matched text. Generated descriptions can omit details or hallucinate, and semantic OCR search is not exact literal text matching.
+
+Selecting EmbeddingGemma2 or CLIP again hides all description-specific controls and restores direct visual embedding behavior. No generator is needed for searching already indexed descriptions; generation loads on demand for indexing and releases its worker after an idle period. Hybrid visual-plus-description retrieval and unrestricted VQA are not part of this release.
 
 ## Storage
 

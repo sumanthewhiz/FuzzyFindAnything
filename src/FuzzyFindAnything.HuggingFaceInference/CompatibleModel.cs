@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using FuzzyFindAnything.Core;
+using FuzzyFindAnything.Chunking;
 using FuzzyFindAnything.Inference;
 using Microsoft.ML.OnnxRuntime;
 
@@ -171,6 +172,10 @@ internal sealed class CompatibleModel : IDisposable
         }
         return result.ToArray();
     }
+    public ChunkingResult SplitContent(string content, ChunkingContext context) =>
+        ContentChunker.Split(content, context, space.Recipe?.ChunkTokens ?? space.MaximumTokens,
+            value => RawTokenIds((space.Recipe?.DocumentPrefix ?? "") + value).Length);
+
     public float[] Query(string query, string? profile = null)
     {
         if (space.Recipe is null)

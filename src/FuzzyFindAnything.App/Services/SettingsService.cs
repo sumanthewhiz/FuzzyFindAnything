@@ -5,10 +5,11 @@ using FuzzyFindAnything.Core;
 
 namespace FuzzyFindAnything.App.Services;
 
-public sealed record ApplicationSettings(string Theme, bool LoggingEnabled, string LogDirectory, double MinimumSimilarity = 0.60,
-    ModelSelection? Models = null)
+public sealed record ApplicationSettings(string Theme, bool LoggingEnabled, string LogDirectory,
+    ModelSelection? Models = null, SearchPreferences? Search = null)
 {
     public ModelSelection ModelSelection => Models ?? Core.ModelSelection.Default;
+    public SearchPreferences SearchSettings => Search ?? new();
 }
 
 public sealed class SettingsService
@@ -39,16 +40,14 @@ public sealed class SettingsService
                 MaxCharactersInDocument = 1_048_576
             });
             var root = XDocument.Load(reader).Root;
-            if (root?.Name != "FuzzyFindAnythingConfiguration" || (string?)root.Attribute("version") is not ("1" or "2"))
+            if (root?.Name != "FuzzyFindAnythingConfiguration" || (string?)root.Attribute("version") is not ("1" or "2" or "3"))
                 throw new InvalidDataException("The configuration has an unsupported format or version.");
             string theme = (string?)root.Element("Appearance")?.Attribute("theme") ?? "Light";
             var logging = root.Element("Logging");
             if (!bool.TryParse((string?)logging?.Attribute("enabled") ?? "true", out bool enabled))
                 throw new InvalidDataException("The logging enabled setting must be true or false.");
             string directory = (string?)logging?.Attribute("directory") ?? defaultLogDirectory;
-            string? similarity = (string?)root.Element("Search")?.Attribute("minimumSimilarity");
-            var settings = new ApplicationSettings(theme, enabled, directory,
-                similarity is null ? 0.60 : XmlConvert.ToDouble(similarity), ModelSelection.Read(root));
+            var settings = new ApplicationSettings(theme, enabled, directory, ModelSelection.Read(root), SearchPreferences.Read(root));
             Validate(settings);
             return settings with { LogDirectory = Path.GetFullPath(directory) };
         }
@@ -79,17 +78,17 @@ public sealed class SettingsService
             }
             else document = new XDocument(new XElement("FuzzyFindAnythingConfiguration", new XAttribute("version", "1")));
             var root = document.Root!;
-            bool version2 = settings.ModelSelection.RequiresVersion2 || (string?)root.Attribute("version") == "2";
-            root.SetAttributeValue("version", version2 ? "2" : "1");
+            root.SetAttributeValue("version", "3");
             XElement Section(string name)
             {
                 if (root.Element(name) is { } existing) return existing;
                 var created = new XElement(name); root.Add(created); return created;
             }
             Section("Appearance").SetAttributeValue("theme", settings.Theme);
-            Section("Search").SetAttributeValue("minimumSimilarity", settings.MinimumSimilarity);
+            root.Element("Search")?.Remove();
+            root.Add(settings.SearchSettings.ToXml());
             root.Element("Models")?.Remove();
-            root.Add(settings.ModelSelection.Normalize().ToXml(version2));
+            root.Add(settings.ModelSelection.Normalize().ToXml(version2: true));
             Section("Logging").SetAttributeValue("enabled", settings.LoggingEnabled);
             Section("Logging").SetAttributeValue("directory", settings.LogDirectory);
             using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None,
@@ -115,8 +114,8 @@ public sealed class SettingsService
             throw new InvalidDataException($"Unknown appearance theme: {settings.Theme}.");
         if (string.IsNullOrWhiteSpace(settings.LogDirectory) || !Path.IsPathFullyQualified(settings.LogDirectory))
             throw new InvalidDataException("The logging directory must be an absolute path.");
-        if (!double.IsFinite(settings.MinimumSimilarity) || settings.MinimumSimilarity is < 0 or > 0.9)
-            throw new InvalidDataException("Minimum similarity must be a finite number between 0.00 and 0.90.");
+        try { settings.SearchSettings.Validate(); }
+        catch (ArgumentException error) { throw new InvalidDataException(error.Message, error); }
     }
 
     public void Reload() => Current = Load();

@@ -52,6 +52,12 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'The native inference host publish failed.' }
     dotnet publish (Join-Path $root 'src\FuzzyFindAnything.HuggingFaceInference\FuzzyFindAnything.HuggingFaceInference.csproj') -c Release -r $RuntimeIdentifier "-p:PlatformTarget=$uiArchitecture" @versionArguments --self-contained true -o (Join-Path $staging 'hf-inference') --nologo
     if ($LASTEXITCODE -ne 0) { throw 'The compatible Hugging Face inference host publish failed.' }
+    $grammars = @('bash','c','c-sharp','cpp','go','java','javascript','php','python','ruby','rust','tsx','typescript') |
+        ForEach-Object { "tree-sitter-$_.dll" }
+    foreach ($component in @('inference','hf-inference')) {
+        Get-ChildItem -LiteralPath (Join-Path $staging $component) -File -Filter 'tree-sitter-*.dll' |
+            Where-Object Name -NotIn $grammars | ForEach-Object { [IO.File]::Delete($_.FullName) }
+    }
     dotnet publish (Join-Path $root 'src\FuzzyFindAnything.Tools\FuzzyFindAnything.Tools.csproj') -c Release -r win-x64 -p:PlatformTarget=x64 @versionArguments --self-contained true -o (Join-Path $staging 'tools') --nologo
     if ($LASTEXITCODE -ne 0) { throw 'The model/maintenance tools publish failed.' }
     foreach ($directory in @('engine', 'tools')) {

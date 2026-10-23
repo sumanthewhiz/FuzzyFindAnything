@@ -299,10 +299,10 @@ public sealed class HuggingFaceModels(string cacheDirectory, string defaultDirec
         return model;
     }
 
-    private static Uri AssetUri(string url, string revision, string file) =>
+    internal static Uri AssetUri(string url, string revision, string file) =>
         new($"{url}/resolve/{revision}/{string.Join("/", file.Split('/').Select(Uri.EscapeDataString))}");
 
-    private static async Task<JsonDocument> JsonAsync(Uri uri, CancellationToken cancellation) =>
+    internal static async Task<JsonDocument> JsonAsync(Uri uri, CancellationToken cancellation) =>
         await OptionalJsonAsync(uri, cancellation) ?? throw new NotSupportedException($"Required native model metadata was not found: {uri.AbsolutePath}.");
 
     private static async Task<JsonDocument?> OptionalJsonAsync(Uri uri, CancellationToken cancellation)
@@ -316,7 +316,7 @@ public sealed class HuggingFaceModels(string cacheDirectory, string defaultDirec
         return JsonDocument.Parse(buffer.ToArray());
     }
 
-    private static async Task<ModelAssetFile> DownloadAsync(Uri uri, string directory, string name, long expected,
+    internal static async Task<ModelAssetFile> DownloadAsync(Uri uri, string directory, string name, long expected,
         string? expectedHash, Action<string> report, CancellationToken cancellation)
     {
         if (expected > MaximumAssetBytes) throw new InvalidDataException("The model asset exceeds the native download safety limit.");

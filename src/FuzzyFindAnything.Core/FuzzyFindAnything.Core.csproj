@@ -10,6 +10,7 @@
   <ItemGroup>
     <EmbeddedResource Include="..\..\model-assets\embeddinggemma-2.json" LogicalName="FuzzyFindAnything.NativeModel.json" />
     <EmbeddedResource Include="..\..\model-assets\embedding-recipes.json" LogicalName="FuzzyFindAnything.EmbeddingRecipes.json" />
+    <EmbeddedResource Include="..\..\model-assets\image-recipes.json" LogicalName="FuzzyFindAnything.ImageRecipes.json" />
     <InternalsVisibleTo Include="FuzzyFindAnything.NativeTests" />
     <InternalsVisibleTo Include="FuzzyFindAnything.HuggingFaceInference" />
   </ItemGroup>

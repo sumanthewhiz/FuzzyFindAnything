@@ -1,5 +1,7 @@
 # Architecture and operations
 
+See [content chunking](CHUNKING.md) for model-independent document/code boundaries, native syntax grammars, token budgets, provenance and schema-8 migration. and operations
+
 [Overview](../README.md) · [Quickstart](../QUICKSTART.md) · [Migration](MIGRATION.md) · [Validation](VALIDATION.md)
 
 ## Design boundaries
@@ -111,6 +113,22 @@ The catalog also persists the affected file types and completion state for each 
 There is one DiskANN graph per distinct pinned embedding space, not simply per vector dimension. The default graph retains its existing `diskann` location. Other graphs live under `model-indexes\<space-key>`; model assets live separately under `models\<space-key>` in the selected data directory. Counts and search results are aggregated, while the model tab lists each graph's file types, dimensions and actual execution device.
 
 Schema 4 is retained for unchanged default installations. Legacy model assignments use schema 5; new recipe/query/device bindings use schema 6 and XML version 2. Source roles, approved query profiles and device policy are persisted independently of the vector routes. XML is published within the model-change transaction boundary; if a process exits between XML publication and SQLite commit, startup validates the saved intent, reconciles routing and schedules affected files again. Older application versions must not be used against unsupported schemas; use a complete pre-change backup for rollback.
+
+### Native image-understanding pipelines
+
+`model-assets\image-recipes.json` defines reviewed image-input/task providers separately from embedding recipes. The first adapter is `vision-text-seq2seq-bpe-v1`, with Florence-2 base and base-ft checkpoints using the same implementation. A definition supplies pinned component graphs, image normalization/shape, tokenizer/decoder geometry, task prompts and output limits. The shared compatible-model executable runs this provider in a separate `--image-model` process; it does not run Hugging Face Python or JavaScript.
+
+The native path performs safe image decoding and recipe-specific bicubic resize/RGB normalization, vision encoding, task-token embedding, a text/image encoder and bounded cached decoding. The current qualified policy is greedy decoding with a forced beginning token, EOS termination and three-token repetition blocking. Caption and OCR have separate token limits; reaching a limit produces a partial/truncated outcome, not false successful completion. Cached decoder cross-attention states are retained from the first step because subsequent merged-graph outputs for them are empty.
+
+An image-understanding provider returns typed task outcomes, not retrieval vectors. The indexing engine persists each caption/OCR outcome, chunks valid generated text using the final embedder, and publishes image-owned vectors in that embedder's space. Searches use the corresponding text query encoder and never invoke image generation. Generated text can share a compatible document-vector index, but the described-image channel retains its own kind-filtered candidate budget. Gallery results remain associated with the original image and include caption/OCR provenance.
+
+Schema 7 stores reusable `image_representations` by stable source identity/revision and producer/task fingerprint, with attempts, terminal state, warning/error and next retry. Vector and prepared-passage records carry representation metadata; vectors also record their space/pipeline identity. A text-embedder change retains valid generation artifacts. Source changes, changed generator/task recipes or loss of indexing ownership invalidate the relevant data. Permanent empty OCR is recorded as skipped/no searchable text; valid partial output stays searchable. Transient task errors receive bounded retries, and manual retry removes only incomplete stages.
+
+Image model changes use persisted reindex-operation membership and initial-scan tracking. Once discovery is sealed, later unrelated file work does not indefinitely keep that operation pending. Completion reports distinct succeeded/partial/failed/skipped/removed counts and survives restart. Cancelled/failed initial scans cannot mark the discovery phase complete.
+
+Generation is single-task-per-worker, lazy on restart, bounded by the shared CPU affinity, and subject to memory/device admission. Idle generation workers are released without affecting search and can be released before qualifying a different image model. Existing direct Gemma/CLIP configurations do not create a generator or require downstream/tokenizer/task controls. A described-image model automatically links to Text unless the user chooses a separate embedder; that dependency is included in invalidation rather than copied as an unrelated URL.
+
+Other checkpoints of a supported native task ABI require reviewed recipe data and qualification. New processors/architectures still require another native adapter; sparse/multi-vector retrieval, hybrid visual-plus-caption fusion, arbitrary remote code and VQA are not implicitly supported.
 
 ## Startup and resource budgeting
 

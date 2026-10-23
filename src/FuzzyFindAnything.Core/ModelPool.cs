@@ -11,6 +11,8 @@ public interface IEmbeddings : IAsyncDisposable
     IEmbeddings ForKind(string kind) => this;
     IReadOnlyList<IEmbeddings> ActiveModels => new[] { this };
     IReadOnlyList<EmbeddingSearchBinding> SearchBindings => ActiveModels.Select(model => new EmbeddingSearchBinding(model, "default", null)).ToArray();
+    IImageUnderstanding? ImageUnderstanding => null;
+    bool SupportsStructuredChunking => false;
     int ReadyWorkers { get; }
     int Threads { get; }
     int BatchConcurrency { get; }
@@ -18,6 +20,8 @@ public interface IEmbeddings : IAsyncDisposable
     BatchState Statistics { get; }
     Task StartAsync(Action<int, string> progress, CancellationToken cancellation);
     Task<string[]> SplitAsync(string text, CancellationToken cancellation);
+    Task<ChunkingResult> SplitContentAsync(string text, ChunkingContext context, CancellationToken cancellation) =>
+        throw new NotSupportedException("This worker does not support structured content preparation.");
     Task<float[][]> DocumentsAsync(string title, string[] passages, CancellationToken cancellation);
     Task<float[]> ImageAsync(string path, CancellationToken cancellation);
     Task<float[]> QueryAsync(string text, CancellationToken cancellation);
@@ -34,6 +38,7 @@ public sealed class ModelPool(string executable, string modelDirectory, CpuBudge
     public EmbeddingSpace Space { get; } = space ?? EmbeddingSpace.Default;
     public string Provider { get; private set; } = "CPUExecutionProvider";
     public string Device { get; private set; } = RuntimeInformation.ProcessArchitecture + " CPU";
+    public bool SupportsStructuredChunking { get; private set; }
     private readonly object gate = new();
     private readonly List<InferenceClient> clients = [];
     private readonly Queue<InferenceClient> available = new();
@@ -89,6 +94,7 @@ public sealed class ModelPool(string executable, string modelDirectory, CpuBudge
                 throw new InvalidDataException("The native worker does not implement the required embedding recipe/protocol.");
             Provider = capabilities.GetProperty("provider").GetString()!;
             Device = capabilities.GetProperty("device").GetString()!;
+            SupportsStructuredChunking = capabilities.TryGetProperty("structured_chunking", out var chunking) && chunking.GetInt32() == 1;
             return client;
         }
         catch { await client.DisposeAsync(); throw; }
@@ -176,6 +182,10 @@ public sealed class ModelPool(string executable, string modelDirectory, CpuBudge
     public Task<string[]> SplitAsync(string text, CancellationToken cancellation) => WithClientAsync(false, async client =>
         (await client.RequestAsync("split", new { text }, cancellation)).Deserialize<string[]>()
             ?? throw new InvalidDataException("Empty passage preparation output."), cancellation);
+    public Task<ChunkingResult> SplitContentAsync(string text, ChunkingContext context, CancellationToken cancellation) =>
+        WithClientAsync(false, async client =>
+            (await client.RequestAsync("split_content", new { text, context }, cancellation)).Deserialize<ChunkingResult>(Protocol.Json)
+                ?? throw new InvalidDataException("Empty structured passage response."), cancellation);
     public Task<float[][]> DocumentsAsync(string title, string[] passages, CancellationToken cancellation) =>
         batches!.SubmitAsync("documents", passages.Select(passage => Space == EmbeddingSpace.Default
             ? $"title: {FilePaths.ScalarPrefix(title, 160)} | text: {passage}" : passage).ToArray(), cancellation);

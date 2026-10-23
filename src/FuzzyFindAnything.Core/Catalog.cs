@@ -4,7 +4,7 @@ using Microsoft.Data.Sqlite;
 
 namespace FuzzyFindAnything.Core;
 
-public sealed class Catalog : IDisposable
+public sealed partial class Catalog : IDisposable
 {
     private readonly object gate = new();
     private readonly SqliteConnection database;
@@ -16,6 +16,7 @@ public sealed class Catalog : IDisposable
     { ["Document"] = EmbeddingSpace.Default, ["Code"] = EmbeddingSpace.Default, ["Image"] = EmbeddingSpace.Default };
     private readonly int threads;
     private ModelSelection? configuredSelection;
+    private ImagePipelineDescriptor? imagePipeline;
     private bool disposed;
     public string DirectoryPath { get; }
     public string IndexDirectory { get; }
@@ -23,6 +24,7 @@ public sealed class Catalog : IDisposable
     public IReadOnlyList<EmbeddingSpace> Spaces { get { lock (gate) return routes.Values.DistinctBy(space => space.Key).ToArray(); } }
     public ModelSelection Selection { get { lock (gate) return configuredSelection ?? new(routes["Document"].ModelUrl, routes["Code"].ModelUrl, routes["Image"].ModelUrl); } }
     public EmbeddingSpace SpaceFor(string kind) { lock (gate) return routes[kind]; }
+    public ImagePipelineDescriptor? ImagePipeline { get { lock (gate) return imagePipeline; } }
 
     public Catalog(string directory, int nativeThreads, Action<string>? diagnostic = null)
     {
@@ -47,13 +49,17 @@ public sealed class Catalog : IDisposable
             {
                 routes = JsonSerializer.Deserialize<Dictionary<string, EmbeddingSpace>>(saved, Protocol.Json)
                     ?? throw new InvalidDataException("Invalid saved model configuration.");
-                ValidateRoutes(routes);
+                ValidateRoutes(routes, Setting("image_pipeline") is not null);
             }
+            if (Setting("image_pipeline") is { } imageSettings)
+                imagePipeline = JsonSerializer.Deserialize<ImagePipelineDescriptor>(imageSettings, Protocol.Json)
+                    ?? throw new InvalidDataException("Invalid saved image pipeline.");
             if (Setting("model_selection") is { } selected)
             {
                 configuredSelection = JsonSerializer.Deserialize<ModelSelection>(selected, Protocol.Json)?.Normalize()
                     ?? throw new InvalidDataException("Invalid saved model bindings.");
-                if (routes.Any(pair => configuredSelection.ForKind(pair.Key) != pair.Value.ModelUrl))
+                var embeddings = configuredSelection.EmbeddingSelection();
+                if (routes.Any(pair => embeddings.ForKind(pair.Key) != pair.Value.ModelUrl))
                     throw new InvalidDataException("Saved model bindings do not match their vector routes.");
             }
             foreach (var row in Query("SELECT path,path_key FROM files UNION SELECT path,path_key FROM index_jobs",
@@ -143,7 +149,7 @@ public sealed class Catalog : IDisposable
             INSERT OR IGNORE INTO settings VALUES('schema_version','1');
             """);
         string version = Setting("schema_version")!;
-        if (version is not ("1" or "2" or "3" or "4" or "5" or "6"))
+        if (version is not ("1" or "2" or "3" or "4" or "5" or "6" or "7" or "8"))
             throw new InvalidDataException($"Unsupported catalog schema: {version}.");
         string? model = Setting("model");
         if (model is not null && model != ModelContract.Fingerprint)
@@ -158,9 +164,11 @@ public sealed class Catalog : IDisposable
             })
                 if (!columns.Contains(column.Name)) Execute($"ALTER TABLE files ADD COLUMN {column.Name} {column.Definition}");
             if (version is "1" or "2") Execute("UPDATE files SET retry_after=0 WHERE error IS NOT NULL");
-            SetSetting("schema_version", version is "5" or "6" ? version : "4");
+            SetSetting("schema_version", version is "5" or "6" or "7" or "8" ? version : "4");
             SetSetting("model", ModelContract.Fingerprint);
         });
+        if (version is "7" or "8") EnsureImageSchema();
+        if (version == "8") EnsureChunkSchema();
     }
 
     public string? Setting(string key)
@@ -174,7 +182,7 @@ public sealed class Catalog : IDisposable
     {
         var generations = changed.DistinctBy(space => space.Key).ToDictionary(space => space.Key, GenerationFor);
         Execute("UPDATE settings SET value=CAST(value AS INTEGER)+1 WHERE key='generation'");
-        if (Setting("schema_version") is "5" or "6")
+        if (Setting("schema_version") is "5" or "6" or "7" or "8")
             foreach (var pair in generations) SetSetting("generation:" + pair.Key, (pair.Value + 1).ToString(CultureInfo.InvariantCulture));
         SetSetting("last_refreshed", DateTimeOffset.UtcNow.ToString("O"));
     }
@@ -221,7 +229,8 @@ public sealed class Catalog : IDisposable
             if (!HasFolder(folder)) return;
             string key = Key(path);
             IndexedFile? old = FindFile(path);
-            bool canReuse = old is not null && (old.Error is null || old.RetryAfter is null || old.RetryAfter > FilePaths.UnixNow);
+            if (digest.Length == 0 && old?.Fingerprint == signature) digest = old.ContentHash;
+            bool canReuse = old is not null && (old.RetryAfter is null || old.RetryAfter > FilePaths.UnixNow);
             if (old is not null && ((!force && old.Fingerprint == signature && canReuse) ||
                 (digest.Length > 0 && old.ContentHash == digest && canReuse)))
             {
@@ -230,7 +239,7 @@ public sealed class Catalog : IDisposable
                 {
                     Execute("UPDATE files SET path=$p0,mtime_ns=$p1,size=$p2,file_identity=$p3 WHERE id=$p4",
                         path, signature.MtimeNs, signature.Size, signature.Identity, old.Id);
-                    if (old.Error is null) Execute("DELETE FROM index_jobs WHERE path_key=$p0", key);
+                    if (old.Error is null && old.RetryAfter is null) Execute("DELETE FROM index_jobs WHERE path_key=$p0", key);
                 }
                 return;
             }
@@ -254,6 +263,11 @@ public sealed class Catalog : IDisposable
                 Execute("INSERT INTO job_folders VALUES($p0,$p1)", Scalar<long>("SELECT last_insert_rowid()"), folder);
             }
             pathKeys[path] = key;
+            if (HasImageSchema)
+            {
+                Execute("UPDATE index_jobs SET pipeline_key=$p0 WHERE path_key=$p1", IndexingKey(kind), key);
+                TrackReindexMember(key, kind);
+            }
             queued = true;
         });
         return queued;
@@ -304,8 +318,8 @@ public sealed class Catalog : IDisposable
     public List<Passage> Remaining(IndexJob job, int count = 16)
     {
         lock (gate) return !IsCurrent(job) ? [] : Query(
-            "SELECT ordinal,content FROM job_passages WHERE job_id=$p0 AND embedding IS NULL ORDER BY ordinal LIMIT $p1",
-            row => new Passage(row.GetInt32(0), row.GetString(1)), job.Id, count);
+            $"SELECT ordinal,content,{(HasImageSchema ? "representation,representation_id" : "'' AS representation,NULL AS representation_id")} FROM job_passages WHERE job_id=$p0 AND embedding IS NULL ORDER BY ordinal LIMIT $p1",
+            row => new Passage(row.GetInt32(0), row.GetString(1), row.GetString(2), row.IsDBNull(3) ? null : row.GetInt64(3)), job.Id, count);
     }
     public bool SaveBatch(IndexJob job, IReadOnlyList<Passage> passages, IReadOnlyList<float[]> vectors)
     {
@@ -336,12 +350,16 @@ public sealed class Catalog : IDisposable
         lock (gate)
         {
             if (!IsCurrent(job)) return false;
-            var rows = Query("SELECT content,embedding FROM job_passages WHERE job_id=$p0 ORDER BY ordinal",
-                row => (Text: row.GetString(0), Bytes: row.IsDBNull(1) ? null : (byte[])row[1]), job.Id);
+            var rows = Query($"SELECT content,embedding,{(HasImageSchema ? "representation,representation_id" : "'' AS representation,NULL AS representation_id")},{(HasChunkSchema ? "chunk_json" : "NULL")} FROM job_passages WHERE job_id=$p0 ORDER BY ordinal",
+                row => (Text: row.GetString(0), Bytes: row.IsDBNull(1) ? null : (byte[])row[1],
+                    Representation: row.GetString(2), RepresentationId: row.IsDBNull(3) ? (long?)null : row.GetInt64(3),
+                    Chunk: row.IsDBNull(4) ? null : JsonSerializer.Deserialize<ChunkMetadata>(row.GetString(4), Protocol.Json)), job.Id);
             if (rows.Count == 0 || rows.Any(row => row.Bytes is null)) throw new InvalidDataException("Cannot publish an incomplete file.");
             string? warning = Query("SELECT warning FROM index_jobs WHERE id=$p0", row => NullableString(row, 0), job.Id)[0];
-            return Publish(job, rows.Select(row => (FilePaths.ScalarPrefix(job.Kind == "Code" ? row.Text.Trim() : FilePaths.CollapseWhitespace(row.Text), 400),
-                routes[job.Kind].Vector(row.Bytes!))).ToArray(), warning, null, null, null, 0);
+            double? retry = job.Kind == "Image" && imagePipeline is not null ? NextImageRetry(job) : null;
+            return Publish(job, rows.Select(row => new PublishedChunk(FilePaths.ScalarPrefix(job.Kind == "Code" ? row.Text.Trim() : FilePaths.CollapseWhitespace(row.Text), 400),
+                routes[job.Kind].Vector(row.Bytes!), row.Representation, row.RepresentationId, row.Text, row.Chunk)).ToArray(), warning, null, null, retry, job.Attempts,
+                coverage: job.Kind == "Image" ? warning is null ? "Complete" : "Partial" : "");
         }
     }
     public bool Fail(IndexJob job, string error, string code, bool retryable, double elapsedMs)
@@ -353,8 +371,10 @@ public sealed class Catalog : IDisposable
             return Publish(job, [], null, error, code, retry, attempts, elapsedMs);
         }
     }
-    private bool Publish(IndexJob job, IReadOnlyList<(string Text, float[] Vector)> chunks, string? warning,
-        string? error, string? errorCode, double? retryAt, int attempts, double elapsedMs = 0)
+    private sealed record PublishedChunk(string Text, float[] Vector, string Representation, long? RepresentationId,
+        string FullText, ChunkMetadata? Chunk);
+    private bool Publish(IndexJob job, IReadOnlyList<PublishedChunk> chunks, string? warning,
+        string? error, string? errorCode, double? retryAt, int attempts, double elapsedMs = 0, string coverage = "")
     {
         if (!IsCurrent(job)) return false;
         var owners = Owners(job);
@@ -383,13 +403,27 @@ public sealed class Catalog : IDisposable
                 Execute("INSERT INTO vectors(file_id,ordinal,snippet,embedding) VALUES($p0,$p1,$p2,$p3)",
                     fileId, ordinal, chunks[ordinal].Text, ModelContract.Bytes(vector));
                 inserted.Add((checked((uint)Scalar<long>("SELECT last_insert_rowid()")), vector));
+                if (HasImageSchema)
+                    Execute("UPDATE vectors SET representation=$p0,representation_id=$p1,space_key=$p2,pipeline_key=$p3 WHERE id=$p4",
+                        chunks[ordinal].Representation, chunks[ordinal].RepresentationId, space.Key, IndexingKey(job.Kind), inserted[^1].Id);
+                if (HasChunkSchema)
+                    Execute("UPDATE vectors SET chunk_text=$p0,chunk_json=$p1 WHERE id=$p2", chunks[ordinal].FullText,
+                        chunks[ordinal].Chunk is null ? null : JsonSerializer.Serialize(chunks[ordinal].Chunk, Protocol.Json), inserted[^1].Id);
             }
+            if (HasImageSchema)
+                Execute("UPDATE files SET image_coverage=$p0 WHERE id=$p1",
+                    job.Kind == "Image" ? coverage.Length > 0 ? coverage : error is null ? "Complete" : "Failed" : "", fileId);
             if (deleted.Count != 0 || inserted.Count != 0) Bump(deleted.Select(value => value.Space).Append(space));
             if (retryAt is null)
                 Execute("DELETE FROM index_jobs WHERE id=$p0 AND revision=$p1", job.Id, job.Revision);
             else
                 Execute("UPDATE index_jobs SET state='pending',attempts=$p0,retry_at=$p1,scheduled=$p2,elapsed_ms=$p3 WHERE id=$p4 AND revision=$p5",
                     attempts, retryAt, FilePaths.UnixNow, elapsedMs, job.Id, job.Revision);
+            if (retryAt is not null && error is null && job.Kind == "Image" && imagePipeline is not null)
+            {
+                Execute("DELETE FROM job_passages WHERE job_id=$p0", job.Id);
+                Execute("UPDATE index_jobs SET prepared=0 WHERE id=$p0", job.Id);
+            }
         });
         pathKeys[job.Path] = job.PathKey;
         Apply(deleted, inserted, space);
@@ -478,19 +512,20 @@ public sealed class Catalog : IDisposable
             throw new InvalidDataException("Invalid file types in saved model reindex status.");
         return state;
     }
-    public ModelReindexState? ModelReindex(bool canComplete)
+    public ModelReindexState? ModelReindex(bool canComplete, bool discoveryIdle = true)
     {
         lock (gate)
         {
             var state = ReadModelReindex();
             if (state is null || state.Completed) return state;
+            if (HasImageSchema && state.OperationId is not null) return ImageReindexState(state, canComplete);
             string kinds = string.Join(",", state.Kinds.Select(kind => "'" + kind + "'"));
             var counts = Query($"""
                 SELECT COALESCE(SUM(f.error IS NULL),0),COALESCE(SUM(f.error IS NOT NULL),0)
                 FROM files f WHERE f.kind IN ({kinds}) AND EXISTS(SELECT 1 FROM folder_files WHERE file_id=f.id)
                 AND NOT EXISTS(SELECT 1 FROM index_jobs j WHERE j.path_key=f.path_key)
                 """, row => (Succeeded: row.GetInt64(0), Failed: row.GetInt64(1)))[0];
-            bool completed = canComplete && Scalar<long>($"SELECT COUNT(*) FROM index_jobs WHERE kind IN ({kinds})") == 0 &&
+            bool completed = canComplete && discoveryIdle && Scalar<long>($"SELECT COUNT(*) FROM index_jobs WHERE kind IN ({kinds})") == 0 &&
                 Folders().All(folder => string.IsNullOrEmpty(Setting("scan_error:" + folder.Id)));
             var next = state with { Completed = completed, Succeeded = counts.Succeeded, Failed = counts.Failed };
             if (completed) SetSetting("model_reindex", JsonSerializer.Serialize(next, Protocol.Json));
@@ -517,21 +552,26 @@ public sealed class Catalog : IDisposable
         var previous = ReadModelReindex();
         string[] kinds = previous is { Completed: false }
             ? previous.Kinds.Concat(changed).Distinct(StringComparer.Ordinal).ToArray() : changed;
-        SetSetting("model_reindex", JsonSerializer.Serialize(new ModelReindexState(kinds), Protocol.Json));
+        var next = new ModelReindexState(kinds, OperationId: HasImageSchema ? Guid.NewGuid().ToString("N") : null);
+        SetSetting("model_reindex", JsonSerializer.Serialize(next, Protocol.Json));
+        if (HasImageSchema) BeginReindexCohort(next);
     }
     public (long Files, long Vectors) Counts()
     {
-        lock (gate) return (Scalar<long>("SELECT COUNT(*) FROM files WHERE error IS NULL"), Scalar<long>("SELECT COUNT(*) FROM vectors"));
+        lock (gate) return (Scalar<long>("SELECT COUNT(*) FROM files WHERE error IS NULL AND EXISTS(SELECT 1 FROM vectors WHERE file_id=files.id)"), Scalar<long>("SELECT COUNT(*) FROM vectors"));
     }
     public FolderState FolderCounts(FolderState folder, bool scanning)
     {
         lock (gate)
         {
-            int succeeded = Scalar<int>("""
+            int succeeded = Scalar<int>($"""
                 SELECT COUNT(*) FROM files f JOIN folder_files ff ON ff.file_id=f.id WHERE ff.folder_id=$p0 AND f.error IS NULL
                 AND NOT EXISTS(SELECT 1 FROM index_jobs j WHERE j.path_key=f.path_key)
+                {(HasImageSchema ? "AND f.image_coverage<>'Partial'" : "")}
                 """, folder.Id);
-            int failed = Scalar<int>("SELECT COUNT(*) FROM files f JOIN folder_files ff ON ff.file_id=f.id WHERE ff.folder_id=$p0 AND f.error IS NOT NULL", folder.Id);
+            int failed = Scalar<int>("SELECT COUNT(*) FROM files f JOIN folder_files ff ON ff.file_id=f.id WHERE ff.folder_id=$p0 AND f.error IS NOT NULL AND COALESCE(error_code,'') NOT IN ('index_pending','image_no_text')", folder.Id);
+            int partial = HasImageSchema ? Scalar<int>("SELECT COUNT(*) FROM files f JOIN folder_files ff ON ff.file_id=f.id WHERE ff.folder_id=$p0 AND image_coverage='Partial'", folder.Id) : 0;
+            int skipped = Scalar<int>("SELECT COUNT(*) FROM files f JOIN folder_files ff ON ff.file_id=f.id WHERE ff.folder_id=$p0 AND error_code='image_no_text'", folder.Id);
             var (queued, active) = Query("""
                 SELECT COUNT(*),COALESCE(SUM(j.state='active'),0) FROM index_jobs j JOIN job_folders jf ON jf.job_id=j.id WHERE jf.folder_id=$p0
                 """, row => (row.GetInt32(0), row.GetInt32(1)), folder.Id)[0];
@@ -551,7 +591,9 @@ public sealed class Catalog : IDisposable
                 Succeeded = succeeded,
                 Failed = failed,
                 Queued = queued,
-                Active = active
+                Active = active,
+                Partial = partial,
+                Skipped = skipped
             };
         }
     }
@@ -594,17 +636,20 @@ public sealed class Catalog : IDisposable
                 var matches = new Dictionary<long, ResultFile>();
                 foreach (uint id in shard.Search(query, k))
                 {
-                    var records = Query("""
-                        SELECT f.id,f.path,f.kind,f.size,f.mtime_ns,v.snippet,v.embedding FROM vectors v JOIN files f ON f.id=v.file_id
+                    var records = Query($"""
+                        SELECT f.id,f.path,f.kind,f.size,f.mtime_ns,v.snippet,v.embedding,{(HasImageSchema ? "v.representation" : "''")},
+                          {(HasChunkSchema ? "v.chunk_text,v.chunk_json" : "v.snippet,NULL")} FROM vectors v JOIN files f ON f.id=v.file_id
                         WHERE v.id=$p0 AND f.error IS NULL AND EXISTS(SELECT 1 FROM folder_files WHERE file_id=f.id)
                         """, row => (Id: row.GetInt64(0), Path: row.GetString(1), Kind: row.GetString(2), Size: row.GetInt64(3),
-                            Mtime: row.GetInt64(4), Snippet: row.GetString(5), Vector: space.Vector((byte[])row[6])), id);
+                            Mtime: row.GetInt64(4), Snippet: row.GetString(5), Vector: space.Vector((byte[])row[6]), Evidence: row.GetString(7),
+                            ChunkText: row.GetString(8), Chunk: row.IsDBNull(9) ? null : JsonSerializer.Deserialize<ChunkMetadata>(row.GetString(9), Protocol.Json)), id);
                     if (records.Count == 0) continue;
                     var record = records[0];
                     if (!File.Exists(record.Path) || routes[record.Kind].Key != space.Key || kinds is not null && !kinds.Contains(record.Kind)) continue;
                     double score = ModelContract.Similarity(query, record.Vector);
                     if (score < threshold || matches.TryGetValue(record.Id, out var old) && old.Score >= score) continue;
-                    matches[record.Id] = new(record.Path, Path.GetFileName(record.Path), record.Kind, record.Size, record.Mtime, record.Snippet, score);
+                    matches[record.Id] = new(record.Path, Path.GetFileName(record.Path), record.Kind, record.Size, record.Mtime, record.Snippet, score, record.Evidence,
+                        record.ChunkText.Length > 0 ? record.ChunkText : record.Snippet, record.Chunk);
                 }
                 if (matches.Count >= limit || k == count) return matches.Values.OrderByDescending(value => value.Score)
                     .ThenBy(value => value.Path, StringComparer.Ordinal).Take(limit).ToList();
@@ -614,7 +659,7 @@ public sealed class Catalog : IDisposable
     }
 
     private sealed record RemovedVector(uint Id, EmbeddingSpace Space);
-    private long GenerationFor(EmbeddingSpace space) => Setting("schema_version") is "5" or "6"
+    private long GenerationFor(EmbeddingSpace space) => Setting("schema_version") is "5" or "6" or "7" or "8"
         ? long.Parse(Setting("generation:" + space.Key) ?? "0", CultureInfo.InvariantCulture) : Generation;
     private string KindsSql(EmbeddingSpace space)
     {
@@ -633,24 +678,25 @@ public sealed class Catalog : IDisposable
             shards[key].Apply(deleted.Where(value => value.Space.Key == key).Select(value => value.Id).ToArray(),
                 destination?.Key == key ? inserted : []);
     }
-    private static void ValidateRoutes(IReadOnlyDictionary<string, EmbeddingSpace> value)
+    private static void ValidateRoutes(IReadOnlyDictionary<string, EmbeddingSpace> value, bool describedImages = false)
     {
         if (value.Count != 3 || new[] { "Document", "Code", "Image" }.Any(kind => !value.ContainsKey(kind)))
             throw new InvalidDataException("A model is required for documents, code and images.");
         foreach (var space in value.Values) space.Validate();
-        if (!value["Image"].SupportsImages) throw new InvalidDataException("The selected image model cannot create image embeddings.");
+        if (!describedImages && !value["Image"].SupportsImages) throw new InvalidDataException("The selected image model cannot create image embeddings.");
     }
     public string[] ReconfigureModels(IReadOnlyDictionary<string, EmbeddingSpace> next, Action persistConfiguration,
-        Action? configurationCommitted = null, ModelSelection? selection = null)
+        Action? configurationCommitted = null, ModelSelection? selection = null, ImagePipelineDescriptor? pipeline = null)
     {
-        ValidateRoutes(next);
+        ValidateRoutes(next, pipeline is not null);
         lock (gate)
         {
             selection ??= new(next["Document"].ModelUrl, next["Code"].ModelUrl, next["Image"].ModelUrl);
             selection = selection.Normalize();
-            if (next.Any(pair => selection.ForKind(pair.Key) != pair.Value.ModelUrl))
+            if (next.Any(pair => selection.EmbeddingSelection().ForKind(pair.Key) != pair.Value.ModelUrl))
                 throw new InvalidDataException("The selected model URLs do not match the prepared routes.");
             string[] changed = routes.Keys.Where(kind => routes[kind].IndexingFingerprint != next[kind].IndexingFingerprint).ToArray();
+            if (imagePipeline?.Fingerprint != pipeline?.Fingerprint) changed = changed.Append("Image").Distinct().ToArray();
             if (changed.Length == 0 && selection == Selection) return [];
             var prepared = new Dictionary<string, VectorShard>();
             try
@@ -662,18 +708,26 @@ public sealed class Catalog : IDisposable
                     .Where(row => changed.Contains(row.Kind)).Select(row => new RemovedVector(row.Id, routes[row.Kind])).ToArray();
                 Transaction(() =>
                 {
+                    if (pipeline is not null || HasImageSchema) EnsureImageSchema();
                     foreach (var space in Spaces.Concat(next.Values).DistinctBy(value => value.Key))
                         if (Setting("generation:" + space.Key) is null)
                             SetSetting("generation:" + space.Key, (space == EmbeddingSpace.Default ? Generation : 0).ToString(CultureInfo.InvariantCulture));
                     foreach (string kind in changed)
                     {
                         Execute("DELETE FROM index_jobs WHERE kind=$p0", kind);
-                        Execute("DELETE FROM files WHERE kind=$p0", kind);
+                        if (HasImageSchema)
+                        {
+                            Execute("DELETE FROM vectors WHERE file_id IN (SELECT id FROM files WHERE kind=$p0)", kind);
+                            Execute("UPDATE files SET error='Waiting for updated model indexing',error_code='index_pending',retry_after=0,warning=NULL,image_coverage=CASE WHEN kind='Image' THEN 'Pending' ELSE '' END WHERE kind=$p0", kind);
+                        }
+                        else Execute("DELETE FROM files WHERE kind=$p0", kind);
                     }
-                    SetSetting("schema_version", Setting("schema_version") == "6" || next.Values.Any(space => space.Recipe is not null) ||
+                    SetSetting("schema_version", HasChunkSchema ? "8" : HasImageSchema ? "7" : Setting("schema_version") == "6" || next.Values.Any(space => space.Recipe is not null) ||
                         selection.RequiresVersion2 ? "6" : "5");
                     SetSetting("embedding_routes", JsonSerializer.Serialize(next, Protocol.Json));
                     SetSetting("model_selection", JsonSerializer.Serialize(selection, Protocol.Json));
+                    if (pipeline is null) Execute("DELETE FROM settings WHERE key='image_pipeline'");
+                    else SetSetting("image_pipeline", JsonSerializer.Serialize(pipeline, Protocol.Json));
                     SetSetting("model_apply_message", changed.Length == 0
                         ? "Configuration saved. Query/device settings updated; existing embeddings were retained." : "");
                     if (changed.Length > 0)
@@ -688,6 +742,7 @@ public sealed class Catalog : IDisposable
                 });
                 routes = next.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
                 configuredSelection = selection;
+                imagePipeline = pipeline;
                 configurationCommitted?.Invoke();
                 foreach (var pair in prepared) shards.Add(pair.Key, pair.Value);
                 prepared.Clear();

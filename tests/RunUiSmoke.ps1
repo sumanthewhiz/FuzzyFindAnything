@@ -5,6 +5,7 @@ param(
     [string]$ApplicationDirectory,
     [string]$ModelCache,
     [string]$EmbeddingModelCache,
+    [string]$ImageModelCache,
     [ValidateRange(60, 1800)][int]$TimeoutSeconds = 900
 )
 
@@ -133,6 +134,10 @@ if ($ModelCache) {
 if ($EmbeddingModelCache) {
     $EmbeddingModelCache = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($EmbeddingModelCache)
     $options += " -EmbeddingModelCache '" + $EmbeddingModelCache.Replace("'", "''") + "'"
+}
+if ($ImageModelCache) {
+    $ImageModelCache = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($ImageModelCache)
+    $options += " -ImageModelCache '" + $ImageModelCache.Replace("'", "''") + "'"
 }
 $command = "`"$executable`" -NoProfile -Command `"& { try { & '$script'$options } catch { Write-Output (`$_ | Out-String); Write-Output `$_.ScriptStackTrace; Write-Output `$_.Exception.ToString(); exit 1 } } *> '$log'`""
 $run = $null

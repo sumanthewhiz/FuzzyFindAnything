@@ -32,7 +32,7 @@ public sealed class EngineLog
         using var reader = XmlReader.Create(path, new XmlReaderSettings
         { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null, MaxCharactersInDocument = 1_048_576 });
         var root = XDocument.Load(reader).Root;
-        if (root?.Name != "FuzzyFindAnythingConfiguration" || (string?)root.Attribute("version") is not ("1" or "2"))
+        if (root?.Name != "FuzzyFindAnythingConfiguration" || (string?)root.Attribute("version") is not ("1" or "2" or "3"))
             throw new InvalidDataException("Unsupported application configuration.");
         var logging = root.Element("Logging");
         if (!bool.TryParse((string?)logging?.Attribute("enabled") ?? "true", out bool isEnabled))

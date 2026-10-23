@@ -34,7 +34,7 @@ internal static class VisualChecks
         var events = new HashSet<string> { "Click", "Checked", "Unchecked", "KeyDown", "ValueChanged", "SelectionChanged", "TextChanged", "Loaded", "Closing" };
         foreach (var attribute in content.DescendantsAndSelf().Attributes().Where(attribute => events.Contains(attribute.Name.LocalName)).ToArray())
             attribute.Remove();
-        var model = new MainViewModel { Query = "a red circle on a white background", Threshold = 0.35 };
+        var model = new MainViewModel { Query = "a red circle on a white background", DocumentThreshold = 0.35, CodeThreshold = 0.30, ImageThreshold = 0.15 };
         model.Apply(new EngineStatus("Ready", "Search engine ready", "", [], 3, 3, "USN journal + directory notifications", "",
             new IndexMetadata("DiskANN (0.7.0; abi=1)", @"C:\SearchData", 3, 1, 1, 1048576, DateTimeOffset.UtcNow.ToString("O"), 1),
             new CpuStatus(12, 6, 2, 3, 6, 8), 0, 0, [], new LoggingStatus(true, @"C:\SearchData\Logs", ""),
@@ -90,6 +90,16 @@ internal static class VisualChecks
             Save(grid, Path.Combine(output, $"models-recipes-collapsed-{theme.ToLowerInvariant()}.png"));
             foreach (var expander in Descendants(grid).OfType<Expander>()) expander.IsExpanded = true;
             Save(grid, Path.Combine(output, $"models-recipes-expanded-{theme.ToLowerInvariant()}.png"));
+            const string imageModel = "https://huggingface.co/microsoft/Florence-2-base-ft";
+            var described = ModelSelection.Default with { Image = imageModel, ImagePipeline = new(Ocr: true) };
+            model.ApplyModels(described);
+            model.ApplyModelInspection(new(described, [new("Image", imageModel, "Available",
+                "Image descriptions (caption + OCR) -> Documents / text",
+                "Native image understanding. Task prompts, tokenizer and stages are automatic.",
+                [], "default", false, ImageModel: ImageModelRecipes.Find(imageModel), EmbeddingModel: ModelSelection.DefaultUrl)]));
+            Save(grid, Path.Combine(output, $"models-images-{theme.ToLowerInvariant()}.png"));
+            foreach (var expander in Descendants(grid).OfType<Expander>()) expander.IsExpanded = true;
+            Save(grid, Path.Combine(output, $"models-images-expanded-{theme.ToLowerInvariant()}.png"));
             model.ApplyModels(ModelSelection.Default);
         }
         Console.WriteLine("Rendered the actual XAML/resources with synthetic data; no application window, engine or live settings were started.");

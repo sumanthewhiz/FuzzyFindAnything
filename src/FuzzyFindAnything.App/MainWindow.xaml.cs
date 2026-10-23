@@ -46,6 +46,11 @@ public partial class MainWindow : Window
         engine.StartupChanged += status => Dispatcher.InvokeAsync(() => viewModel.ApplyStartup(status));
         engine.Warning += message => Dispatcher.InvokeAsync(() => viewModel.Error = message);
         engine.ModelStatusChanged += message => Dispatcher.InvokeAsync(() => viewModel.ModelConfigurationMessage = message);
+        viewModel.SearchOptionsChanged += SaveSearchOptions;
+        viewModel.ImageProcessing.OptionsChanged += () =>
+        {
+            if (engineStarted && !viewModel.ConfigurationBusy) _ = InspectModelsAsync();
+        };
         engine.Failed += message => Dispatcher.InvokeAsync(() =>
         {
             viewModel.IsConnected = false;
@@ -95,7 +100,7 @@ public partial class MainWindow : Window
         try
         {
             var results = await engine.RequestAsync<List<SearchResult>>(
-                "search", new { query = viewModel.Query.Trim(), threshold = viewModel.Threshold, limit = 50 },
+                "search", new { query = viewModel.Query.Trim(), options = viewModel.SearchOptions, limit = 50 },
                 cancellationToken: requestLifetime.Token);
             if (generation != searchGeneration)
                 return;
@@ -184,6 +189,8 @@ public partial class MainWindow : Window
             try { selection = viewModel.DraftModels; }
             catch (ArgumentException error)
             {
+                if (viewModel.ImageProcessing.IsVisible)
+                    viewModel.ImageRequirements.Unavailable("Image", viewModel.ImageModelUrl, error.Message);
                 foreach (var (kind, url, target) in new[]
                 {
                     ("Document", viewModel.TextModelUrl, viewModel.TextRequirements),
@@ -228,6 +235,16 @@ public partial class MainWindow : Window
         catch (Exception error) { ShowError("Could not cancel the model change: " + error.Message); }
     }
 
+    private async void RetryImageTasks_Click(object sender, RoutedEventArgs args)
+    {
+        try
+        {
+            var result = await engine.RequestAsync<JsonElement>("retry_image_tasks");
+            viewModel.ShowImageRetry(result.GetProperty("files").GetInt32());
+        }
+        catch (Exception error) { ShowError("Could not retry image tasks: " + error.Message); }
+    }
+
     private async void SearchInput_KeyDown(object sender, KeyEventArgs args)
     {
         if (args.Key == Key.Enter)
@@ -267,21 +284,23 @@ public partial class MainWindow : Window
         }
     }
 
-    private void Similarity_Changed(object sender, RoutedPropertyChangedEventArgs<double> args)
+    private void SaveSearchOptions()
     {
         if (!IsLoaded || updatingSimilarity || viewModel.ConfigurationBusy ||
-            args.NewValue == settings.Current.MinimumSimilarity)
+            viewModel.SearchOptions == settings.Current.SearchSettings)
             return;
         updatingSimilarity = true;
         try
         {
-            settings.Save(settings.Current with { MinimumSimilarity = args.NewValue });
+            settings.Save(settings.Current with { Search = viewModel.SearchOptions });
+            CancelPendingSearch(); thumbnailLifetime.Cancel(); viewModel.ClearResults();
+            viewModel.EmptyTitle = "Search options updated";
+            viewModel.EmptyHint = "Run Search to use the selected file types and their minimum similarities.";
         }
         catch (Exception exception)
         {
-            viewModel.Threshold = settings.Current.MinimumSimilarity;
-            SimilaritySlider.SetCurrentValue(System.Windows.Controls.Primitives.RangeBase.ValueProperty, viewModel.Threshold);
-            ShowError($"Could not save minimum similarity: {exception.Message}");
+            viewModel.RestoreSearchOptions(settings.Current.SearchSettings);
+            ShowError($"Could not save search preferences: {exception.Message}");
         }
         finally
         {

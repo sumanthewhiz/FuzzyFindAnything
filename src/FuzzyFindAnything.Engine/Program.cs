@@ -107,12 +107,17 @@ internal static class Program
                         case "remove_folders":
                             engine.RemoveFolders(arguments.GetProperty("ids").Deserialize<int[]>()!); result = engine.Status(); break;
                         case "search":
-                            result = await engine.SearchAsync(arguments.GetProperty("query").GetString()!,
-                                arguments.TryGetProperty("threshold", out var threshold) ? threshold.GetDouble() : 0.6,
+                            var searchOptions = arguments.TryGetProperty("options", out var optionsJson)
+                                ? optionsJson.Deserialize<SearchPreferences>(Protocol.Json) ?? throw new ArgumentException("Search options are required.")
+                                : new SearchPreferences(DocumentThreshold: arguments.TryGetProperty("threshold", out var threshold) ? threshold.GetDouble() : 0.6,
+                                    CodeThreshold: arguments.TryGetProperty("threshold", out threshold) ? threshold.GetDouble() : 0.6,
+                                    ImageThreshold: arguments.TryGetProperty("threshold", out threshold) ? threshold.GetDouble() : 0.6);
+                            result = await engine.SearchAsync(arguments.GetProperty("query").GetString()!, searchOptions,
                                 arguments.TryGetProperty("limit", out var limit) ? limit.GetInt32() : 50); break;
                         case "rescan": engine.Rescan(); result = engine.Status(); break;
                         case "reload_configuration": log.Reload(); result = engine.Status(); break;
                         case "cancel_model_change": result = new { cancelled = engine.CancelModelChange() }; break;
+                        case "retry_image_tasks": result = new { files = engine.RetryImageTasks() }; break;
                         case "shutdown": Send(new { id, ok = true, result = (object?)null }); return 0;
                         default: throw new ArgumentException("Unknown engine command: " + command);
                     }

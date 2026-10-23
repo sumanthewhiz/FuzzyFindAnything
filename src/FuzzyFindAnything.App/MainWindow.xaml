@@ -113,6 +113,21 @@
               <TextBlock Text="{Binding ScoreLabel}" Foreground="{DynamicResource SuccessText}" FontSize="10" FontWeight="SemiBold" />
             </Border>
           </Grid>
+          <TextBlock Text="{Binding ChunkLabel}" FontSize="11" FontWeight="Normal" Foreground="{DynamicResource Accent}"
+                     Margin="0,10,0,0" TextTrimming="CharacterEllipsis" ToolTipService.InitialShowDelay="250" ToolTipService.ShowDuration="60000"
+                     AutomationProperties.AutomationId="MatchedChunkPreview" AutomationProperties.HelpText="{Binding ChunkText}">
+            <TextBlock.ToolTip>
+              <ToolTip Background="{DynamicResource Surface}" Foreground="{DynamicResource Ink}" BorderBrush="{DynamicResource Line}">
+                <StackPanel MaxWidth="650">
+                  <TextBlock Text="{Binding ChunkLabel}" FontWeight="SemiBold" Margin="0,0,0,8" TextWrapping="Wrap" />
+                  <ScrollViewer MaxHeight="330" VerticalScrollBarVisibility="Auto">
+                    <TextBox Text="{Binding ChunkText, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap" FontFamily="{Binding ChunkFont}"
+                             Background="Transparent" BorderThickness="0" FontSize="12" Padding="0" />
+                  </ScrollViewer>
+                </StackPanel>
+              </ToolTip>
+            </TextBlock.ToolTip>
+          </TextBlock>
         </StackPanel>
       </Button>
     </DataTemplate>
@@ -255,18 +270,45 @@
                       AutomationProperties.AutomationId="SearchButton" />
             </Grid>
           </Border>
-          <Grid Grid.Row="2" Margin="0,12,0,18">
-            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-            <TextBlock Text="Search scope: configured folders" Foreground="{DynamicResource Muted}" FontSize="12" VerticalAlignment="Center" />
-            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center"
-                        ToolTip="Cosine similarity, not a probability. Lower the threshold to include more results.">
-              <TextBlock Text="Minimum similarity" Foreground="{DynamicResource Muted}" FontSize="12" VerticalAlignment="Center" Margin="0,0,10,0" />
-              <Slider x:Name="SimilaritySlider" Value="{Binding Threshold, Mode=TwoWay}" Minimum="0" Maximum="0.9" TickFrequency="0.05" IsSnapToTickEnabled="True"
-                      ValueChanged="Similarity_Changed" IsEnabled="{Binding IsConfigurationIdle}" Width="110" VerticalAlignment="Center"
-                      AutomationProperties.AutomationId="MinimumSimilarity" AutomationProperties.Name="Minimum similarity" />
-              <TextBlock Text="{Binding Threshold, StringFormat=F2}" FontSize="12" Foreground="{DynamicResource Accent}" Margin="8,0,0,0" VerticalAlignment="Center" />
-            </StackPanel>
-          </Grid>
+          <StackPanel Grid.Row="2" Margin="0,12,0,18">
+            <TextBlock Text="Search configured folders / select at least one type. Minimum similarity is a score, not a probability."
+                       Foreground="{DynamicResource Muted}" FontSize="12" Margin="0,0,0,18" />
+            <UniformGrid Columns="3">
+              <StackPanel Margin="0,0,18,0">
+                <CheckBox Content="Documents" IsChecked="{Binding SearchDocuments}" IsEnabled="{Binding CanToggleDocuments}"
+                          AutomationProperties.AutomationId="SearchDocuments" />
+                <StackPanel Orientation="Horizontal" Margin="0,6,0,0" IsEnabled="{Binding SearchDocuments}">
+                  <TextBlock Text="Minimum" Foreground="{DynamicResource Muted}" FontSize="12" VerticalAlignment="Center" />
+                  <Slider Value="{Binding DocumentThreshold, Mode=TwoWay}" Minimum="0" Maximum="0.9" TickFrequency="0.05" IsSnapToTickEnabled="True"
+                          IsEnabled="{Binding IsConfigurationIdle}" Width="120" Margin="10,0,8,0" VerticalAlignment="Center"
+                          AutomationProperties.AutomationId="DocumentMinimumSimilarity" AutomationProperties.Name="Document minimum similarity" />
+                  <TextBlock Text="{Binding DocumentThreshold, StringFormat=F2}" Foreground="{DynamicResource Accent}" VerticalAlignment="Center" />
+                </StackPanel>
+              </StackPanel>
+              <StackPanel Margin="0,0,18,0">
+                <CheckBox Content="Code" IsChecked="{Binding SearchCode}" IsEnabled="{Binding CanToggleCode}"
+                          AutomationProperties.AutomationId="SearchCode" />
+                <StackPanel Orientation="Horizontal" Margin="0,6,0,0" IsEnabled="{Binding SearchCode}">
+                  <TextBlock Text="Minimum" Foreground="{DynamicResource Muted}" FontSize="12" VerticalAlignment="Center" />
+                  <Slider Value="{Binding CodeThreshold, Mode=TwoWay}" Minimum="0" Maximum="0.9" TickFrequency="0.05" IsSnapToTickEnabled="True"
+                          IsEnabled="{Binding IsConfigurationIdle}" Width="120" Margin="10,0,8,0" VerticalAlignment="Center"
+                          AutomationProperties.AutomationId="CodeMinimumSimilarity" AutomationProperties.Name="Code minimum similarity" />
+                  <TextBlock Text="{Binding CodeThreshold, StringFormat=F2}" Foreground="{DynamicResource Accent}" VerticalAlignment="Center" />
+                </StackPanel>
+              </StackPanel>
+              <StackPanel>
+                <CheckBox Content="Images" IsChecked="{Binding SearchImages}" IsEnabled="{Binding CanToggleImages}"
+                          AutomationProperties.AutomationId="SearchImages" />
+                <StackPanel Orientation="Horizontal" Margin="0,6,0,0" IsEnabled="{Binding SearchImages}">
+                  <TextBlock Text="Minimum" Foreground="{DynamicResource Muted}" FontSize="12" VerticalAlignment="Center" />
+                  <Slider Value="{Binding ImageThreshold, Mode=TwoWay}" Minimum="0" Maximum="0.9" TickFrequency="0.05" IsSnapToTickEnabled="True"
+                          IsEnabled="{Binding IsConfigurationIdle}" Width="120" Margin="10,0,8,0" VerticalAlignment="Center"
+                          AutomationProperties.AutomationId="ImageMinimumSimilarity" AutomationProperties.Name="Image minimum similarity" />
+                  <TextBlock Text="{Binding ImageThreshold, StringFormat=F2}" Foreground="{DynamicResource Accent}" VerticalAlignment="Center" />
+                </StackPanel>
+              </StackPanel>
+            </UniformGrid>
+          </StackPanel>
           <TextBlock Grid.Row="3" Text="{Binding ResultSummary}" Foreground="{DynamicResource Muted}" FontSize="13" Margin="0,0,0,12" />
           <Grid Grid.Row="4">
             <Border Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="12"
@@ -288,10 +330,10 @@
             </StackPanel>
             <Grid Visibility="{Binding ShowResults, Converter={StaticResource BoolToVisibility}}">
               <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*" /><ColumnDefinition Width="18" /><ColumnDefinition Width="*" />
-                <ColumnDefinition Width="18" /><ColumnDefinition Width="*" />
+                <ColumnDefinition Width="{Binding DocumentWidth}" /><ColumnDefinition Width="{Binding DocumentGap}" /><ColumnDefinition Width="{Binding CodeWidth}" />
+                <ColumnDefinition Width="{Binding CodeGap}" /><ColumnDefinition Width="{Binding ImageWidth}" />
               </Grid.ColumnDefinitions>
-              <Grid>
+              <Grid Visibility="{Binding SearchDocuments, Converter={StaticResource BoolToVisibility}}">
                 <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
                 <TextBlock Text="{Binding DocumentHeading}" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,12" />
                 <Border Grid.Row="1" Background="{DynamicResource Surface}" CornerRadius="12" BorderBrush="{DynamicResource Line}" BorderThickness="1"
@@ -304,7 +346,7 @@
                          HorizontalContentAlignment="Stretch" KeyDown="Results_KeyDown" ItemContainerStyle="{StaticResource ResultItem}"
                          AutomationProperties.AutomationId="DocumentResults" ItemTemplate="{StaticResource TextResultTemplate}" />
               </Grid>
-              <Grid Grid.Column="2">
+              <Grid Grid.Column="2" Visibility="{Binding SearchCode, Converter={StaticResource BoolToVisibility}}">
                 <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
                 <TextBlock Text="{Binding CodeHeading}" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,12" />
                 <Border Grid.Row="1" Background="{DynamicResource Surface}" CornerRadius="12" BorderBrush="{DynamicResource Line}" BorderThickness="1"
@@ -317,7 +359,7 @@
                          HorizontalContentAlignment="Stretch" KeyDown="Results_KeyDown" ItemContainerStyle="{StaticResource ResultItem}"
                          AutomationProperties.AutomationId="CodeResults" ItemTemplate="{StaticResource TextResultTemplate}" />
               </Grid>
-              <Grid Grid.Column="4">
+              <Grid Grid.Column="4" Visibility="{Binding SearchImages, Converter={StaticResource BoolToVisibility}}">
                 <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
                 <TextBlock Text="{Binding ImageHeading}" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,12" />
                 <Border Grid.Row="1" Background="{DynamicResource Surface}" CornerRadius="12" BorderBrush="{DynamicResource Line}" BorderThickness="1"
@@ -352,6 +394,10 @@
                           <TextBlock Text="{Binding Result.Name}" FontSize="13" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" Margin="2,10,2,5" />
                           <TextBlock Text="{Binding Result.ScoreLabel}" FontSize="11" FontWeight="Normal" Foreground="{DynamicResource SuccessText}" Margin="2,0" />
                           <TextBlock Text="{Binding Result.Metadata}" FontSize="10" FontWeight="Normal" Foreground="{DynamicResource Muted}" Margin="2,5,2,0" />
+                          <TextBlock Text="{Binding Result.EvidenceLabel}" ToolTip="{Binding Result.Snippet}" TextWrapping="Wrap"
+                                     FontSize="10" Foreground="{DynamicResource Accent}" Margin="2,5,2,0"
+                                     Visibility="{Binding Result.HasGeneratedEvidence, Converter={StaticResource BoolToVisibility}}"
+                                     AutomationProperties.AutomationId="ImageMatchEvidence" />
                         </StackPanel>
                       </Button>
                     </DataTemplate>
@@ -574,7 +620,7 @@
         <ScrollViewer VerticalScrollBarVisibility="Auto" Foreground="{DynamicResource Ink}">
           <StackPanel>
             <TextBlock Text="Model configuration" FontSize="28" FontWeight="SemiBold" />
-            <TextBlock Text="Choose a Hugging Face embedding model for each file type." Foreground="{DynamicResource Muted}" Margin="0,6,0,0" />
+            <TextBlock Text="Choose compatible Hugging Face models for documents, code and images." Foreground="{DynamicResource Muted}" Margin="0,6,0,0" />
             <Border Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Line}" BorderThickness="1"
                     CornerRadius="12" Padding="28" Margin="0,22,0,0">
               <StackPanel>
@@ -593,15 +639,42 @@
                          TextChanged="ModelUrl_Changed" Margin="0,8,0,18" AutomationProperties.AutomationId="ImageModelUrl" AutomationProperties.Name="Image model Hugging Face URL" />
                 <ContentControl Content="{Binding ImageRequirements}" ContentTemplate="{StaticResource ModelRequirementTemplate}"
                                 IsEnabled="{Binding IsConfigurationIdle}" AutomationProperties.AutomationId="ImageModelRequirements" />
-                <TextBlock Text="Matching model assignments share an index. Only affected embeddings are replaced when you apply a change."
+                <Expander Header="Image description options" Margin="0,0,0,16" IsEnabled="{Binding IsConfigurationIdle}"
+                          Visibility="{Binding ImageProcessing.IsVisible, Converter={StaticResource BoolToVisibility}}"
+                          AutomationProperties.AutomationId="ImagePipelineOptions">
+                  <StackPanel Margin="0,10,0,0">
+                    <TextBlock Text="Descriptions are generated locally and searched with a text embedder. The original images remain unchanged."
+                               TextWrapping="Wrap" Foreground="{DynamicResource Muted}" FontSize="12" />
+                    <StackPanel Orientation="Horizontal" Margin="0,12,0,12">
+                      <CheckBox Content="Caption" IsChecked="{Binding ImageProcessing.Caption}" Margin="0,0,20,0"
+                                Visibility="{Binding ImageProcessing.SupportsCaption, Converter={StaticResource BoolToVisibility}}"
+                                AutomationProperties.AutomationId="ImageCaptionTask" />
+                      <CheckBox Content="OCR" IsChecked="{Binding ImageProcessing.Ocr}"
+                                Visibility="{Binding ImageProcessing.SupportsOcr, Converter={StaticResource BoolToVisibility}}"
+                                AutomationProperties.AutomationId="ImageOcrTask" />
+                    </StackPanel>
+                    <CheckBox Content="Use the Documents / text model for description embeddings" IsChecked="{Binding ImageProcessing.UseTextModel}"
+                              AutomationProperties.AutomationId="ImageUseTextModel" />
+                    <StackPanel Margin="0,10,0,0" Visibility="{Binding ImageProcessing.UsesCustomEmbedding, Converter={StaticResource BoolToVisibility}}">
+                      <TextBlock Text="Separate text embedding model (required)" Foreground="{DynamicResource Muted}" FontSize="12" />
+                      <TextBox Text="{Binding ImageProcessing.EmbeddingModelUrl, UpdateSourceTrigger=PropertyChanged}" Margin="0,6,0,0"
+                               AutomationProperties.AutomationId="ImageTextModelUrl" AutomationProperties.Name="Image description text embedding model URL" />
+                    </StackPanel>
+                    <TextBlock Text="When linked, changing the text model also re-embeds image descriptions; valid captions and OCR are reused."
+                               TextWrapping="Wrap" Foreground="{DynamicResource Muted}" FontSize="12" Margin="0,10,0,0" />
+                  </StackPanel>
+                </Expander>
+                <TextBlock Text="Compatible embeddings share an index. Only affected representations are replaced when you apply a change."
                            TextWrapping="Wrap" Foreground="{DynamicResource Muted}" />
-                <TextBlock Text="A model must provide a supported native ONNX embedding export and pass local CPU, GPU or NPU execution checks. No hosted inference or remote model code is used."
+                <TextBlock Text="A model must provide a supported native ONNX export and pass local CPU, GPU or NPU execution checks. No hosted inference or remote model code is used."
                            TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,10,0,0" />
                 <TextBlock Text="{Binding ModelConfigurationMessage}" TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,10,0,0"
                            AutomationProperties.AutomationId="ModelConfigurationStatus" />
               </StackPanel>
             </Border>
             <TextBlock Text="Active indexes and execution devices" FontSize="18" FontWeight="SemiBold" Margin="0,22,0,12" />
+            <TextBlock Text="{Binding ImagePipelineSummary}" TextWrapping="Wrap" Foreground="{DynamicResource Muted}" FontSize="12" Margin="0,0,0,12"
+                       Visibility="{Binding HasImagePipeline, Converter={StaticResource BoolToVisibility}}" AutomationProperties.AutomationId="ImagePipelineStatus" />
             <ItemsControl ItemsSource="{Binding ModelIndexes}" AutomationProperties.AutomationId="ModelIndexList">
               <ItemsControl.ItemTemplate>
                 <DataTemplate>
@@ -623,6 +696,9 @@
             <Button Content="Cancel model validation" Click="CancelModelChange_Click" HorizontalAlignment="Left" Margin="0,0,0,20"
                     Visibility="{Binding ConfigurationBusy, Converter={StaticResource BoolToVisibility}}"
                     AutomationProperties.AutomationId="CancelModelChangeButton" />
+            <Button Content="Retry incomplete image tasks" Click="RetryImageTasks_Click" HorizontalAlignment="Left" Margin="0,0,0,20"
+                    IsEnabled="{Binding CanRetryImages}" Visibility="{Binding HasImagePipeline, Converter={StaticResource BoolToVisibility}}"
+                    AutomationProperties.AutomationId="RetryImageTasksButton" />
           </StackPanel>
         </ScrollViewer>
       </TabItem>

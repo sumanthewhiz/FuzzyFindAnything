@@ -21,6 +21,14 @@ internal static class Program
         if (args.Length > 0 && args[0] == "assets") { AssetTests.RunAsync().GetAwaiter().GetResult(); return 0; }
         if (args.Length > 0 && args[0] == "model-config") { ModelConfigurationTests.Run(); return 0; }
         if (args.Length > 0 && args[0] == "embedding-recipes") { EmbeddingRecipeTests.Run(); return 0; }
+        if (args.Length > 0 && args[0] == "image-pipeline") { ImagePipelineTests.Run(); return 0; }
+        if (args.Length > 0 && args[0] == "chunking") { ContentChunkingTests.Run(); return 0; }
+        if (args.Length > 0 && args[0] == "search-options") { SearchPreferenceTests.Run(); return 0; }
+        if (args.Length > 0 && args[0] == "chunking-runtime") { ContentChunkingTests.RuntimeAsync(args[1], args[2], args[3], args[4]).GetAwaiter().GetResult(); return 0; }
+        if (args.Length > 0 && args[0] == "image-models") { ImageModelIntegration.RunAsync(args[1], args[2], args[3], args[4], args[5]).GetAwaiter().GetResult(); return 0; }
+        if (args.Length > 0 && args[0] == "image-runtime") { ImageModelIntegration.RunAsync(args[1], "", "", args[2], args[3], runtimeOnly: true).GetAwaiter().GetResult(); return 0; }
+        if (args.Length > 0 && args[0] == "image-text-fixture") { ImageModelIntegration.Fixture(args[1]); return 0; }
+        if (args.Length > 0 && args[0] == "link-model-cache") { ImageModelIntegration.LinkCache(args[1], args[2]); return 0; }
         if (args.Length > 0 && args[0] == "extensible-models") { ExtensibleModelTests.RunAsync(args[1], args[2], args[3], args[4]).GetAwaiter().GetResult(); return 0; }
         if (args.Length > 0 && args[0] == "embedding-outputs") { ExtensibleModelTests.OutputsAsync(args[1], args[2], args[3]).GetAwaiter().GetResult(); return 0; }
         if (args.Length > 0 && args[0] == "embedding-runtime") { ExtensibleModelTests.RunAsync(args[1], "", args[2], args[3], runtimeOnly: true).GetAwaiter().GetResult(); return 0; }
@@ -42,6 +50,9 @@ internal static class Program
         StorageTests.Run();
         ModelConfigurationTests.Run();
         EmbeddingRecipeTests.Run();
+        ImagePipelineTests.Run();
+        ContentChunkingTests.Run();
+        SearchPreferenceTests.Run();
         SchedulingTests.RunAsync().GetAwaiter().GetResult();
         MonitoringTests.RunAsync().GetAwaiter().GetResult();
         AssetTests.RunAsync().GetAwaiter().GetResult();

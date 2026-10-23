@@ -4,11 +4,17 @@
 
 ## Compatibility policy
 
+Content-aware chunking/search builds use catalog schema 8 and XML version 3 when saving per-type search preferences. The legacy global threshold is copied to all three search types on read without rewriting the file; all types default to selected. On the first successful model startup, document/code representations are rebuilt in the background under the new chunking profiles. Images and cached generated descriptions are retained. Keep a complete pre-upgrade backup for rollback to binaries that do not support these versions.
+
 Configurable-model builds (1.2.0 and later) leave an unchanged default-model catalog at schema 4. Applying a different model assignment upgrades it to schema 5. Restoring the default model does not downgrade the schema; use a complete pre-change backup to return to an older application build.
 
 Extensible embedding builds (`1.2.0-dev.2` and later) also read existing XML version 1 and catalog schemas 4/5. New recipe or query/device bindings use XML version 2 and schema 6. Merely opening an unchanged installation does not rewrite its preferences, change legacy vector fingerprints, or re-embed its files. Saving unrelated preferences preserves additional XML sections. A query-only change updates the binding without advancing vector generations; document-encoding or chunking changes invalidate only affected file types.
 
 Old binaries must not open version-2/schema-6 data. Restore a complete pre-upgrade backup if rolling back; changing the XML version number by hand is not a downgrade. Returning to the default models keeps the newer schema/configuration format and removes irrelevant query options, rather than silently restoring an older binary's compatibility.
+
+Image-understanding builds (`1.3.0-dev.1` and later) opt into catalog schema 7 only when an image pipeline is applied. Existing direct-only catalogs retain their prior schema. Schema 7 adds image representations, passage/vector provenance and per-operation reindex cohorts; legacy vectors and file IDs are retained during metadata migration without new inference. Switching an image pipeline or its final embedder invalidates derived vectors rather than deleting stable source records. Completed caption/OCR artifacts survive an embedder-only change and are removed when their last configured folder owner disappears.
+
+The XML remains version 2, adding described-image tasks and a linked/custom embedding dependency under the Image binding. Direct-model selections discard inactive pipeline options. Restoring direct image models does not downgrade schema 7; older binaries must use a complete pre-change backup, not a manually edited schema number.
 
 The application retains the established model fingerprint, schema-4 catalog, folder ownership, file/vector identifiers, prepared passages and committed embedding batches. Tokenization, chunk decoding, embeddings and retrieval have explicit parity gates; matching dimensions alone is not treated as compatibility proof.
 

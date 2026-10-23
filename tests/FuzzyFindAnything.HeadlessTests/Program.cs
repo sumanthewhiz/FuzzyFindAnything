@@ -26,6 +26,8 @@ internal static class Program
         Run("Model reindex completion, errors and validation feedback", ModelReindexFeedback);
         Run("Adaptive model requirements and extended XML bindings", AdaptiveModels);
         Run("WPF query-purpose selection survives Apply refresh", QueryPurposeBinding);
+        Run("Image pipeline requirements stay hidden for direct models", ImageRequirements);
+        Run("Search type guardrail and independent thresholds", SearchOptions);
         Run("Footer alignment and results layout", () => LayoutContracts(args[0]));
         Console.WriteLine("All headless checks passed. No application window or engine was started.");
         return 0;
@@ -54,21 +56,26 @@ internal static class Program
     private static void SettingsRoundTrip() => InTemporaryDirectory(directory =>
     {
         var settings = new SettingsService(directory);
-        Require(settings.Current.MinimumSimilarity == 0.60, "The first-time threshold is not 0.60.");
+        Require(settings.Current.SearchSettings == new SearchPreferences(), "First launch must select all types at the default thresholds.");
         var culture = CultureInfo.CurrentCulture;
         try
         {
             CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("fr-FR");
-            settings.Save(settings.Current with { MinimumSimilarity = 0.75 });
+            settings.Save(settings.Current with
+            {
+                Search = new(Documents: true, Code: false, Images: true,
+                DocumentThreshold: 0.75, CodeThreshold: 0.30, ImageThreshold: 0.15)
+            });
             settings.Save(settings.Current with { Theme = "Dark", LoggingEnabled = false });
             var restored = new SettingsService(directory);
-            Require(restored.Current.MinimumSimilarity == 0.75, "Similarity was not retained across reload.");
+            Require(restored.Current.SearchSettings == new SearchPreferences(true, false, true, 0.75, 0.30, 0.15), "Search choices were not retained across reload.");
             Require(restored.Current.Theme == "Dark" && !restored.Current.LoggingEnabled, "Other preferences were lost.");
-            Require((string?)XDocument.Load(settings.FilePath).Root?.Element("Search")?.Attribute("minimumSimilarity") == "0.75",
+            Require((string?)XDocument.Load(settings.FilePath).Root?.Element("Search")?.Element("Documents")?.Attribute("minimumSimilarity") == "0.75",
                 "Similarity must use an invariant XML numeric representation.");
             var model = new MainViewModel();
             model.ApplySettings(restored.Current, restored.FilePath);
-            Require(model.Threshold == 0.75, "The view model did not restore the configured slider value.");
+            Require(model.DocumentThreshold == 0.75 && model.CodeThreshold == 0.30 && model.ImageThreshold == 0.15 &&
+                !model.SearchCode, "The view model did not restore search preferences.");
         }
         finally { CultureInfo.CurrentCulture = culture; }
     });
@@ -84,11 +91,11 @@ internal static class Program
             .Save(settingsPath);
         byte[] previous = File.ReadAllBytes(settingsPath);
         var settings = new SettingsService(directory);
-        Require(settings.Current.MinimumSimilarity == 0.60, "Older XML must receive the new default.");
+        Require(settings.Current.SearchSettings == new SearchPreferences(), "Older XML must receive the search defaults.");
         Require(previous.SequenceEqual(File.ReadAllBytes(settingsPath)), "Reading existing preferences rewrote them.");
         File.WriteAllText(settings.Current.LogDirectory, "unavailable log destination");
-        settings.Save(settings.Current with { MinimumSimilarity = 0.65 });
-        Require(new SettingsService(directory).Current.MinimumSimilarity == 0.65, "An unchanged log path blocked search preferences.");
+        settings.Save(settings.Current with { Search = new(DocumentThreshold: 0.65) });
+        Require(new SettingsService(directory).Current.SearchSettings.DocumentThreshold == 0.65, "An unchanged log path blocked search preferences.");
         Require(File.ReadAllText(catalog) == "existing index sentinel", "Saving preferences modified the existing index.");
     });
 
@@ -100,7 +107,7 @@ internal static class Program
         {
             try
             {
-                settings.Save(settings.Current with { MinimumSimilarity = value });
+                settings.Save(settings.Current with { Search = new(DocumentThreshold: value) });
                 throw new InvalidOperationException($"Invalid threshold {value} was accepted.");
             }
             catch (InvalidDataException) { }
@@ -109,7 +116,7 @@ internal static class Program
         foreach (string value in new[] { "NaN", "INF", "0,60", "1.2", "invalid" })
         {
             var document = XDocument.Load(settings.FilePath);
-            document.Root!.Element("Search")!.SetAttributeValue("minimumSimilarity", value);
+            document.Root!.Element("Search")!.Element("Documents")!.SetAttributeValue("minimumSimilarity", value);
             document.Save(settings.FilePath);
             try
             {
@@ -122,7 +129,7 @@ internal static class Program
 
     private static void ResultGroups()
     {
-        var model = new MainViewModel { Query = "parsing files", Threshold = 0.65 };
+        var model = new MainViewModel { Query = "parsing files", DocumentThreshold = 0.65 };
         model.Apply(new EngineStatus("Ready", "Ready", "", [], 4, 4, "Monitoring", "",
             new IndexMetadata("DiskANN", @"C:\fixtures\index", 4, 1, 1, 1024, null, 2),
             new CpuStatus(12, 6, 1, 6, 6, 8), 0, 0, [], new LoggingStatus(false, @"C:\fixtures\logs", "")));
@@ -146,7 +153,7 @@ internal static class Program
         model.FinishSearch(results, TimeSpan.Zero);
         model.ClearSearch();
         Require(model.Query == "" && model.Results.Count == 0 && model.CodeResults.Count == 0 &&
-            model.DocumentResults.Count == 0 && model.ImageResults.Count == 0 && model.Threshold == 0.65,
+            model.DocumentResults.Count == 0 && model.ImageResults.Count == 0 && model.DocumentThreshold == 0.65,
             "Clear must remove all result categories without resetting the threshold.");
         model.FinishSearch(results, TimeSpan.Zero);
         model.ClearResults();
@@ -219,9 +226,9 @@ internal static class Program
         Require(settings.Current.ModelSelection == ModelSelection.Default, "All model defaults must be EmbeddingGemma2.");
         var chosen = new ModelSelection("https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2",
             ModelSelection.DefaultUrl, "https://huggingface.co/Xenova/clip-vit-base-patch32");
-        settings.Save(settings.Current with { Models = chosen, MinimumSimilarity = 0.75, Theme = "Dark" });
+        settings.Save(settings.Current with { Models = chosen, Search = new(DocumentThreshold: 0.75), Theme = "Dark" });
         var restored = new SettingsService(directory);
-        Require(restored.Current.ModelSelection == chosen && restored.Current.MinimumSimilarity == 0.75 && restored.Current.Theme == "Dark",
+        Require(restored.Current.ModelSelection == chosen && restored.Current.SearchSettings.DocumentThreshold == 0.75 && restored.Current.Theme == "Dark",
             "Model URLs or existing preferences did not survive XML reload.");
         var model = new MainViewModel();
         model.ApplyModels(restored.Current.ModelSelection);
@@ -276,6 +283,37 @@ internal static class Program
         Require(model.ModelState == "Error" && !model.CanSearch, "A stale startup-ready snapshot hid a post-commit engine failure.");
     }
 
+    private static void SearchOptions() => InTemporaryDirectory(directory =>
+    {
+        string path = Path.Combine(directory, "settings.xml");
+        new XDocument(new XElement("FuzzyFindAnythingConfiguration", new XAttribute("version", "1"),
+            new XElement("Search", new XAttribute("minimumSimilarity", "0.35")))).Save(path);
+        byte[] legacy = File.ReadAllBytes(path);
+        var settings = new SettingsService(directory);
+        Require(settings.Current.SearchSettings == new SearchPreferences(true, true, true, 0.35, 0.35, 0.35) &&
+            legacy.SequenceEqual(File.ReadAllBytes(path)), "The legacy threshold did not migrate read-only into all three types.");
+        var model = new MainViewModel();
+        model.RestoreSearchOptions(settings.Current.SearchSettings);
+        model.SearchCode = false; model.SearchImages = false;
+        Require(!model.CanToggleDocuments && model.SearchDocuments, "The final selected search type can be unchecked.");
+        model.SearchDocuments = false;
+        Require(model.SearchDocuments && model.Error.Contains("at least one"), "The view model accepted an empty selection.");
+        model.CodeThreshold = 0.2; model.ImageThreshold = 0.1;
+        Require(model.DocumentThreshold == 0.35 && model.CodeThreshold == 0.2 && model.ImageThreshold == 0.1,
+            "Per-type thresholds changed each other.");
+        settings.Save(settings.Current with { Search = model.SearchOptions });
+        Require(new SettingsService(directory).Current.SearchSettings == model.SearchOptions &&
+            XDocument.Load(path).Root!.Attribute("version")!.Value == "3", "Per-type search settings did not persist.");
+        byte[] valid = File.ReadAllBytes(path);
+        try { settings.Save(settings.Current with { Search = new(false, false, false) }); throw new InvalidOperationException("Empty search preferences were saved."); }
+        catch (InvalidDataException) { }
+        Require(valid.SequenceEqual(File.ReadAllBytes(path)), "Invalid search preferences changed the configuration.");
+        var match = new SearchResult("code.cs", "code.cs", "Code", 100, 0, "short", 0.8, MatchedChunk: "    return a + b;\n",
+            Chunk: new(ChunkingProfiles.Code, "c-sharp", 10, 18, 4, 5, "Add", ""));
+        Require(match.ChunkText.StartsWith("    ") && match.ChunkLabel.Contains("4-5") && match.ChunkLabel.Contains("Add"),
+            "Full code chunk text or provenance was lost from the hover view model.");
+    });
+
     private static void QueryPurposeBinding()
     {
         var model = new ModelRequirementViewModel();
@@ -311,6 +349,30 @@ internal static class Program
         System.Windows.Threading.Dispatcher.CurrentDispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.DataBind);
         Require(selector.SelectedItem is QueryProfile { Id: "document-search-v1" },
             "A saved query purpose was not selected when requirements arrived after settings reload.");
+    }
+
+    private static void ImageRequirements()
+    {
+        var model = new MainViewModel();
+        Require(!model.ImageProcessing.IsVisible && model.DraftModels == ModelSelection.Default,
+            "Default Gemma configuration exposes image-pipeline setup.");
+        model.ImageModelUrl = "https://huggingface.co/microsoft/Florence-2-base-ft";
+        Require(model.ImageProcessing.IsVisible && model.ImageProcessing.UseTextModel &&
+            model.ImageProcessing.Caption && !model.ImageProcessing.Ocr && model.DraftModels.UsesImageUnderstanding,
+            "The automatic described-image defaults were not resolved.");
+        model.ImageProcessing.Ocr = true;
+        var selection = model.DraftModels;
+        Require(selection.EffectiveImagePipeline.Ocr && selection.EmbeddingSelection().Image == selection.Text,
+            "Image task/embedding dependencies were not captured.");
+        model.ApplyModels(selection);
+        Require(model.ImageProcessing.Ocr && model.ImageProcessing.UseTextModel, "Applied image options were not retained.");
+        model.ImageProcessing.UseTextModel = false;
+        model.ImageProcessing.EmbeddingModelUrl = "https://example.com/invalid";
+        try { _ = model.DraftModels; throw new InvalidOperationException("An invalid image text-embedder URL was accepted."); }
+        catch (ArgumentException) { }
+        model.ImageModelUrl = ModelSelection.DefaultUrl;
+        Require(!model.ImageProcessing.IsVisible && model.DraftModels == ModelSelection.Default,
+            "Returning to a direct model left hidden image pipeline requirements active.");
     }
 
     private static void AdaptiveModels() => InTemporaryDirectory(directory =>

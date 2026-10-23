@@ -13,7 +13,7 @@ internal static class Program
         Console.CancelKeyPress += (_, value) => { value.Cancel = true; cancellation.Cancel(); };
         try
         {
-            if (args.Length == 0) throw new ArgumentException("Commands: acquire-model, verify-model, prepare-hf-model, reset-index, native-smoke, verify-release.");
+            if (args.Length == 0) throw new ArgumentException("Commands: acquire-model, verify-model, prepare-hf-model, prepare-image-model, reset-index, native-smoke, verify-release.");
             var options = new Dictionary<string, string>(StringComparer.Ordinal);
             for (int index = 1; index < args.Length; index++)
             {
@@ -39,6 +39,11 @@ internal static class Program
                     var models = new HuggingFaceModels(Path.GetFullPath(Required("--cache")), Path.GetFullPath(Required("--default-model")));
                     var space = await models.ResolveAsync(Required("--url"), Console.Error.WriteLine, cancellation.Token);
                     Console.WriteLine(JsonSerializer.Serialize(new { space, directory = models.DirectoryFor(space) }, Protocol.Json));
+                    break;
+                case "prepare-image-model":
+                    var imageAssets = new ImageModelAssets(Path.GetFullPath(Required("--cache")));
+                    var imageModel = await imageAssets.AcquireAsync(Required("--url"), Console.Error.WriteLine, cancellation.Token);
+                    Console.WriteLine(JsonSerializer.Serialize(new { model = imageModel, directory = imageAssets.DirectoryFor(imageModel) }, Protocol.Json));
                     break;
                 case "reset-index":
                     Console.WriteLine(JsonSerializer.Serialize(CatalogMaintenance.Reset(Required("--data-dir"),

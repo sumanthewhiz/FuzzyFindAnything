@@ -18,6 +18,22 @@ These runs used isolated data directories and did not reset or launch against th
 
 ## Acceptance layers
 
+### Structured chunking and per-type search
+
+The `chunking` native mode validates packaged syntax grammars, function/document boundaries, leading documentation, source/Unicode coverage, token-bounded oversized units, explicit fallback and selective profile migration. `chunking-runtime <application-directory> <default-model-directory> <HF-cache> <output>` checks real Gemma and Qwen token counts, source provenance and encoding of the prepared chunks. The model tokenizer measures the inputs; it does not choose file boundaries.
+
+`search-options` verifies that excluded types do not request query embeddings, shared indexes apply independent thresholds and per-type limits, and empty/non-finite preferences are rejected. Headless WPF checks cover XML version-3 persistence, read-only migration of the legacy threshold, last-selection protection and full matched-chunk view models.
+
+The enhanced isolated UI workflow checks all-three-selected defaults, each slider, image-only and mixed-type retrieval, the final-selected-type guardrail, matched-chunk hover content, and persistence across appearance/logging updates and a complete restart. It retains the existing thumbnail, model configuration, scope, tray and cancellation checks.
+
+### Image-understanding acceptance
+
+`image-pipeline` on the native test executable covers configuration/dependency normalization, stable source IDs, durable generation artifacts, selective image re-embedding, provenance, folder ownership, finite retries, empty OCR outcomes, per-operation completion and restart that reuses completed caption work. A deterministic implementation of `IImageUnderstanding` exercises orchestration independently of the native generator adapter.
+
+`image-models <application-directory> <default-model-directory> <embedding-cache> <image-cache> <output-directory>` exercises both reviewed Florence checkpoints through the same native task ABI. A synthetic image contains a red circle and `HELLO SEARCH 123`; tokenizer IDs are checked against the pinned upstream definition, the caption must describe the reference content and OCR must recover its text. The suite then verifies native image search/evidence, caption/OCR cache reuse on embedder changes, linked versus custom Text dependencies, invalid-task preservation, lazy generator restart, and restoration of direct CLIP embeddings. This is compatibility/functional evidence, not a broad caption/OCR accuracy benchmark.
+
+`RunUiSmoke.ps1 -ModelCache <embedding-cache> -ImageModelCache <image-cache> -ApplicationDirectory <build>` selects an isolated lightweight baseline, tests model-relevant task controls and their XML persistence, OCR-backed gallery results, hidden controls after returning to a direct model, themes and tray lifecycle. It does not replace or stop the user's running deployment. The native memory reserve is not lowered to force tests to run alongside other applications.
+
 ### Extensible embedding acceptance
 
 `embedding-recipes` on the native test executable covers reviewed registry identities/aliases, query-versus-document fingerprints, padding-aware mean/CLS/last-token/pre-pooled contracts, malformed ONNX metadata/external paths, shared-space source-kind filtering and query-only XML/catalog updates. It also checks the version-2 logging reader and retention of unfinished reindex status. These checks run as part of the ordinary native core suite without downloading models.

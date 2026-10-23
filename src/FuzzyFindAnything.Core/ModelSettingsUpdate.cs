@@ -14,8 +14,9 @@ internal sealed class ModelSettingsUpdate : IDisposable
         original = File.Exists(target) ? File.ReadAllBytes(target) : null;
         var document = original is null ? new XDocument(new XElement("FuzzyFindAnythingConfiguration", new XAttribute("version", "1"))) :
             ModelSelection.ReadDocument(target);
-        bool version2 = selection.RequiresVersion2 || (string?)document.Root!.Attribute("version") == "2";
-        document.Root!.SetAttributeValue("version", version2 ? "2" : "1");
+        bool version3 = (string?)document.Root!.Attribute("version") == "3";
+        bool version2 = version3 || selection.RequiresVersion2 || (string?)document.Root!.Attribute("version") == "2";
+        document.Root!.SetAttributeValue("version", version3 ? "3" : version2 ? "2" : "1");
         document.Root!.Element("Models")?.Remove();
         document.Root.Add(selection.ToXml(version2));
         temporary = Path.Combine(directory, ".model-settings-" + Guid.NewGuid().ToString("N") + ".tmp");

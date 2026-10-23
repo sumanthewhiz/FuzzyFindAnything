@@ -131,10 +131,12 @@ public sealed class IndexingEngine : IAsyncDisposable
             folders = folders.Select(folder => Store.FolderCounts(folder, busy.Contains(folder.Id))).ToList();
             var queue = Store.QueueCounts();
             var batches = model.Statistics;
-            var models = model is ModelManager manager ? manager.State() with
+            var models = model is ModelManager manager ? manager.State() : null;
+            if (models is not null) models = models with
             {
-                Reindex = Store.ModelReindex(configurationIdle && modelState == "Ready" && busy.Count == 0)
-            } : null;
+                Reindex = Store.ModelReindex(configurationIdle && modelState == "Ready", busy.Count == 0),
+                ImagePipeline = Store.ImageCoverage(models.ImagePipeline)
+            };
             return new(modelState, modelState == "Ready" ? "Search engine ready" : Startup.Snapshot.Stage,
                 error.Length > 0 ? error : model.Warning, folders, count.Files, count.Vectors, monitorStatus,
                 Store.Recovery, Store.Metadata(), new(budget.TotalCores, budget.Processors, model.ReadyWorkers, model.Threads,
@@ -142,16 +144,24 @@ public sealed class IndexingEngine : IAsyncDisposable
         }
         finally { if (configurationIdle) configuration.Release(); }
     }
-    public async Task<List<ResultFile>> SearchAsync(string query, double threshold = 0.6, int limit = 50)
+    public Task<List<ResultFile>> SearchAsync(string query, double threshold = 0.6, int limit = 50) =>
+        SearchAsync(query, new SearchPreferences(DocumentThreshold: threshold, CodeThreshold: threshold, ImageThreshold: threshold), limit);
+
+    public async Task<List<ResultFile>> SearchAsync(string query, SearchPreferences preferences, int limit = 50)
     {
+        preferences.Validate();
         if (string.IsNullOrWhiteSpace(query) || FilePaths.ScalarLength(query) > 2048)
             throw new ArgumentException("Enter a search phrase of at most 2,048 characters.");
         if (modelState != "Ready") throw new InvalidOperationException(error.Length > 0 ? error : Startup.Snapshot.Stage);
         await configuration.WaitAsync(lifetime.Token);
         try
         {
-            var searches = model.SearchBindings.Select(async binding =>
+            var bindings = model.SearchBindings.Select(binding => (Binding: binding,
+                Kinds: (binding.Kinds ?? preferences.Kinds).Intersect(preferences.Kinds, StringComparer.Ordinal).ToArray()))
+                .Where(value => value.Kinds.Length > 0);
+            var searches = bindings.Select(async request =>
             {
+                var binding = request.Binding;
                 var provider = binding.Model;
                 string key = $"{provider.Space.Fingerprint}\n{provider.Space.Recipe?.ContractFingerprint}\n{provider.Provider}\n{provider.Device}\n{binding.Profile}\n{query.Trim()}";
                 float[]? vector;
@@ -165,9 +175,9 @@ public sealed class IndexingEngine : IAsyncDisposable
                         queryVectors[key] = vector;
                     }
                 }
-                return Store.Search(vector, limit, threshold, provider.Space, binding.Kinds);
+                return request.Kinds.SelectMany(kind => Store.Search(vector, limit, preferences.ThresholdFor(kind), provider.Space, [kind])).ToList();
             });
-            // Different models have different score distributions; one index must not consume another's result budget.
+            // Each selected source type has its own threshold and result budget, including shared indexes.
             return (await Task.WhenAll(searches)).SelectMany(value => value)
                 .OrderBy(value => value.Kind, StringComparer.Ordinal).ThenByDescending(value => value.Score)
                 .ThenBy(value => value.Path, StringComparer.Ordinal).ToList();
@@ -208,7 +218,7 @@ public sealed class IndexingEngine : IAsyncDisposable
                 workers.Clear(); processing?.Dispose(); processing = null;
                 change.Token.ThrowIfCancellationRequested();
                 string[] changed = Store.ReconfigureModels(prepared.Routes, settings.Publish,
-                    () => { settings.Commit(); committed = true; }, selection);
+                    () => { settings.Commit(); committed = true; }, selection, prepared.Pipeline);
                 lock (gate) { modelChange = null; queryVectors.Clear(); }
                 await manager.CommitAsync(prepared);
                 modelState = "Ready"; error = "";
@@ -259,7 +269,11 @@ public sealed class IndexingEngine : IAsyncDisposable
         try
         {
             await model.StartAsync(Startup.ModelProgress, lifetime.Token);
-            if (model is ModelManager manager && Store.ReconfigureModels(manager.Routes, () => { }, selection: manager.Selection).Length > 0)
+            if (model is ModelManager manager && Store.ReconfigureModels(manager.Routes, () => { }, selection: manager.Selection,
+                pipeline: manager.ImageUnderstanding?.Descriptor).Length > 0)
+                foreach (var folder in Store.Folders()) Schedule(folder.Id, immediate: true);
+            if (model.SupportsStructuredChunking && Store.ConfigureChunkingProfiles(new Dictionary<string, string>
+            { ["Document"] = ChunkingProfiles.Documents, ["Code"] = ChunkingProfiles.Code }).Length > 0)
                 foreach (var folder in Store.Folders()) Schedule(folder.Id, immediate: true);
             int retries = Store.RetryClipResizeFailures();
             if (retries > 0)
@@ -310,7 +324,9 @@ public sealed class IndexingEngine : IAsyncDisposable
                 if (selected is not null)
                 {
                     var (id, work) = selected.Value;
-                    try { Discover(id, work); }
+                    string? operation = work.Full ? Store.ReindexOperation() : null;
+                    bool scanCompleted = false;
+                    try { Discover(id, work); scanCompleted = true; }
                     catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { break; }
                     catch (Exception exception)
                     {
@@ -319,6 +335,7 @@ public sealed class IndexingEngine : IAsyncDisposable
                     }
                     finally
                     {
+                        Store.ReindexScanCompleted(id, operation, scanCompleted && string.IsNullOrEmpty(Store.Setting("scan_error:" + id)));
                         lock (gate)
                         {
                             scanning.Remove(id); lastScans[id] = Environment.TickCount64;
@@ -487,27 +504,90 @@ public sealed class IndexingEngine : IAsyncDisposable
         {
             CheckCurrent(job, cancellation);
             IEmbeddings encoder = model.ForKind(job.Kind);
+            var understanding = job.Kind == "Image" ? model.ImageUnderstanding : null;
             CheckSourceScope(job);
             if (FilePaths.Inspect(job.Path) != job.Fingerprint) throw new SourceChanged();
             if (FilePaths.IsOffline(job.Path)) throw new ContentException("The file is online-only. Make it available on this device.", "cloud_unavailable", true);
             if (!job.Prepared)
             {
-                if (job.Kind == "Image") Store.Prepare(job, ["Visual content"], null);
+                if (understanding is not null)
+                {
+                    var passages = new List<Passage>();
+                    var outcomes = new List<StoredImageTask>();
+                    var warnings = new List<string>();
+                    foreach (string task in understanding.Descriptor.Tasks)
+                    {
+                        string key = understanding.Descriptor.Model.TaskKey(task);
+                        var stored = Store.ReadImageTask(job, key);
+                        if (stored is null || stored.Result.State == "Failed" && stored.Result.Retryable &&
+                            (stored.RetryAt is null || stored.RetryAt <= FilePaths.UnixNow))
+                        {
+                            Activity(job, "Generating " + understanding.Descriptor.Model.Task(task).Label);
+                            ImageTaskResult result;
+                            try { result = await understanding.GenerateAsync(job.Path, task, cancellation); }
+                            catch (Exception failure) when (failure is IOException or TimeoutException)
+                            {
+                                result = new(task, "", "Failed", Error: failure.Message,
+                                    ErrorCode: failure is ContentException content ? content.Code : "image_generation",
+                                    Retryable: failure is not ContentException classified || classified.Retryable);
+                            }
+                            CheckCurrent(job, cancellation); CheckSourceScope(job);
+                            if (FilePaths.Inspect(job.Path) != job.Fingerprint ||
+                                job.ContentHash.Length > 0 && FilePaths.Hash(job.Path) != job.ContentHash) throw new SourceChanged();
+                            stored = Store.SaveImageTask(job, key, result);
+                        }
+                        outcomes.Add(stored);
+                        if (stored.Result.Warning is { Length: > 0 } warning) warnings.Add(task + ": " + warning);
+                        if (stored.Result.State == "Failed") warnings.Add(task + ": " + stored.Result.Error);
+                        if (stored.Result.State is "Completed" or "Partial")
+                        {
+                            Activity(job, "Preparing image text");
+                            string[] parts = await encoder.SplitAsync(stored.Result.Text, cancellation);
+                            passages.AddRange(parts.Select(text => new Passage(0, text, task, stored.Id)));
+                        }
+                    }
+                    CheckCurrent(job, cancellation); CheckSourceScope(job);
+                    if (FilePaths.Inspect(job.Path) != job.Fingerprint) throw new SourceChanged();
+                    if (passages.Count == 0)
+                    {
+                        if (outcomes.All(value => value.Result.State == "Empty"))
+                        {
+                            if (Store.CompleteEmptyImage(job))
+                                log.RecordFile(job, "Skipped", job.ElapsedMs + timer.Elapsed.TotalMilliseconds, warning: "No searchable image text.");
+                            return;
+                        }
+                        throw new ContentException("Image understanding failed: " + string.Join("; ", warnings), "image_tasks_failed",
+                            outcomes.Any(value => value.Result.Retryable));
+                    }
+                    Store.PrepareImage(job, passages, warnings.Count == 0 ? null : string.Join("; ", warnings));
+                }
+                else if (job.Kind == "Image") Store.Prepare(job, ["Visual content"], null);
                 else
                 {
                     Activity(job, "Extracting");
                     var extracted = await extractor.ExtractAsync(job.Path, cancellation);
                     Activity(job, "Preparing");
-                    string[] passages = await encoder.SplitAsync(extracted.Text, cancellation);
-                    CheckCurrent(job, cancellation);
-                    if (FilePaths.Inspect(job.Path) != job.Fingerprint) throw new SourceChanged();
-                    Store.Prepare(job, passages, extracted.Warnings.Length == 0 ? null : string.Join(" ", extracted.Warnings));
+                    if (encoder.SupportsStructuredChunking)
+                    {
+                        var chunks = await encoder.SplitContentAsync(extracted.Text, ChunkingContext.ForFile(job.Path, job.Kind), cancellation);
+                        CheckCurrent(job, cancellation);
+                        if (FilePaths.Inspect(job.Path) != job.Fingerprint) throw new SourceChanged();
+                        string[] warnings = extracted.Warnings.Concat(chunks.Warning is null ? [] : new[] { chunks.Warning }).ToArray();
+                        Store.PrepareContent(job, chunks with { Warning = warnings.Length == 0 ? null : string.Join(" ", warnings) });
+                    }
+                    else
+                    {
+                        string[] passages = await encoder.SplitAsync(extracted.Text, cancellation);
+                        CheckCurrent(job, cancellation);
+                        if (FilePaths.Inspect(job.Path) != job.Fingerprint) throw new SourceChanged();
+                        Store.Prepare(job, passages, extracted.Warnings.Length == 0 ? null : string.Join(" ", extracted.Warnings));
+                    }
                 }
             }
             CheckCurrent(job, cancellation);
             var remaining = Store.Remaining(job);
             Activity(job, "Embedding");
-            if (job.Kind == "Image" && remaining.Count > 0)
+            if (job.Kind == "Image" && understanding is null && remaining.Count > 0)
             {
                 float[] vector = await encoder.ImageAsync(job.Path, cancellation);
                 if (!Store.SaveBatch(job, remaining, [vector])) throw new OperationCanceledException();
@@ -538,7 +618,8 @@ public sealed class IndexingEngine : IAsyncDisposable
                     throw new SourceChanged();
                 Activity(job, "Saving");
                 if (Store.Complete(job))
-                    log.RecordFile(job, "Succeeded", job.ElapsedMs + timer.Elapsed.TotalMilliseconds, progress.Total,
+                    log.RecordFile(job, understanding is not null && Store.FindFile(job.Path)?.Warning is not null ? "Partial" : "Succeeded",
+                        job.ElapsedMs + timer.Elapsed.TotalMilliseconds, progress.Total,
                         warning: Store.FindFile(job.Path)?.Warning);
             }
             else Store.Release(job, timer.Elapsed.TotalMilliseconds);
@@ -586,6 +667,12 @@ public sealed class IndexingEngine : IAsyncDisposable
             log.Write("indexer", $"{job.Path}: {exception}");
             log.RecordFile(job, "Failed", job.ElapsedMs + elapsedMs, failure: exception, code: code);
         }
+    }
+    public int RetryImageTasks()
+    {
+        int count = Store.RetryImageTasks();
+        if (count > 0) foreach (var folder in Store.Folders()) Schedule(folder.Id, immediate: true);
+        return count;
     }
     public async ValueTask DisposeAsync()
     {

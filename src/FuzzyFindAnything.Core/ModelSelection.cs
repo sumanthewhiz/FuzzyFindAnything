@@ -7,7 +7,8 @@ using System.Xml.Linq;
 namespace FuzzyFindAnything.Core;
 
 public sealed record ModelSelection(string Text, string Code, string Image,
-    ModelOptions? TextOptions = null, ModelOptions? CodeOptions = null, ModelOptions? ImageOptions = null)
+    ModelOptions? TextOptions = null, ModelOptions? CodeOptions = null, ModelOptions? ImageOptions = null,
+    ImagePipelineOptions? ImagePipeline = null)
 {
     public const string DefaultUrl = "https://huggingface.co/google/embeddinggemma-2";
     public static ModelSelection Default { get; } = new(DefaultUrl, DefaultUrl, DefaultUrl);
@@ -25,11 +26,45 @@ public sealed record ModelSelection(string Text, string Code, string Image,
         "Image" => ImageOptions ?? ModelOptions.Default,
         _ => throw new ArgumentException("Unknown indexed file kind.", nameof(kind))
     };
-    public ModelSelection Normalize() => new(Canonical(Text), Canonical(Code), Canonical(Image),
-        NormalizeOptions(TextOptions), NormalizeOptions(CodeOptions), NormalizeOptions(ImageOptions));
+    public bool UsesImageUnderstanding => ImageModelRecipes.Find(Image) is not null;
+    public ImagePipelineOptions EffectiveImagePipeline => ImagePipeline ??
+        (ImageModelRecipes.Find(Image) is { } definition && !definition.Tasks.Any(task => task.Id == "caption")
+            ? new(Caption: false, Ocr: true) : new());
+    public ModelSelection Normalize()
+    {
+        string image = Canonical(Image);
+        var pipeline = ImageModelRecipes.Find(image) is not null ? ImagePipeline?.Normalize() : null;
+        var defaultPipeline = ImageModelRecipes.Find(image) is { } definition && !definition.Tasks.Any(task => task.Id == "caption")
+            ? new ImagePipelineOptions(Caption: false, Ocr: true) : new();
+        if (pipeline == defaultPipeline) pipeline = null;
+        return new(Canonical(Text), Canonical(Code), image, NormalizeOptions(TextOptions),
+            NormalizeOptions(CodeOptions), NormalizeOptions(ImageOptions), pipeline);
+    }
+    public ModelSelection EmbeddingSelection()
+    {
+        if (!UsesImageUnderstanding) return this;
+        var pipeline = EffectiveImagePipeline;
+        var options = pipeline.EmbeddingOptions ?? ModelOptions.Default;
+        if (pipeline.EmbeddingModel is null) options = options with { Device = OptionsFor("Document").Device };
+        return new(Text, Code, pipeline.EmbeddingModel ?? Text, TextOptions, CodeOptions, NormalizeOptions(options));
+    }
+    public ModelSelection WithEmbeddingOptions(ModelSelection normalized)
+    {
+        if (!UsesImageUnderstanding) return normalized;
+        var pipeline = EffectiveImagePipeline;
+        var embedded = normalized.OptionsFor("Image");
+        if (pipeline.EmbeddingModel is null) embedded = embedded with { Device = "Automatic" };
+        return (this with
+        {
+            TextOptions = normalized.TextOptions,
+            CodeOptions = normalized.CodeOptions,
+            ImageOptions = NormalizeOptions(OptionsFor("Image") with { QueryProfile = "" }),
+            ImagePipeline = pipeline with { EmbeddingOptions = NormalizeOptions(embedded) }
+        }).Normalize();
+    }
     private static ModelOptions? NormalizeOptions(ModelOptions? options) =>
         options?.Normalize() is { } value && value != ModelOptions.Default ? value : null;
-    public bool RequiresVersion2 => TextOptions is not null || CodeOptions is not null || ImageOptions is not null ||
+    public bool RequiresVersion2 => UsesImageUnderstanding || TextOptions is not null || CodeOptions is not null || ImageOptions is not null ||
         DistinctUrls.Any(url => EmbeddingRecipes.Find(url) is not null);
     public string[] DistinctUrls => new[] { Text, Code, Image }.Distinct(StringComparer.Ordinal).ToArray();
 
@@ -49,15 +84,15 @@ public sealed record ModelSelection(string Text, string Code, string Image,
     public static ModelSelection Read(XElement root)
     {
         var models = root.Element("Models");
-        if ((string?)root.Attribute("version") == "2")
+        if ((string?)root.Attribute("version") is "2" or "3")
         {
             if (models?.Attributes().Any(attribute => attribute.Name.LocalName is "text" or "code" or "image") == true)
                 throw new InvalidDataException("Version-2 model settings require child bindings, not legacy URL attributes.");
             (string Url, ModelOptions? Options) ReadBinding(string name)
             {
                 var element = models?.Element(name);
-                if ((string?)element?.Attribute("mode") is { } mode && (name != "Image" || mode != "direct"))
-                    throw new NotSupportedException("This build supports direct image embeddings only; image-understanding pipelines require a separate adapter.");
+                if ((string?)element?.Attribute("mode") is { } mode && (name != "Image" || mode is not ("direct" or "described")))
+                    throw new NotSupportedException("Unsupported image processing mode.");
                 if (element?.Attribute("recipe") is not null)
                     throw new InvalidDataException("Recipe selection is resolved by the native registry, not an editable configuration attribute.");
                 return ((string?)element?.Attribute("modelUrl") ?? DefaultUrl,
@@ -65,7 +100,22 @@ public sealed record ModelSelection(string Text, string Code, string Image,
                         (string?)element?.Attribute("devicePolicy") ?? "Automatic")));
             }
             var text = ReadBinding("Text"); var code = ReadBinding("Code"); var image = ReadBinding("Image");
-            return new ModelSelection(text.Url, code.Url, image.Url, text.Options, code.Options, image.Options).Normalize();
+            var imageElement = models?.Element("Image");
+            ImagePipelineOptions? pipeline = null;
+            if ((string?)imageElement?.Attribute("mode") == "described" || imageElement?.Element("Tasks") is not null)
+            {
+                if (ImageModelRecipes.Find(image.Url) is null) throw new NotSupportedException("The image model has no reviewed image-understanding recipe.");
+                var tasks = imageElement?.Element("Tasks");
+                bool Flag(string name, bool fallback) => tasks?.Attribute(name) is { } value ? XmlConvert.ToBoolean(value.Value) : fallback;
+                var embedding = imageElement?.Element("Embedding");
+                string use = (string?)embedding?.Attribute("use") ?? "Text";
+                if (use is not ("Text" or "Custom")) throw new InvalidDataException("Choose Text or Custom for the image text embedder.");
+                string? url = use == "Custom" ? (string?)embedding?.Attribute("modelUrl") ??
+                    throw new InvalidDataException("A custom image text embedder URL is required.") : null;
+                pipeline = new(Flag("caption", true), Flag("ocr", false), url,
+                    NormalizeOptions(new((string?)embedding?.Attribute("queryProfile") ?? "", (string?)embedding?.Attribute("devicePolicy") ?? "Automatic")));
+            }
+            return new ModelSelection(text.Url, code.Url, image.Url, text.Options, code.Options, image.Options, pipeline).Normalize();
         }
         if (models?.HasElements == true)
             throw new InvalidDataException("Extended model bindings require configuration version 2.");
@@ -84,7 +134,7 @@ public sealed record ModelSelection(string Text, string Code, string Image,
         using var reader = XmlReader.Create(path, new XmlReaderSettings
         { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null, MaxCharactersInDocument = 1_048_576 });
         var document = XDocument.Load(reader);
-        if (document.Root?.Name != "FuzzyFindAnythingConfiguration" || (string?)document.Root.Attribute("version") is not ("1" or "2"))
+        if (document.Root?.Name != "FuzzyFindAnythingConfiguration" || (string?)document.Root.Attribute("version") is not ("1" or "2" or "3"))
             throw new InvalidDataException("Unsupported application configuration.");
         return document;
     }
@@ -99,6 +149,17 @@ public sealed record ModelSelection(string Text, string Code, string Image,
             var result = new XElement(name, new XAttribute("modelUrl", ForKind(kind)));
             if (options.QueryProfile.Length > 0) result.Add(new XAttribute("queryProfile", options.QueryProfile));
             if (options.Device != "Automatic") result.Add(new XAttribute("devicePolicy", options.Device));
+            if (kind == "Image" && UsesImageUnderstanding)
+            {
+                var pipeline = EffectiveImagePipeline;
+                result.Add(new XAttribute("mode", "described"));
+                result.Add(new XElement("Tasks", new XAttribute("caption", pipeline.Caption), new XAttribute("ocr", pipeline.Ocr)));
+                var embedding = new XElement("Embedding", new XAttribute("use", pipeline.EmbeddingModel is null ? "Text" : "Custom"));
+                if (pipeline.EmbeddingModel is not null) embedding.Add(new XAttribute("modelUrl", pipeline.EmbeddingModel));
+                if (pipeline.EmbeddingOptions?.QueryProfile is { Length: > 0 } profile) embedding.Add(new XAttribute("queryProfile", profile));
+                if (pipeline.EmbeddingOptions?.Device is { } device && device != "Automatic") embedding.Add(new XAttribute("devicePolicy", device));
+                result.Add(embedding);
+            }
             return result;
         }
         return new("Models", Binding("Text", "Document"), Binding("Code", "Code"), Binding("Image", "Image"));
@@ -139,17 +200,20 @@ public sealed record ModelIndexState(string ModelUrl, string[] Kinds, int Dimens
     public string KindLabel => string.Join(", ", Kinds);
     public string Details => $"{Dimensions} dimensions / {Files:N0} files / {Vectors:N0} passages / {Provider} / {Device}";
 }
-public sealed record ModelReindexState(string[] Kinds, bool Completed = false, long Succeeded = 0, long Failed = 0)
+public sealed record ModelReindexState(string[] Kinds, bool Completed = false, long Succeeded = 0, long Failed = 0,
+    string? OperationId = null, bool DiscoveryComplete = false, long Partial = 0, long Skipped = 0, long Removed = 0)
 {
     public string Message => !Completed
         ? "Configuration saved. Affected files are being reindexed in the background."
-        : Failed > 0
-            ? $"Configuration saved. Reindexing finished with errors: {Succeeded:N0} succeeded; {Failed:N0} failed. See Indexed folders and logs."
+        : Failed > 0 || Partial > 0
+            ? $"Configuration saved. Reindexing finished with errors: {Succeeded:N0} succeeded; {Partial:N0} partial; {Failed:N0} failed; {Skipped:N0} skipped. See Indexed folders and logs."
+            : Skipped > 0 || Removed > 0
+                ? $"Configuration saved. Reindexing complete. {Succeeded:N0} indexed; {Skipped:N0} skipped (no searchable text); {Removed:N0} removed."
             : $"Configuration saved. Reindexing complete. {Succeeded:N0} affected files indexed.";
 }
 
 public sealed record ModelConfigurationState(ModelSelection Selection, IReadOnlyList<ModelIndexState> Indexes, string Message = "",
-    ModelReindexState? Reindex = null);
+    ModelReindexState? Reindex = null, ImagePipelineStatus? ImagePipeline = null);
 public sealed record ModelApplyResult(bool Changed, ModelSelection Selection, string[] ReindexedKinds);
 
 public sealed class ModelConfigurationException(string message, Exception inner) : InvalidOperationException(message, inner);

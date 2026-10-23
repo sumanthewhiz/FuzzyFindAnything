@@ -328,11 +328,19 @@ public sealed record IndexMetadata(
 
 public sealed record FolderStatus(
     int Id, string Path, string Status, string Detail, int Completed, int Total, int Errors,
-    int Succeeded, int Failed, int Queued, int Active);
+    int Succeeded, int Failed, int Queued, int Active, int Partial = 0, int Skipped = 0);
 
 public sealed record SearchResult(
-    string Path, string Name, string Kind, long Size, long MtimeNs, string Snippet, double Score)
+    string Path, string Name, string Kind, long Size, long MtimeNs, string Snippet, double Score, string Evidence = "",
+    string MatchedChunk = "", ChunkMetadata? Chunk = null)
 {
+    public string ChunkText => MatchedChunk.Length > 0 ? MatchedChunk : Snippet;
+    public string ChunkLabel => Chunk is { } chunk
+        ? $"Matched chunk / lines {chunk.StartLine}-{chunk.EndLine}" + (chunk.Symbol.Length > 0 ? " / " + chunk.Symbol : "")
+        : "Matched excerpt";
+    public string ChunkFont => Kind == "Code" ? "Cascadia Code, Consolas" : "Segoe UI";
+    public bool HasGeneratedEvidence => Evidence is "caption" or "ocr";
+    public string EvidenceLabel => Evidence switch { "caption" => "Generated caption", "ocr" => "OCR text", _ => "" };
     public string Glyph => Kind switch { "Image" => "\uEB9F", "Code" => "\uE943", _ => "\uE8A5" };
     public string Extension => System.IO.Path.GetExtension(Path).TrimStart('.').ToUpperInvariant() is { Length: > 0 } extension
         ? extension : Kind.ToUpperInvariant();

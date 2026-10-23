@@ -4,7 +4,8 @@ param(
     [switch]$Diagnose,
     [string]$ApplicationDirectory,
     [string]$ModelCache,
-    [string]$EmbeddingModelCache
+    [string]$EmbeddingModelCache,
+    [string]$ImageModelCache
 )
 
 $ErrorActionPreference = 'Stop'
@@ -183,6 +184,17 @@ function Read-QueryPurpose {
     $selection[0].Current.Name
 }
 
+function Set-SearchThreshold([string]$kind, [double]$value) {
+    ([System.Windows.Automation.RangeValuePattern](Find-Id ($kind + 'MinimumSimilarity')).GetCurrentPattern(
+        [System.Windows.Automation.RangeValuePattern]::Pattern)).SetValue($value)
+}
+
+function Get-ConfiguredModel([xml]$configuration, [string]$kind) {
+    $models = $configuration.FuzzyFindAnythingConfiguration.Models
+    if ($configuration.FuzzyFindAnythingConfiguration.version -eq '1') { return $models.GetAttribute($kind.ToLowerInvariant()) }
+    $models.SelectSingleNode($kind).GetAttribute('modelUrl')
+}
+
 function Read-FileHash([string]$path) {
     $hash = [Security.Cryptography.SHA256]::Create()
     $stream = [IO.File]::OpenRead($path)
@@ -233,7 +245,21 @@ try {
     New-Item -ItemType Directory -Path $work, $corpus | Out-Null
     & $fixtureTool ui-fixture $work
     if ($LASTEXITCODE -ne 0) { throw 'Could not prepare the isolated UI test corpus.' }
-    if ($ModelCache) { Copy-Item -LiteralPath $ModelCache -Destination (Join-Path $data 'models') -Recurse }
+    if ($ModelCache) {
+        if ($ImageModelCache) {
+            & $fixtureTool link-model-cache $ModelCache (Join-Path $data 'models')
+            if ($LASTEXITCODE -ne 0) { throw 'Could not prepare image-test embedding assets.' }
+        } else { Copy-Item -LiteralPath $ModelCache -Destination (Join-Path $data 'models') -Recurse }
+    }
+    if ($ImageModelCache) {
+        & $fixtureTool link-model-cache $ImageModelCache (Join-Path $data 'models\image-understanding')
+        if ($LASTEXITCODE -ne 0) { throw 'Could not prepare the isolated image model cache.' }
+        & $fixtureTool image-text-fixture (Join-Path $corpus 'Red circle.png')
+        if ($LASTEXITCODE -ne 0) { throw 'Could not generate the image OCR fixture.' }
+        $configuration = New-Object Xml.XmlDocument
+        $configuration.LoadXml('<FuzzyFindAnythingConfiguration version="2"><Models><Text modelUrl="https://huggingface.co/sentence-transformers/paraphrase-MiniLM-L3-v2"/><Code modelUrl="https://huggingface.co/sentence-transformers/paraphrase-MiniLM-L3-v2"/><Image modelUrl="https://huggingface.co/microsoft/Florence-2-base-ft" mode="described"><Tasks caption="true" ocr="false"/><Embedding use="Text"/></Image></Models></FuzzyFindAnythingConfiguration>')
+        $configuration.Save((Join-Path $data 'settings.xml'))
+    }
     if ($EmbeddingModelCache) {
         New-Item -ItemType Directory -Force -Path (Join-Path $data 'models') | Out-Null
         Get-ChildItem -LiteralPath $EmbeddingModelCache -Directory | Copy-Item -Destination (Join-Path $data 'models') -Recurse
@@ -279,6 +305,52 @@ try {
         return
     }
     Wait-Check { Select-Tab 'SearchTab'; (Find-Id 'SearchButton').Current.IsEnabled } 'model ready' 360
+    if ($ImageModelCache) {
+        Select-Tab 'FoldersTab'
+        Wait-Check { (Find-Id 'IndexCounts').Current.Name -like '3 files |*' } 'initial described image' 360
+        Select-Tab 'ModelsTab'
+        Wait-Check { Find-Id 'ImagePipelineOptions' } 'model-specific image requirements' 60
+        ([System.Windows.Automation.ExpandCollapsePattern](Find-Id 'ImagePipelineOptions').GetCurrentPattern(
+            [System.Windows.Automation.ExpandCollapsePattern]::Pattern)).Expand()
+        if (([System.Windows.Automation.TogglePattern](Find-Id 'ImageCaptionTask').GetCurrentPattern(
+            [System.Windows.Automation.TogglePattern]::Pattern)).Current.ToggleState -ne [System.Windows.Automation.ToggleState]::On) {
+            throw 'The default image task was not selected automatically.'
+        }
+        Toggle-Control 'ImageOcrTask'
+        Invoke-Button 'ApplyModelsButton'
+        Wait-Check { (Find-Id 'ApplyModelsButton').Current.IsEnabled -and
+            (Find-Id 'ModelConfigurationStatus').Current.Name -like '*Reindexing complete*' } 'caption plus OCR indexing' 360
+        [xml]$imageSettings = Get-Content -LiteralPath (Join-Path $data 'settings.xml') -Raw
+        if ($imageSettings.FuzzyFindAnythingConfiguration.Models.Image.Tasks.ocr -ne 'true' -or
+            $imageSettings.FuzzyFindAnythingConfiguration.Models.Image.Embedding.use -ne 'Text') { throw 'Image task/dependency preferences were lost.' }
+        Select-Tab 'SearchTab'
+        Set-SearchThreshold 'Image' 0
+        ([System.Windows.Automation.ValuePattern](Find-Id 'SearchInput').GetCurrentPattern(
+            [System.Windows.Automation.ValuePattern]::Pattern)).SetValue('HELLO SEARCH 123')
+        Invoke-Button 'SearchButton'
+        Wait-Check { (Find-Id 'ImageMatchEvidence') -and (Find-Id 'ImageMatchEvidence').Current.Name -eq 'OCR text' } 'OCR-backed image gallery result' 90
+        if ((Find-Id 'ImageMatchEvidence').Current.HelpText -notlike '*HELLO SEARCH 123*') { throw 'The image match lost its generated-text evidence.' }
+        Select-Tab 'ModelsTab'
+        ([System.Windows.Automation.ValuePattern](Find-Id 'ImageModelUrl').GetCurrentPattern(
+            [System.Windows.Automation.ValuePattern]::Pattern)).SetValue('https://huggingface.co/Xenova/clip-vit-base-patch32')
+        Wait-Check { -not (Find-Id 'ImagePipelineOptions') } 'direct-model simple configuration' 45
+        Invoke-Button 'ApplyModelsButton'
+        Wait-Check { (Find-Id 'ApplyModelsButton').Current.IsEnabled -and
+            (Find-Id 'ModelConfigurationStatus').Current.Name -like '*Reindexing complete*' } 'direct image model restoration' 300
+        [xml]$imageSettings = Get-Content -LiteralPath (Join-Path $data 'settings.xml') -Raw
+        if ($imageSettings.FuzzyFindAnythingConfiguration.Models.Image.Tasks -or
+            $imageSettings.FuzzyFindAnythingConfiguration.Models.Image.Embedding) { throw 'Hidden image pipeline configuration remained active.' }
+        Toggle-Control 'ThemeToggle'
+        Toggle-Control 'ThemeToggle'
+        Minimize-ToTray
+        [FfaUiChecks]::TrayClick($trayHandle, $false)
+        Wait-Check { [FfaUiChecks]::IsWindowVisible([FfaUiChecks]::FindWindow($process.Id, $false)) } 'image-test tray restore' 15
+        Refresh-Window
+        Invoke-Button 'QuitButton'
+        if (-not $process.WaitForExit(50000)) { throw 'The image-pipeline test app did not quit.' }
+        Write-Output 'ALL NATIVE IMAGE UI CHECKS PASSED: tasks, linked embedding, provenance, direct-model simplicity, themes and tray'
+        return
+    }
     Select-Tab 'FoldersTab'
     Wait-Check {
         Select-Tab 'FoldersTab'
@@ -309,9 +381,19 @@ try {
     Write-Output 'PASS native folder browser'
 
     Select-Tab 'SearchTab'
-    $similarity = [System.Windows.Automation.RangeValuePattern](Find-Id 'MinimumSimilarity').GetCurrentPattern([System.Windows.Automation.RangeValuePattern]::Pattern)
-    if ([Math]::Abs($similarity.Current.Value - 0.60) -gt 0.001) { throw 'The first-time similarity is not 0.60.' }
-    $similarity.SetValue(0.35)
+    foreach ($kind in @('Document','Code','Image')) {
+        $value = [System.Windows.Automation.RangeValuePattern](Find-Id ($kind + 'MinimumSimilarity')).GetCurrentPattern([System.Windows.Automation.RangeValuePattern]::Pattern)
+        if ([Math]::Abs($value.Current.Value - 0.60) -gt 0.001) { throw 'A first-time similarity is not 0.60.' }
+    }
+    foreach ($id in @('SearchDocuments','SearchCode','SearchImages')) {
+        if (([System.Windows.Automation.TogglePattern](Find-Id $id).GetCurrentPattern(
+            [System.Windows.Automation.TogglePattern]::Pattern)).Current.ToggleState -ne [System.Windows.Automation.ToggleState]::On) {
+            throw 'First launch did not select all three search types.'
+        }
+    }
+    Set-SearchThreshold 'Document' 0.35
+    Set-SearchThreshold 'Code' 0.30
+    Set-SearchThreshold 'Image' 0.15
     $query = [System.Windows.Automation.ValuePattern](Find-Id 'SearchInput').GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
     $query.SetValue('a red circle on a white background')
     Invoke-Button 'SearchButton'
@@ -328,6 +410,39 @@ try {
             (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Draw circle.py'))) -ne $null
     } 'real code search result'
     Write-Output 'PASS WPF-to-native-engine real document, code and image search'
+    foreach ($id in @('DocumentResults','CodeResults')) {
+        $preview = (Find-Id $id).FindFirst([System.Windows.Automation.TreeScope]::Descendants,
+            (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty, 'MatchedChunkPreview')))
+        if (-not $preview -or -not $preview.Current.HelpText -or $preview.Current.Name -notlike 'Matched chunk*') {
+            throw "Missing full matched-chunk hover content in $id."
+        }
+        if ($id -eq 'CodeResults' -and $preview.Current.HelpText -notlike '*def *') { throw 'Code chunk preview lost the matched function.' }
+    }
+    Toggle-Control 'SearchDocuments'
+    Toggle-Control 'SearchCode'
+    if ((Find-Id 'SearchImages').Current.IsEnabled) { throw 'The last selected search type can be unchecked.' }
+    Invoke-Button 'SearchButton'
+    Wait-Check { (Find-Id 'SearchButton').Current.IsEnabled -and (Find-Id 'ImageGallery') } 'image-only search'
+    if ((Find-Id 'DocumentResults') -or (Find-Id 'CodeResults')) { throw 'Unselected result sections remained visible.' }
+    Toggle-Control 'SearchDocuments'
+    Set-SearchThreshold 'Image' 0.9
+    Invoke-Button 'SearchButton'
+    Wait-Check { (Find-Id 'SearchButton').Current.IsEnabled -and (Find-Id 'DocumentResults') } 'independent document/image thresholds'
+    if ($window.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
+        (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Red circle.png')))) {
+        throw 'The image-specific high threshold was not applied.'
+    }
+    Toggle-Control 'SearchCode'
+    Set-SearchThreshold 'Image' 0.15
+    Invoke-Button 'SearchButton'
+    Wait-Check { (Find-Id 'SearchButton').Current.IsEnabled -and (Find-Id 'ImageGallery') } 'restored search preferences'
+    [xml]$searchSettings = Get-Content -LiteralPath (Join-Path $data 'settings.xml') -Raw
+    if ($searchSettings.FuzzyFindAnythingConfiguration.Search.Documents.minimumSimilarity -ne '0.35' -or
+        $searchSettings.FuzzyFindAnythingConfiguration.Search.Code.minimumSimilarity -ne '0.3' -or
+        $searchSettings.FuzzyFindAnythingConfiguration.Search.Images.minimumSimilarity -ne '0.15') {
+        throw 'Independent thresholds did not persist.'
+    }
+    Write-Output 'PASS selected types, last-selection guardrail, separate thresholds and full chunk hover previews'
     if ($Enhanced) {
         if (-not (Find-Id 'DocumentResults') -or -not (Find-Id 'CodeResults') -or -not (Find-Id 'ImageGallery')) { throw 'Missing separated result sections.' }
         Wait-Check {
@@ -451,7 +566,7 @@ try {
             Wait-Check { (Find-Id 'ThemeToggle').Current.ItemStatus -ieq $theme } 'model tab theme'
             $guidance = @($window.FindAll([System.Windows.Automation.TreeScope]::Descendants,
                 (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Text))) |
-                Where-Object { $_.Current.Name -like 'Matching model assignments*' -or
+                Where-Object { $_.Current.Name -like 'Compatible embeddings*' -or
                     $_.Current.Name -like 'A model must provide*' -or $_.Current.AutomationId -eq 'ModelConfigurationStatus' } |
                 Sort-Object { $_.Current.BoundingRectangle.Top })
             if ($guidance.Count -ne 3) { throw 'The model configuration guidance is incomplete.' }
@@ -483,15 +598,15 @@ try {
         Wait-Check { (Find-Id 'ApplyModelsButton').Current.IsEnabled -and (Find-Id 'ModelConfigurationStatus').Current.Name -like 'Configuration saved*' } 'model configuration apply' 300
         Wait-Check { (Find-Id 'ModelConfigurationStatus').Current.Name -like '*Reindexing complete*' } 'model reindex completion feedback' 300
         [xml]$configuration = Get-Content -LiteralPath (Join-Path $data 'settings.xml') -Raw
-        if ($configuration.FuzzyFindAnythingConfiguration.Models.code -ne $alternate) { throw 'The selected code model was not saved.' }
+        if ((Get-ConfiguredModel $configuration 'Code') -ne $alternate) { throw 'The selected code model was not saved.' }
         $codeModel.SetValue($defaultModel)
         Invoke-Button 'ApplyModelsButton'
         Wait-Check { (Find-Id 'ApplyModelsButton').Current.IsEnabled -and (Find-Id 'ModelConfigurationStatus').Current.Name -like 'Configuration saved*' } 'default model restore' 300
         Wait-Check { (Find-Id 'ModelConfigurationStatus').Current.Name -like '*Reindexing complete*' } 'default model completion feedback' 300
         [xml]$configuration = Get-Content -LiteralPath (Join-Path $data 'settings.xml') -Raw
-        if ($configuration.FuzzyFindAnythingConfiguration.Models.text -ne $defaultModel -or
-            $configuration.FuzzyFindAnythingConfiguration.Models.code -ne $defaultModel -or
-            $configuration.FuzzyFindAnythingConfiguration.Models.image -ne $defaultModel) { throw 'Model defaults were not restored.' }
+        if ((Get-ConfiguredModel $configuration 'Text') -ne $defaultModel -or
+            (Get-ConfiguredModel $configuration 'Code') -ne $defaultModel -or
+            (Get-ConfiguredModel $configuration 'Image') -ne $defaultModel) { throw 'Model defaults were not restored.' }
     } else { $codeModel.SetValue($defaultModel) }
     Write-Output 'PASS model URL defaults, no-op Apply, invalid URL preservation and configured model changes'
 
@@ -509,7 +624,7 @@ try {
         Wait-Check { (Find-Id 'ApplyModelsButton').Current.IsEnabled -and
             (Find-Id 'ModelConfigurationStatus').Current.Name -like '*Reindexing complete*' } 'native Qwen code reindex' 360
         [xml]$configuration = Get-Content -LiteralPath (Join-Path $data 'settings.xml') -Raw
-        if ($configuration.FuzzyFindAnythingConfiguration.version -ne '2' -or
+        if ($configuration.FuzzyFindAnythingConfiguration.version -notin @('2','3') -or
             $configuration.FuzzyFindAnythingConfiguration.Models.Code.modelUrl -ne 'https://huggingface.co/Qwen/Qwen3-Embedding-0.6B') {
             throw 'The extended model binding was not persisted.'
         }
@@ -622,6 +737,8 @@ try {
     Refresh-Window
     Wait-Check { $windowPattern.Current.WindowVisualState -eq [System.Windows.Automation.WindowVisualState]::Maximized } 'single-instance activation' 15
     Write-Output 'PASS minimize/close to tray, tray click/menu restore, and maximized single-instance activation'
+    Select-Tab 'SearchTab'
+    Toggle-Control 'SearchCode'
     Close-ToTray
     Invoke-TrayMenu 'Quit'
     if (-not $process.WaitForExit(50000)) { throw 'Quit did not stop the application.' }
@@ -644,8 +761,14 @@ try {
         }
         Select-Tab 'SearchTab'
         Wait-Check { (Find-Id 'SearchButton').Current.IsEnabled } 'restart model ready' 180
-        $similarity = [System.Windows.Automation.RangeValuePattern](Find-Id 'MinimumSimilarity').GetCurrentPattern([System.Windows.Automation.RangeValuePattern]::Pattern)
-        if ([Math]::Abs($similarity.Current.Value - 0.35) -gt 0.001) { throw 'Similarity did not survive restart, appearance and logging changes.' }
+        foreach ($pair in @(@('Document',0.35),@('Code',0.30),@('Image',0.15))) {
+            $similarity = [System.Windows.Automation.RangeValuePattern](Find-Id ($pair[0] + 'MinimumSimilarity')).GetCurrentPattern([System.Windows.Automation.RangeValuePattern]::Pattern)
+            if ([Math]::Abs($similarity.Current.Value - $pair[1]) -gt 0.001) { throw 'Per-type similarity did not survive restart.' }
+        }
+        if (([System.Windows.Automation.TogglePattern](Find-Id 'SearchCode').GetCurrentPattern(
+            [System.Windows.Automation.TogglePattern]::Pattern)).Current.ToggleState -ne [System.Windows.Automation.ToggleState]::Off) {
+            throw 'Search type selection did not survive restart.'
+        }
         Invoke-Button 'QuitButton'
         if (-not $process.WaitForExit(50000)) { throw 'Restarted test application did not quit.' }
         Write-Output 'PASS appearance, similarity and logging retained after a complete restart'

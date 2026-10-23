@@ -2,7 +2,7 @@
 
 **Find documents, source code and images by meaning, on your Windows PC.**
 
-This checkout is **1.2.0-dev.3**, including extensible native embedding recipes, configurable models and system-tray behavior. Earlier release packages do not contain these additions.
+This checkout is **1.4.0-dev.1**, including content-aware chunking, per-type search controls, extensible native embeddings and image-understanding pipelines. Earlier release packages do not contain these additions.
 
 [![Build and release](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml/badge.svg?branch=dev)](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml)
 ![Windows 11](https://img.shields.io/badge/platform-Windows%2011-0078D4)
@@ -11,6 +11,7 @@ This checkout is **1.2.0-dev.3**, including extensible native embedding recipes,
 [**Quickstart**](QUICKSTART.md) ·
 [**Download builds**](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml?query=branch%3Adev) ·
 [Architecture](docs/ARCHITECTURE.md) ·
+[Chunking](docs/CHUNKING.md) ·
 [Upgrade and rollback](docs/MIGRATION.md) ·
 [Report an issue](https://github.com/sumanthewhiz/FuzzyFindAnything/issues)
 
@@ -24,6 +25,9 @@ The application uses .NET and native Windows libraries, with ONNX Runtime for lo
 |---|---|
 | Semantic retrieval | EmbeddingGemma 2 is the default; compatible document spaces share indexes while query roles remain explicit |
 | Three result sections | Openable document and code lists, plus a clickable image thumbnail gallery |
+| Per-type search | Select documents, code and/or images with independent saved similarity thresholds; at least one type stays selected |
+| Content-aware chunks | Document sections/paragraphs and native syntax-aware code units, with model-token limits and source provenance |
+| Matched-chunk previews | Hover at the bottom of a document/code match to inspect the actual retained chunk and source location |
 | Explicit indexing scope | Select folders and ordinary subfolders; removing scope never deletes source files |
 | Background updates | NTFS/ReFS USN replay, directory notifications, and conservative reconciliation |
 | Changes while the app is closed | Background timestamp/size/identity checks on restart update only added, changed or deleted files |
@@ -33,6 +37,7 @@ The application uses .NET and native Windows libraries, with ONNX Runtime for lo
 | Startup visibility | Sequenced percentage/phase checkpoints; the first ready model enables search |
 | Live index information | Backend/version, location, size, file/document/code/image counts and refresh time |
 | Model configuration | Hugging Face URLs with automatic tokenizer/pooling/device setup; extra controls appear only for applicable model requirements |
+| Image understanding | Reviewed caption/OCR providers feed a linked or separate text embedder; completed generation stages are durable and reusable |
 | Polished desktop controls | Light/dark appearance, persisted similarity, search clearing, configurable logs and keyboard access |
 
 ### Supported content
@@ -43,7 +48,7 @@ The application uses .NET and native Windows libraries, with ONNX Runtime for lo
 | Images | `.jpg`, `.jpeg`, `.png`, `.gif`, `.bmp`, `.ico` |
 | Source code | Python, JavaScript/TypeScript, Java, C/C++, Go, Rust, SQL, Bash, C#, PHP, Ruby, Swift, Kotlin and R |
 
-Text and code are read directly; source code is **never executed**. Other document formats use installed Windows/Office/PDF IFilters, including registered and Office Click-to-Run filters. Images use the model's vision encoder, not filename-derived substitutes. See [format details and limitations](docs/ARCHITECTURE.md#supported-content).
+Text and code are read directly; source code is **never executed**. Other document formats use installed Windows/Office/PDF IFilters, including registered and Office Click-to-Run filters. Images use direct visual embeddings or a reviewed image-to-text-to-embedding pipeline, never filename substitutes for failed inference. See [format details and limitations](docs/ARCHITECTURE.md#supported-content).
 
 ## Get started
 
@@ -91,7 +96,9 @@ The ARM64 package uses **native ARM64 UI and inference**, with an **x64 coordina
 
 EmbeddingGemma2 remains the pre-filled default for every file type, with no tokenizer or pipeline setup. The **Model configuration** tab resolves reviewed native recipes for text/code embeddings and retains direct CLIP image support. Query instructions, tokenization, pooling, tensor interfaces and device qualification are part of the recipe, not arbitrary downloaded model code. Unsupported families, missing exports, text-only image assignments and unusable device profiles are rejected before an index is changed.
 
-Examples include `Qwen/Qwen3-Embedding-0.6B`, `intfloat/e5-base-v2`, `vectoriseai/e5-small-v2`, the existing MiniLM examples and `Xenova/clip-vit-base-patch32`. The Qwen card resolves to a pinned stateless Qdrant ONNX export; the UI discloses the actual artifact source. Qwen Coder generation models and Florence image-understanding pipelines are **not** implemented by this embedding release.
+Examples include `Qwen/Qwen3-Embedding-0.6B`, `intfloat/e5-base-v2`, `vectoriseai/e5-small-v2`, the existing MiniLM examples and `Xenova/clip-vit-base-patch32`. The Qwen card resolves to a pinned stateless Qdrant ONNX export; the UI discloses the actual artifact source. Qwen Coder generation models are not interchangeable with text embedding checkpoints.
+
+For image descriptions, `microsoft/Florence-2-base-ft` and `microsoft/Florence-2-base` are the first two checkpoints using the reusable native encoder-decoder recipe. Captions and optional OCR feed the selected text embedder; matches remain image-gallery items with caption/OCR evidence. The image recipe resolves its tokenizer, processor, graph bindings and task prompts automatically. Other compatible checkpoints can use reviewed recipe data; different architectures still require a native adapter. This is not unrestricted support for every vision model.
 
 The compatible-model host uses self-contained Windows ML to discover usable CPU, GPU and NPU execution providers. Acceptance depends on hardware, driver/provider, resource limits and real inference, not a blanket accelerator restriction. Query-only changes retain file embeddings; accepted document-model changes rebuild only affected file types. See [model configuration and device checks](docs/ARCHITECTURE.md#configurable-models-and-device-checks).
 

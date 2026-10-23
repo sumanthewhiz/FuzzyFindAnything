@@ -248,6 +248,9 @@ internal sealed class FakeEmbeddings : IEmbeddings
 {
     public EmbeddingSpace Space { get; init; } = EmbeddingSpace.Default;
     public IReadOnlyList<IEmbeddings>? QueryModels { get; init; }
+    public IReadOnlyList<EmbeddingSearchBinding>? QueryBindings { get; init; }
+    public IReadOnlyList<EmbeddingSearchBinding> SearchBindings => QueryBindings ??
+        ActiveModels.Select(model => new EmbeddingSearchBinding(model, "default", null)).ToArray();
     public IReadOnlyList<IEmbeddings> ActiveModels => QueryModels ?? new[] { this };
     public bool BlockAfterFirstBatch { get; init; }
     public bool BlockStartup { get; init; }
@@ -255,6 +258,7 @@ internal sealed class FakeEmbeddings : IEmbeddings
     public bool Disposed { get; private set; }
     private int batches;
     public ConcurrentBag<string> Embedded { get; } = [];
+    public ConcurrentBag<string> Queries { get; } = [];
     public int ReadyWorkers => Started && !Disposed ? 1 : 0;
     public int Threads => 1;
     public int BatchConcurrency => 1;
@@ -275,6 +279,7 @@ internal sealed class FakeEmbeddings : IEmbeddings
         return passages.Select(passage => Program.Vector(passage.Contains("apple") ? 0 : 1)).ToArray();
     }
     public Task<float[]> ImageAsync(string path, CancellationToken cancellation) => Task.FromResult(Program.Vector(2));
-    public Task<float[]> QueryAsync(string text, CancellationToken cancellation) => Task.FromResult(Program.Vector(text.Contains("apple") ? 0 : 1));
+    public Task<float[]> QueryAsync(string text, CancellationToken cancellation)
+    { Queries.Add(text); return Task.FromResult(Program.Vector(text.Contains("apple") ? 0 : 1)); }
     public ValueTask DisposeAsync() { Disposed = true; return ValueTask.CompletedTask; }
 }

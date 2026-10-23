@@ -35,7 +35,8 @@ public sealed class FolderViewModel : ObservableObject
     public string Path => data.Path;
     public string Name => System.IO.Path.GetFileName(Path.TrimEnd('\\')) is { Length: > 0 } name ? name : Path;
     public string Status => data.Status;
-    public string Detail => $"{data.Succeeded:N0} succeeded  |  {data.Failed:N0} failed";
+    public string Detail => $"{data.Succeeded:N0} succeeded  |  {data.Failed:N0} failed" +
+        (data.Partial > 0 ? $"  |  {data.Partial:N0} partial" : "") + (data.Skipped > 0 ? $"  |  {data.Skipped:N0} skipped" : "");
     public bool IsIndexed => Status == "Indexed";
     public bool IsIndeterminate => !IsIndexed && data.Total == 0 && data.Errors == 0;
     public double Progress => data.Total == 0 ? (IsIndexed ? 100 : 0) : 100d * data.Completed / data.Total;
@@ -57,7 +58,8 @@ public sealed class MainViewModel : ObservableObject
             requirement.PropertyChanged += (_, _) => Changed(nameof(CanApplyModels));
     }
     private string query = "";
-    private double threshold = 0.60;
+    private SearchPreferences searchOptions = new();
+    public event Action? SearchOptionsChanged;
     private bool searching;
     private bool connected;
     private bool ready;
@@ -90,6 +92,16 @@ public sealed class MainViewModel : ObservableObject
     public ModelRequirementViewModel TextRequirements { get; } = new();
     public ModelRequirementViewModel CodeRequirements { get; } = new();
     public ModelRequirementViewModel ImageRequirements { get; } = new();
+    public ImagePipelineViewModel ImageProcessing { get; } = new();
+    private ImagePipelineStatus? imagePipelineStatus;
+    public bool HasImagePipeline => imagePipelineStatus is not null;
+    public string ImagePipelineSummary => imagePipelineStatus is { } image
+        ? $"{image.ModelUrl} -> {image.EmbeddingModel}\n{string.Join(" + ", image.Tasks)}; " +
+          $"{image.Generated:N0} complete, {image.Partial:N0} partial, {image.Failed:N0} failed, {image.Empty:N0} skipped. " +
+          (image.Provider.Length > 0 ? $"{image.Provider} / {image.Device}" + (image.IsLoaded ? "" : " (idle; reloads on demand)") :
+              "Generation loads on demand; existing image search is available.")
+        : "";
+    public bool CanRetryImages => CanConfigure && imagePipelineStatus is { } image && image.Partial + image.Failed > 0;
     public string TextModelUrl
     {
         get => textModelUrl;
@@ -103,10 +115,16 @@ public sealed class MainViewModel : ObservableObject
     public string ImageModelUrl
     {
         get => imageModelUrl;
-        set { if (imageModelUrl != value) ImageRequirements.Reset(value.Trim().TrimEnd('/') == ModelSelection.DefaultUrl); Set(ref imageModelUrl, value); }
+        set
+        {
+            if (imageModelUrl != value) { ImageRequirements.Reset(value.Trim().TrimEnd('/') == ModelSelection.DefaultUrl); ImageProcessing.Reset(value); }
+            Set(ref imageModelUrl, value);
+        }
     }
     public ModelSelection DraftModels => new ModelSelection(TextModelUrl, CodeModelUrl, ImageModelUrl,
-        TextRequirements.Options, CodeRequirements.Options, ImageRequirements.Options).Normalize();
+        TextRequirements.Options, CodeRequirements.Options, ImageProcessing.IsVisible
+            ? ImageRequirements.Options is { } options ? options with { QueryProfile = "" } : null : ImageRequirements.Options,
+        ImageProcessing.Options(ImageRequirements.SelectedQueryProfile)).Normalize();
     public string ModelConfigurationMessage { get => modelConfigurationMessage; set => Set(ref modelConfigurationMessage, value); }
     public ObservableCollection<ModelIndexState> ModelIndexes { get; } = [];
     public bool CanApplyModels => CanConfigure && !IsEngineLoading && !FoldersBusy &&
@@ -146,13 +164,45 @@ public sealed class MainViewModel : ObservableObject
     public bool ConfigurationBusy
     {
         get => configurationBusy;
-        set { Set(ref configurationBusy, value); Changed(nameof(CanConfigure)); Changed(nameof(IsConfigurationIdle)); Changed(nameof(CanApplyModels)); Changed(nameof(CanSearch)); Changed(nameof(CanManageFolders)); Changed(nameof(CanRemove)); }
+        set { Set(ref configurationBusy, value); Changed(nameof(CanConfigure)); Changed(nameof(IsConfigurationIdle)); Changed(nameof(CanApplyModels)); Changed(nameof(CanSearch)); Changed(nameof(CanManageFolders)); Changed(nameof(CanRemove)); Changed(nameof(CanRetryImages)); NotifySearchOptions(); }
     }
     public bool IsConfigurationIdle => !ConfigurationBusy;
     public bool CanConfigure => IsConnected && !ConfigurationBusy;
     public string CpuSummary { get => cpuSummary; private set => Set(ref cpuSummary, value); }
     public string CpuDetail { get => cpuDetail; private set => Set(ref cpuDetail, value); }
-    public double Threshold { get => threshold; set => Set(ref threshold, value); }
+    public SearchPreferences SearchOptions => searchOptions;
+    public bool SearchDocuments { get => searchOptions.Documents; set => ChangeSearch(searchOptions with { Documents = value }); }
+    public bool SearchCode { get => searchOptions.Code; set => ChangeSearch(searchOptions with { Code = value }); }
+    public bool SearchImages { get => searchOptions.Images; set => ChangeSearch(searchOptions with { Images = value }); }
+    public double DocumentThreshold { get => searchOptions.DocumentThreshold; set => ChangeSearch(searchOptions with { DocumentThreshold = value }); }
+    public double CodeThreshold { get => searchOptions.CodeThreshold; set => ChangeSearch(searchOptions with { CodeThreshold = value }); }
+    public double ImageThreshold { get => searchOptions.ImageThreshold; set => ChangeSearch(searchOptions with { ImageThreshold = value }); }
+    public bool CanToggleDocuments => !ConfigurationBusy && (!SearchDocuments || SearchCode || SearchImages);
+    public bool CanToggleCode => !ConfigurationBusy && (!SearchCode || SearchDocuments || SearchImages);
+    public bool CanToggleImages => !ConfigurationBusy && (!SearchImages || SearchDocuments || SearchCode);
+    public string DocumentWidth => SearchDocuments ? "*" : "0";
+    public string CodeWidth => SearchCode ? "*" : "0";
+    public string ImageWidth => SearchImages ? "*" : "0";
+    public string DocumentGap => SearchDocuments && (SearchCode || SearchImages) ? "18" : "0";
+    public string CodeGap => SearchCode && SearchImages ? "18" : "0";
+    private void ChangeSearch(SearchPreferences value)
+    {
+        try { value.Validate(); }
+        catch (ArgumentException error) { Error = error.Message; NotifySearchOptions(); return; }
+        if (searchOptions == value) return;
+        searchOptions = value; NotifySearchOptions(); SearchOptionsChanged?.Invoke();
+    }
+    public void RestoreSearchOptions(SearchPreferences value)
+    {
+        value.Validate(); searchOptions = value; NotifySearchOptions();
+    }
+    private void NotifySearchOptions()
+    {
+        foreach (string property in new[] { nameof(SearchOptions), nameof(SearchDocuments), nameof(SearchCode), nameof(SearchImages),
+            nameof(DocumentThreshold), nameof(CodeThreshold), nameof(ImageThreshold), nameof(CanToggleDocuments), nameof(CanToggleCode),
+            nameof(CanToggleImages), nameof(DocumentWidth), nameof(CodeWidth), nameof(ImageWidth), nameof(DocumentGap), nameof(CodeGap) })
+            Changed(property);
+    }
     public bool IsSearching
     {
         get => searching;
@@ -161,7 +211,7 @@ public sealed class MainViewModel : ObservableObject
     public bool IsConnected
     {
         get => connected;
-        set { Set(ref connected, value); Changed(nameof(CanSearch)); Changed(nameof(CanRemove)); Changed(nameof(CanConfigure)); Changed(nameof(CanManageFolders)); Changed(nameof(CanApplyModels)); }
+        set { Set(ref connected, value); Changed(nameof(CanSearch)); Changed(nameof(CanRemove)); Changed(nameof(CanConfigure)); Changed(nameof(CanManageFolders)); Changed(nameof(CanApplyModels)); Changed(nameof(CanRetryImages)); }
     }
     public bool FoldersBusy
     {
@@ -222,6 +272,8 @@ public sealed class MainViewModel : ObservableObject
         Monitor = status.Monitor;
         if (status.Models is { } models)
         {
+            imagePipelineStatus = models.ImagePipeline;
+            Changed(nameof(HasImagePipeline)); Changed(nameof(ImagePipelineSummary)); Changed(nameof(CanRetryImages));
             ModelIndexes.Clear();
             foreach (var index in models.Indexes) ModelIndexes.Add(index);
             if (showModelReindexStatus && !ConfigurationBusy && status.ModelState == "Ready" &&
@@ -272,7 +324,7 @@ public sealed class MainViewModel : ObservableObject
 
     public void ApplySettings(ApplicationSettings settings, string path)
     {
-        Threshold = settings.MinimumSimilarity;
+        RestoreSearchOptions(settings.SearchSettings);
         LoggingEnabled = settings.LoggingEnabled;
         LogDirectory = settings.LogDirectory;
         SettingsPath = path;
@@ -284,6 +336,9 @@ public sealed class MainViewModel : ObservableObject
         TextRequirements.Restore(selection.OptionsFor("Document"));
         CodeRequirements.Restore(selection.OptionsFor("Code"));
         ImageRequirements.Restore(selection.OptionsFor("Image"));
+        ImageProcessing.Restore(selection);
+        if (selection.UsesImageUnderstanding)
+            ImageRequirements.Restore(new(selection.EffectiveImagePipeline.EmbeddingOptions?.QueryProfile ?? "", selection.OptionsFor("Image").Device));
     }
     public void ApplyModelInspection(ModelInspection inspection)
     {
@@ -301,6 +356,7 @@ public sealed class MainViewModel : ObservableObject
                 _ => throw new InvalidDataException("Unknown model requirement kind.")
             };
             target.Apply(requirement);
+            if (requirement.Kind == "Image") ImageProcessing.ApplyDefinition(requirement.ImageModel);
         }
     }
     public void BeginModelConfiguration()
@@ -308,6 +364,11 @@ public sealed class MainViewModel : ObservableObject
         showModelReindexStatus = false;
         expectedReindexSelection = null;
         ModelConfigurationMessage = "Validating models and available execution devices...";
+    }
+    public void ShowImageRetry(int count)
+    {
+        showModelReindexStatus = true; expectedReindexSelection = null;
+        ModelConfigurationMessage = $"Retrying incomplete image tasks for {count:N0} files in the background.";
     }
     public void FinishModelConfiguration(ModelApplyResult result)
     {
