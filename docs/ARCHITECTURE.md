@@ -1,4 +1,4 @@
-# Architecture and operations
+# FuzzyFindAnything 2.0: architecture and operations
 
 See [content chunking](CHUNKING.md) for model-independent document/code boundaries, native syntax grammars, token budgets, provenance and schema-8 migration.
 
@@ -6,11 +6,13 @@ See [content chunking](CHUNKING.md) for model-independent document/code boundari
 
 ## Design boundaries
 
-Fuzzy Find Anything is a per-user desktop search application, not a Windows service, system-index replacement, hosted search service or file-management tool. The configured folder list is its scope authority. Source content is read-only; removing a root removes search ownership, not the underlying files.
+FuzzyFindAnything 2.0 is a per-user desktop search application, not a Windows service, system-index replacement, hosted search service or file-management tool. The configured folder list is its scope authority. Source content is read-only; removing a root removes search ownership, not the underlying files.
 
 The native implementation uses .NET for orchestration and native libraries for inference, graph search, SQLite, imaging and document filters. **Python is absent from normal setup, acquisition, builds, tests and runtime.** Optional model export belongs to a separate engineering/release environment, not an end-user installation.
 
 The active DiskANN graph resides in RAM. Persistence and recovery do not make it an out-of-core graph. Process isolation contains crashes and hangs but is not a security sandbox.
+
+The 2.0 brand does not rename the repository, assemblies, executable, named-pipe identity or `%LOCALAPPDATA%\FuzzyFindAnything` data directory. Application code is MIT-licensed by Suman Ghosh; native dependencies, models and optional SDKs retain the [separate terms](../THIRD-PARTY-NOTICES.md).
 
 ## Components and architecture boundaries
 
@@ -19,11 +21,35 @@ The active DiskANN graph resides in RAM. Persistence and recovery do not make it
 | WPF desktop | `src\FuzzyFindAnything.App` | Window lifecycle, themes, three result sections, thumbnails, settings and supervision |
 | Coordinator executable | `src\FuzzyFindAnything.Engine` | Exclusive data-directory lease, local JSON IPC, startup/status and shutdown |
 | Engine library | `src\FuzzyFindAnything.Core` | Catalog, durable queue, discovery, monitoring, concurrency, extraction client and logs |
+| Content preparation | `src\FuzzyFindAnything.Chunking` | App-owned document/code boundaries, native syntax trees, token-budget enforcement and provenance |
 | Inference host | `src\FuzzyFindAnything.Inference` | Exact tokenization/decoding, image preprocessing and reusable ONNX sessions |
 | Compatible-model host | `src\FuzzyFindAnything.HuggingFaceInference` | Reviewed embedding/image-understanding recipes, native BERT/CLIP adapters and Windows ML device validation |
 | IFilter helper | `src\FuzzyFindAnything.Extractor` | Isolated COM activation, content detection, bounded extraction and classified errors |
 | Native DiskANN bridge | `native` | Pinned C++ implementation, versioned C ABI, caller-owned buffers and packed snapshots |
 | Utilities | `src\FuzzyFindAnything.Tools` | Native model acquisition/verification, offline maintenance and package verification |
+
+### Layer responsibilities and data flow
+
+The **experience layer** owns presentation and user intent, not indexing state. The **coordination layer** owns folder scope, routing, scheduling, cancellation and model transactions. **Preparation/inference workers** own bounded native execution. The **persistence layer** owns authoritative source metadata, vectors and resumable progress; ANN snapshots are derived and rebuildable.
+
+```text
+Index:
+configured roots -> discovery/change journal -> durable file job
+  -> direct read or isolated IFilter -> model-measured document/code chunks
+  -> admitted local model worker -> committed passage batches -> file publication
+  -> per-space DiskANN update/checkpoint
+
+Image understanding:
+oriented source image -> caption/OCR/region task -> durable generated artifact
+  -> selected text embedder -> image-owned vectors and optional region geometry
+
+Search:
+selected file types + per-type thresholds -> role-aware local query embeddings
+  -> kind-filtered search in compatible vector spaces -> file-level results
+  -> matched chunk/region preview -> registered Windows viewer
+```
+
+The current stack is C#/.NET 10 and WPF, C++ DiskANN 0.7.0, SQLite, ONNX Runtime 1.31.0 for the bundled default, Windows ML 2.4.89 for compatible models, Microsoft.ML.Tokenizers 2.0.0 and TreeSitter.DotNet 1.3.0. Original package notices and exact transitive versions accompany each release. This is a local application; there is no hosted inference endpoint.
 
 | Package | UI / inference | Coordinator / DiskANN / extractor / utilities |
 |---|---|---|
@@ -73,12 +99,14 @@ A custom `-Destination` does not automatically change `runtime.json`; update its
 The **Model configuration** tab keeps one source/model binding per file type. Hugging Face bindings retain the established model-card URLs:
 
 ```xml
-<Models text="https://huggingface.co/google/embeddinggemma-2"
-        code="https://huggingface.co/google/embeddinggemma-2"
-        image="https://huggingface.co/google/embeddinggemma-2" />
+<Models>
+  <Text modelUrl="https://huggingface.co/google/embeddinggemma-2" />
+  <Code modelUrl="https://huggingface.co/google/embeddinggemma-2" />
+  <Image modelUrl="https://huggingface.co/google/embeddinggemma-2" />
+</Models>
 ```
 
-Older XML without this element receives the EmbeddingGemma2 defaults in memory. Reading it does not replace the existing index or rewrite the configuration. Apply with unchanged normalized URLs is a no-op.
+The example is the child-binding format used by configuration versions 2-4. Legacy version-1 URL attributes remain readable. Older XML without a Models element receives the EmbeddingGemma2 defaults in memory. Reading it does not replace the existing index or rewrite the configuration. Apply with unchanged normalized URLs is a no-op.
 
 The native adapters retain the existing EmbeddingGemma2 bundle and direct CLIP image/text graphs. Text/code models can use reviewed embedding recipes, or compatible standard BERT WordPiece mean/CLS/already-pooled contracts. Unknown tokenizers, model families, extra projection modules and unreviewed prompt/scoring contracts are rejected. Hugging Face Python model code is never downloaded for execution.
 
@@ -110,13 +138,15 @@ Model changes are prepared before mutating the catalog. Only after asset, modali
 
 Provider acquisition happens before a protocol-version-2 memory handoff. The companion requests its validated allowance immediately before native qualification; the coordinator acknowledges only after admission and retains the loading lease until that process exits. Failure, timeout and cancellation release the lease and leave existing model pools recoverable. These changes do not modify vector fingerprints, folder scope, XML or SQLite schema. Resource estimates remain conservative: this is working-set management, not a guarantee that every model fits every device.
 
-Preparation runs outside the short configuration commit gate and on a separate request task, so existing-index queries can continue while assets/devices are checked. Model changes remain serialized; cancellation before publication preserves the applied settings. A failure after commit is reported as an applied configuration with stopped indexing, not as a successful rollback. Query/device-only changes persist settings without invalidating vectors.
+Preparation runs outside the short configuration commit gate and on a separate request task, so existing-index queries can continue while assets/devices are checked. Model changes remain serialized; cancellation before publication preserves the applied settings. A failure after commit is reported as an applied configuration with stopped indexing, not as a successful rollback. A query-purpose-only change retains document embeddings. Device changes follow the vector contract: provider device-specific identities selectively reindex rather than assuming CPU/NPU equivalence.
 
 The catalog also persists the affected file types and completion state for each accepted model change. Status waits for folder reconciliation and the affected queue to finish before reporting completion, including separate succeeded/failed counts. This tracking survives restart; a later validation error is not overwritten by an earlier completion message. Valid images that an older CLIP build rejected because resize rounding produced a 223-pixel short edge are retried on startup without invalidating successfully indexed files.
 
 There is one DiskANN graph per distinct pinned embedding space, not simply per vector dimension. The default graph retains its existing `diskann` location. Other graphs live under `model-indexes\<space-key>`; model assets live separately under `models\<space-key>` in the selected data directory. Counts and search results are aggregated, while the model tab lists each graph's file types, dimensions and actual execution device.
 
-Schema 4 is retained for unchanged default installations. Legacy model assignments use schema 5; new recipe/query/device bindings use schema 6 and XML version 2. Source roles, approved query profiles and device policy are persisted independently of the vector routes. XML is published within the model-change transaction boundary; if a process exits between XML publication and SQLite commit, startup validates the saved intent, reconciles routing and schedules affected files again. Older application versions must not be used against unsupported schemas; use a complete pre-change backup for rollback.
+Schema numbers identify storage capabilities, not the 2.0 app version. Legacy catalogs start at schema 4, model routing/recipes introduced 5/6, and image artifacts introduced 7. Current structured document/code preparation uses schema 8; regions opt into 9, and provider-aware bindings use 10. Higher schemas are not downgraded when a feature is deselected. Current per-type search/region settings use XML version 3, and provider bindings use version 4; older readable settings are migrated without resetting user data.
+
+Source roles, approved query profiles and device policy are persisted independently of the vector routes. XML is published within the model-change transaction boundary; if a process exits between XML publication and SQLite commit, startup validates the saved intent, reconciles routing and schedules affected files again. Older application versions must not open unsupported schemas; use a complete pre-change backup for rollback.
 
 ### Native image-understanding pipelines
 

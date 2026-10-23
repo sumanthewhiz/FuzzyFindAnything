@@ -11,11 +11,12 @@ namespace FuzzyFindAnything.NativeTests;
 
 internal static class ReleaseTests
 {
-    private const string Version = "1.1.0";
+    private const string Version = "2.0.0";
     private static readonly string[] Names =
     [
         "FuzzyFindAnything.exe", "FuzzyFindAnything.dll", "FuzzyFindAnything.runtimeconfig.json",
         "Get-Model.ps1", "Reset-Index.ps1", "QUICKSTART.md", "THIRD-PARTY-NOTICES.txt",
+        "LICENSE", "APPLICATION-LICENSE", "CONTRIBUTING.md", "SECURITY.md", "THIRD-PARTY-NOTICES.md",
         "engine/FuzzyFindAnything.Engine.exe", "engine/ffa_diskann.dll", "engine/libiomp5md.dll", "engine/e_sqlite3.dll",
         "inference/FuzzyFindAnything.Inference.exe", "inference/onnxruntime.dll",
         "hf-inference/FuzzyFindAnything.HuggingFaceInference.exe", "hf-inference/onnxruntime.dll", "hf-inference/DirectML.dll",
@@ -47,6 +48,10 @@ internal static class ReleaseTests
         Check.Throws<InvalidDataException>(() => ReleasePackage.Validate(archive, "win-arm64", Version));
         Create(archive, payload => payload.Remove("inference/onnxruntime.dll"));
         Check.Throws<InvalidDataException>(() => ReleasePackage.Validate(archive, "win-arm64", Version));
+        Create(archive, payload => payload.Remove("APPLICATION-LICENSE"));
+        Check.Throws<InvalidDataException>(() => ReleasePackage.Validate(archive, "win-arm64", Version));
+        Create(archive, payload => payload.Remove("APPLICATION-LICENSE"), version: "1.1.0");
+        ReleasePackage.Validate(archive, "win-arm64", "1.1.0");
         Create(archive, null, tamper: true);
         Check.Throws<InvalidDataException>(() => ReleasePackage.Validate(archive, "win-arm64", Version));
     }));
@@ -68,7 +73,7 @@ internal static class ReleaseTests
         BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(260), 16);
         return bytes;
     }
-    private static void Create(string path, Action<Dictionary<string, byte[]>>? mutate = null, bool tamper = false)
+    private static void Create(string path, Action<Dictionary<string, byte[]>>? mutate = null, bool tamper = false, string version = Version)
     {
         var payload = Names.ToDictionary(name => name, name =>
             name.EndsWith(".exe") || name.EndsWith(".dll") ? Pe(name.StartsWith("engine/") || name.StartsWith("extractor/") ||
@@ -80,7 +85,7 @@ internal static class ReleaseTests
         {
             schema_version = 2,
             runtime_id = "win-arm64",
-            version = Version,
+            version,
             model = new { bundled = false },
             packages = new[] { new { name = "Microsoft.DiskANN" } },
             files = payload.Select(pair => new

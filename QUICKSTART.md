@@ -1,12 +1,14 @@
-# Quickstart
+# FuzzyFindAnything 2.0: binary quickstart
 
-**Download the native application, provision its model, and search a small folder.**
+**Download the app, prepare local models, and search a small folder. No source build is required.**
 
 Release packages include the .NET and native runtimes. No separate Python, .NET, compiler or package manager is required.
 
-These instructions describe **1.5.0-dev.4**, including per-type search, content-aware chunking, regional image search, independent model sources and memory-aware native workers. Use a matching development build or build this checkout; earlier packages may lack these controls. Read the [chunking guide](docs/CHUNKING.md) for how app-owned boundaries differ from model tokenization, including EmbeddingGemma2.
+FuzzyFindAnything 2.0 is authored by **Suman Ghosh**. Read the [chunking guide](docs/CHUNKING.md) for how app-owned boundaries differ from model tokenization, including EmbeddingGemma2.
 
 [Project](README.md) · [Architecture](docs/ARCHITECTURE.md) · [Existing-user migration](docs/MIGRATION.md)
+
+**On this page:** [Download](#1-download-the-right-package) · [Prepare models](#2-prepare-models) · [First search](#3-launch-and-index-a-small-folder) · [Microsoft employees / PSAPI](#microsoft-employees-psapi-models) · [Troubleshooting](#troubleshooting)
 
 ## Before you start
 
@@ -23,14 +25,14 @@ The ARM64 package runs the UI and model inference natively. Its DiskANN coordina
 
 ## 1. Download the right package
 
-Open **[Build and release](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml?query=branch%3Adev)**, select a successful **dev** run matching this checkout, and download the appropriate artifact. Actions downloads require GitHub sign-in and expire.
+For a published 2.0 release, use its application ZIP from **[Releases](https://github.com/sumanthewhiz/FuzzyFindAnything/releases)**. If 2.0 is not yet listed, open **[Build and release](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml?query=branch%3Amain)**, choose a successful **main** run for version **2.0.0**, and download the appropriate artifact. Actions downloads require GitHub sign-in and are retained for 14 days; this path still needs no build tools.
 
-Published versioned downloads are also listed on the [Releases page](https://github.com/sumanthewhiz/FuzzyFindAnything/releases). Use the application ZIP and quickstart belonging to the same version.
+Use the application ZIP and quickstart belonging to the same version. **Do not download an older release or the automatically generated “Source code” archive** when following these 2.0 instructions.
 
 | Your PC | Application ZIP |
 |---|---|
-| Intel or AMD | `FuzzyFindAnything-v<VERSION>-win-x64.zip` |
-| Snapdragon / Windows on ARM | `FuzzyFindAnything-v<VERSION>-win-arm64.zip` |
+| Intel or AMD | `FuzzyFindAnything-v2.0.0-win-x64.zip` |
+| Snapdragon / Windows on ARM | `FuzzyFindAnything-v2.0.0-win-arm64.zip` |
 
 An Actions artifact may be an outer ZIP containing the application ZIP and checksum. Extract the inner application ZIP completely, for example to:
 
@@ -43,14 +45,57 @@ Keep `engine`, `inference`, `hf-inference`, `extractor`, `tools`, `third-party`,
 Compare the downloaded file's SHA-256 with the matching `.zip.sha256`:
 
 ```powershell
-Get-FileHash .\FuzzyFindAnything-v<VERSION>-win-arm64.zip -Algorithm SHA256
+Get-FileHash .\FuzzyFindAnything-v2.0.0-win-arm64.zip -Algorithm SHA256
 ```
 
-Use the actual version/architecture. Packages are unsigned; verify their origin and follow your organization's application policy.
+Use your architecture and compare with the matching `.sha256` file. Packages are unsigned; verify their origin and follow your organization's application policy. Read `LICENSE` / `APPLICATION-LICENSE`, `THIRD-PARTY-NOTICES.md` and the original component terms under `third-party` before use or redistribution.
 
-## 2. Provision the native model
+## 2. Prepare models
 
-The application uses the separately packaged **`embeddinggemma-2-onnx-v1`** export of `google/embeddinggemma-2`. The original Hugging Face `model.safetensors` file is **not** a substitute.
+Choose one setup path. **A: public starter models** does not require a private native bundle. **B: the default EmbeddingGemma2 bundle** retains the app's built-in default. Both run inference locally after preparation.
+
+Models are separate downloads governed by their creators' licenses and terms, not by the app's MIT license. Review the [model licensing guidance](THIRD-PARTY-NOTICES.md#hugging-face-and-other-models) first.
+
+### A. Public starter models: MiniLM for text/code, CLIP for images
+
+Use this on a **new installation only**. Open PowerShell in the extracted application directory and run the block below. It uses the packaged native utility; no .NET SDK, Python, Git or compiler is needed.
+
+```powershell
+$Data = Join-Path $env:LOCALAPPDATA 'FuzzyFindAnything'
+$Settings = Join-Path $Data 'settings.xml'
+if ((Test-Path $Settings) -or (Test-Path (Join-Path $Data 'catalog.sqlite3'))) {
+    throw 'Existing application data found. Keep it and use Model configuration, or choose a new trial data directory.'
+}
+$Cache = Join-Path $Data 'models'
+$DefaultBundle = Join-Path $PWD 'models\embeddinggemma-2-onnx'
+$TextModel = 'https://huggingface.co/sentence-transformers/paraphrase-MiniLM-L3-v2'
+$ImageModel = 'https://huggingface.co/Xenova/clip-vit-base-patch32'
+foreach ($Url in @($TextModel, $ImageModel)) {
+    & .\tools\FuzzyFindAnything.Tools.exe prepare-hf-model --cache $Cache --default-model $DefaultBundle --url $Url
+    if ($LASTEXITCODE -ne 0) { throw 'Model preparation failed. Do not continue until the reported error is resolved.' }
+}
+$Configuration = @"
+<FuzzyFindAnythingConfiguration version="3">
+  <Models>
+    <Text modelUrl="$TextModel" />
+    <Code modelUrl="$TextModel" />
+    <Image modelUrl="$ImageModel" />
+  </Models>
+</FuzzyFindAnythingConfiguration>
+"@
+[IO.File]::WriteAllText($Settings, $Configuration, [Text.UTF8Encoding]::new($false))
+& .\FuzzyFindAnything.exe --data-dir $Data
+```
+
+The utility resolves and checksums the compatible ONNX exports. The missing `$DefaultBundle` directory is harmless for this explicit HF-only configuration; it is not downloaded or used. MiniLM is a lightweight general-text encoder that also accepts code, not a code-specialized model.
+
+Keep the same data directory on later launches. With the default path above, opening `FuzzyFindAnything.exe` normally restores it. If you changed `$Data` for a trial, continue passing `--data-dir` for that trial.
+
+CLIP scores differ from text-model scores. If image results are too narrow, lower **Images > Minimum** explicitly (for example, to 0.20); the app does not change thresholds silently.
+
+### B. Default EmbeddingGemma2 native bundle
+
+The app's built-in default uses the separately packaged **`embeddinggemma-2-onnx-v1`** export of `google/embeddinggemma-2`. The original Hugging Face `model.safetensors` file is **not** a substitute.
 
 **A public ONNX hosting URL is not configured by default.** Obtain the approved native model bundle from the maintainer or your organization's artifact channel. The repository contains its immutable [file manifest](https://github.com/sumanthewhiz/FuzzyFindAnything/blob/main/model-assets/embeddinggemma-2.json), also included as `model-manifest.json` in application packages, not the approximately 1.8 GB of model payload. End users do not export or convert the model.
 
@@ -71,8 +116,10 @@ From the extracted **application** directory:
 
 ```powershell
 Set-Location "$env:USERPROFILE\Apps\FuzzyFindAnything"
-.\Get-Model.ps1 -SourceDirectory 'D:\ApprovedModels\embeddinggemma-2-onnx-v1'
-.\Get-Model.ps1 -VerifyOnly
+& .\tools\FuzzyFindAnything.Tools.exe acquire-model --destination .\models\embeddinggemma-2-onnx --source-directory 'D:\ApprovedModels\embeddinggemma-2-onnx-v1'
+if ($LASTEXITCODE -ne 0) { throw 'Model acquisition failed.' }
+& .\tools\FuzzyFindAnything.Tools.exe verify-model --destination .\models\embeddinggemma-2-onnx
+if ($LASTEXITCODE -ne 0) { throw 'Model verification failed.' }
 ```
 
 The first command copies verified assets to `models\embeddinggemma-2-onnx` beside the application. The second performs a **read-only size and SHA-256 check of every asset**. Neither requires an interpreter or an SDK.
@@ -80,12 +127,13 @@ The first command copies verified assets to `models\embeddinggemma-2-onnx` besid
 If an approved HTTPS directory hosting the manifest's individual files is available, use its base URL instead:
 
 ```powershell
-.\Get-Model.ps1 -BaseUri 'https://YOUR-APPROVED-HOST/embeddinggemma-2-onnx-v1/'
+& .\tools\FuzzyFindAnything.Tools.exe acquire-model --destination .\models\embeddinggemma-2-onnx --base-uri 'https://YOUR-APPROVED-HOST/embeddinggemma-2-onnx-v1/'
 ```
 
 Replace the example host with an actual approved location. Rerun the same command after an interruption to resume. Downloads are size-bounded, checksummed and staged before replacement; assets in use by native inference cannot be overwritten.
 
 If script policy blocks an unsigned script, follow your device's application policy. Do not disable organization-enforced controls. Model acquisition errors are reported explicitly; a missing bundle is not downloaded from an unverified alternative.
+The included `Get-Model.ps1` provides the same acquisition/verification workflow for PowerShell 7 users. Existing users should keep their saved model bindings rather than overwrite `settings.xml`.
 
 ## 3. Launch and index a small folder
 
@@ -130,7 +178,7 @@ Hover over **Matched chunk** at the bottom of a document/code result to read the
 | **Dark mode** | Switches and saves appearance |
 | **Configuration** | Enables/disables logging and selects a log directory |
 | Minimize / Close / Alt+F4 | Hides the window in the system tray, not the taskbar; indexing continues |
-| Tray icon / **Open Fuzzy Find Anything** | Restores the existing window maximized |
+| Tray icon / **Open FuzzyFindAnything 2.0** | Restores the existing window maximized |
 | **Quit**, in the window or tray menu | Stops the process tree; committed file/passage progress resumes next time |
 
 The application does not register automatic startup at sign-in. Model-process count is not file-worker count: a 12-core PC can run six file pipelines with one model copy. Hover over CPU status for the separate values.
@@ -139,9 +187,9 @@ If the tray icon is not immediately visible, open Windows' notification-area ove
 
 ## Change embedding models
 
-Open **Model configuration** and enter HTTPS model-card URLs for **Documents / text**, **Source code** and **Images**. All three initially contain `https://huggingface.co/google/embeddinggemma-2`.
+Open **Model configuration** and enter HTTPS model-card URLs independently for **Documents / text**, **Source code** and **Images**. The built-in default is `https://huggingface.co/google/embeddinggemma-2`; the public starter setup instead shows its prepared MiniLM/CLIP selections. Existing saved choices are retained.
 
-**Refresh model sources** checks optional local providers without changing your applied models. Microsoft GitHub enterprise members can retrieve the separate [internal companion release](https://github.com/experiences-and-devices/APT/releases/tag/ffa-microsoft-provider-v1.5.0-internal.3) using an installed GitHub CLI signed in with their work account. No personal-repository collaborator invitation is required. The Microsoft source appears only after live registry access is also verified; other installations retain Hugging Face alone. A discovery notice clears when discovery completes, without dismissing unrelated errors.
+**Refresh model sources** checks optional local providers without changing applied models. Microsoft employees should follow [the PSAPI setup](#microsoft-employees-psapi-models) below. Other users retain the Hugging Face workflow.
 
 Select **Apply model changes** once. The app validates the URL, required native assets, modality, available memory and local execution before replacing any embeddings. Downloads and device checks are shown in the tab. If the selections are unchanged, Apply does nothing.
 
@@ -157,7 +205,7 @@ Select **Apply model changes** once. The app validates the URL, required native 
 
 These are examples, not a guarantee that every Hugging Face repository is compatible. The app supports reviewed native recipes and compatible BERT mean/CLS/already-pooled export contracts; additional projections, unreviewed instructions, tokenizers or scoring metrics require another reviewed recipe/adapter. CLIP retains its supported direct image/text interface. Qwen Coder generators are not substitutes for embedding models.
 
-EmbeddingGemma2 needs no extra setup. Hugging Face selections use a model-card URL independently for each role. Requirements are resolved automatically without downloading weights; **Model details** appears only where applicable, and approved query-purpose choices remain inside it unless a recipe genuinely requires a choice. Tokenizer, pooling, graph and image-pipeline setup are not user configuration fields. Switching back to a simple model discards inactive query choices.
+Once model assets are prepared, tokenizer and inference settings are resolved automatically. Hugging Face selections use a model-card URL independently for each role. Requirements are resolved automatically without downloading weights; **Model details** appears only where applicable, and approved query-purpose choices remain inside it unless a recipe genuinely requires a choice. Tokenizer, pooling, graph and image-pipeline setup are not user configuration fields. Switching back to a simple model discards inactive query choices.
 
 Compatible document encodings share a DiskANN index; query roles can remain different for text and code. Unrelated vector spaces do not share an index merely because dimensions match. A document-model change rebuilds only affected types; a query-only setting change retains existing vectors. The same XML file stores preferences, with pinned artifact manifests in the local model cache. Feature-specific schema versions are retained rather than downgraded; see the [rollback policy](docs/MIGRATION.md).
 
@@ -180,6 +228,51 @@ Select **Apply model changes** and watch the stage/count feedback. Images may ha
 Search results remain in the image gallery and open the original image. **Generated caption** or **OCR text** identifies the matching evidence; hover for the matched text. Generated descriptions can omit details or hallucinate, and semantic OCR search is not exact literal text matching.
 
 Selecting EmbeddingGemma2 or CLIP again hides all description-specific controls and restores direct visual embedding behavior. No generator is needed for searching already indexed descriptions; generation loads on demand for indexing and releases its worker after an idle period. Hybrid visual-plus-description retrieval and unrestricted VQA are not part of this release.
+
+## Microsoft employees: PSAPI models
+
+This is optional. Public users can use Hugging Face models without the internal companion. Complete one of the initial model setups above before switching providers.
+
+### Prerequisites
+
+- A Microsoft GitHub enterprise work account that can read the **Internal** [employee companion channel](https://github.com/experiences-and-devices/APT/releases/tag/ffa-microsoft-provider-v1.5.0-internal.3). Personal-repository collaborator invitations are not needed.
+- Access to the approved model registry using your corporate identity and the required corporate network/VPN where applicable. GitHub access alone does not grant model access.
+- The GitHub CLI and the native Azure Artifacts Credential Provider. These are optional authentication prerequisites, not app build tools.
+
+Install the GitHub CLI through your approved software channel, or with Windows Package Manager:
+
+```powershell
+winget install --id GitHub.cli --exact
+gh auth login --hostname github.com --git-protocol https --web
+gh auth status --hostname github.com
+gh api repos/experiences-and-devices/APT --jq .visibility
+```
+
+Sign in with your **work** account and complete Microsoft enterprise SSO. The last command should return `internal`. If you have multiple accounts, select the authorized work login with `gh auth switch --hostname github.com --user YOUR_WORK_LOGIN`.
+
+Install the self-contained credential provider using Microsoft's [official Windows instructions](https://github.com/microsoft/artifacts-credprovider#installation-on-windows). For a reproducible no-SDK installation, download and review the official helper, then request the matching Windows runtime:
+
+```powershell
+$Installer = Join-Path $env:TEMP 'ffa-install-artifacts-credprovider.ps1'
+Invoke-WebRequest 'https://aka.ms/install-artifacts-credprovider.ps1' -OutFile $Installer
+# Review the downloaded script and follow your organization's execution policy.
+& $Installer -RuntimeIdentifier 'win-arm64'  # use 'win-x64' for Intel/AMD
+Test-Path "$env:USERPROFILE\.nuget\plugins\netcore\CredentialProvider.Microsoft\CredentialProvider.Microsoft.exe"
+```
+
+The check should return `True`. Keep an existing working installation; do not overwrite it unnecessarily. The self-contained variant avoids requiring a separate .NET SDK or shared runtime. The companion expects this native plugin location, not only the unrelated `dotnet tool` shim.
+
+### Select and apply models
+
+1. Open **Model configuration** and choose **Refresh model sources**. The app retrieves the pinned companion package if it is absent, using your existing GitHub CLI authentication.
+2. Complete any corporate registry sign-in request. Microsoft appears as a source only after live registry access is verified. If it stays hidden, check the prerequisites and the source-discovery/log message; do not edit private feed URLs or copy credentials into settings.
+3. Choose **Microsoft (PSAPI)** independently for Documents/text, Code or Images. Choose a catalog-listed model **and its CPU/NPU/GPU variant**.
+4. Expand **PSAPI drop version** to inspect or refresh compatible SDK versions. Use the provider's recommended default unless you need another qualified drop. Existing applied versions are retained; a refreshed catalog does not silently change them.
+5. Select **Apply model changes**. Native execution and memory checks must succeed before affected files are reindexed. Unchanged roles retain their vectors.
+
+Model names, roles and available device variants come from the caller's authenticated catalog and detected hardware. Being ARM64 does not alone qualify an NPU profile. An explicitly selected unavailable device is rejected rather than silently replaced. Direct paired image embeddings do not expose caption/OCR/region-generation options.
+
+The companion is installed separately under `%LOCALAPPDATA%\FuzzyFindAnythingProviders`; private SDK/model payloads are not included in the public app ZIP. Downloads are pinned by GitHub host, internal repository identity, release/tag, version and archive checksum. Registry availability is checked separately. On access loss, only Hugging Face is offered for new selections; saved bindings and local data are retained.
 
 ## Storage
 
@@ -213,4 +306,4 @@ Use **Configuration > Open folder** for logs. Do not post documents, credentials
 
 Use **Quit**, not Close. Extract new binaries into a **separate** folder. Never overwrite an active deployment, remove an active SQLite WAL, or replace model files mapped by a worker.
 
-For migration from the earlier Python-backed version, follow [the upgrade and rollback runbook](docs/MIGRATION.md). It preserves configured folders, vectors, queued passages and XML preferences and keeps a recoverable original deployment.
+Follow [the upgrade and rollback runbook](docs/MIGRATION.md) when replacing an existing installation. It preserves configured folders, vectors, queued passages and XML preferences and keeps a recoverable original deployment.

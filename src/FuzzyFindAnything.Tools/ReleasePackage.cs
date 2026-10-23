@@ -59,6 +59,9 @@ public static class ReleasePackage
         }
         foreach (string name in Required)
             if (!entries.ContainsKey(name)) throw new InvalidDataException("Required release file is missing: " + name);
+        if (Version.TryParse(version.Split('-')[0], out var releaseVersion) && releaseVersion.Major >= 2)
+            foreach (string name in new[] { "LICENSE", "APPLICATION-LICENSE", "CONTRIBUTING.md", "SECURITY.md", "THIRD-PARTY-NOTICES.md" })
+                if (!entries.ContainsKey(name)) throw new InvalidDataException("Required licensing/contribution document is missing: " + name);
         using var configuration = ReadJson(entries["runtime.json"]);
         if (configuration.RootElement.EnumerateObject().Count() != RuntimePaths.Count)
             throw new InvalidDataException("Unexpected runtime configuration.");

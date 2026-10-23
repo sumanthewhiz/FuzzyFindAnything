@@ -64,7 +64,7 @@ public static class FfaUiChecks {
                 if(name.Length != 0) return true;
             } else {
                 GetWindowText(hwnd,name,name.Capacity);
-                if(name.ToString() != "Fuzzy Find Anything") return true;
+                if(name.ToString() != "FuzzyFindAnything 2.0") return true;
             }
             matches.Add(hwnd);
             return true;
@@ -694,8 +694,7 @@ try {
             Wait-Check { (Find-Id 'ThemeToggle').Current.ItemStatus -ieq $theme } 'model tab theme'
             $guidance = @($window.FindAll([System.Windows.Automation.TreeScope]::Descendants,
                 (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Text))) |
-                Where-Object { $_.Current.Name -like 'Compatible embeddings*' -or
-                    $_.Current.Name -like 'A model must provide*' -or $_.Current.AutomationId -eq 'ModelConfigurationStatus' } |
+                Where-Object { $_.Current.AutomationId -in @('ModelCompatibilityGuidance','ModelExecutionGuidance','ModelConfigurationStatus') } |
                 Sort-Object { $_.Current.BoundingRectangle.Top })
             if ($guidance.Count -ne 3) { throw 'The model configuration guidance is incomplete.' }
             $firstGap = $guidance[1].Current.BoundingRectangle.Top - $guidance[0].Current.BoundingRectangle.Bottom
@@ -856,7 +855,7 @@ try {
     if ($windowPattern.Current.WindowVisualState -ne [System.Windows.Automation.WindowVisualState]::Maximized) { throw 'Tray restore was not maximized.' }
     Close-ToTray
     Wait-Check { -not [FfaUiChecks]::IsWindowVisible([FfaUiChecks]::FindWindow($process.Id, $false)) } 'close to tray' 15
-    Invoke-TrayMenu 'Open Fuzzy Find Anything'
+    Invoke-TrayMenu 'Open FuzzyFindAnything 2.0'
     Wait-Check { [FfaUiChecks]::IsWindowVisible([FfaUiChecks]::FindWindow($process.Id, $false)) } 'tray menu restore' 15
     Refresh-Window
     Close-ToTray

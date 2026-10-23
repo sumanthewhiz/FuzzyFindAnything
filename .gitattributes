@@ -21,3 +21,7 @@
 *.docx binary
 *.pptx binary
 *.xlsx binary
+
+# Upstream notices are verified byte-for-byte against their recorded SHA-256.
+licenses/upstream/** -text -whitespace
+licenses/upstream/*.rtf binary

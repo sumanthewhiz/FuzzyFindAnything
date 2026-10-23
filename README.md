@@ -1,23 +1,28 @@
-# Fuzzy Find Anything
+# FuzzyFindAnything 2.0
 
 **Find documents, source code and images by meaning, on your Windows PC.**
 
-This checkout is **1.5.0-dev.4**, including region-based image retrieval, larger Florence-2 profiles, independent model/device choices, coordinated native-worker memory management and authenticated employee-accessible companion distribution. Earlier release packages do not contain these additions.
+**Author: Suman Ghosh** · **Application license: [MIT](LICENSE)** · **Version: 2.0.0**
 
-[![Build and release](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml/badge.svg?branch=dev)](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml)
+[![Build and release](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml)
+![MIT](https://img.shields.io/badge/license-MIT-green)
 ![Windows 11](https://img.shields.io/badge/platform-Windows%2011-0078D4)
 ![.NET 10](https://img.shields.io/badge/runtime-.NET%2010-512BD4)
 
 [**Quickstart**](QUICKSTART.md) ·
-[**Download builds**](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml?query=branch%3Adev) ·
+[**Download binaries**](QUICKSTART.md#1-download-the-right-package) ·
 [Architecture](docs/ARCHITECTURE.md) ·
 [Chunking](docs/CHUNKING.md) ·
 [Upgrade and rollback](docs/MIGRATION.md) ·
+[Licenses and model terms](THIRD-PARTY-NOTICES.md) ·
+[Contributing](CONTRIBUTING.md) ·
 [Report an issue](https://github.com/sumanthewhiz/FuzzyFindAnything/issues)
 
-Fuzzy Find Anything is a native WPF desktop application for finding files when you remember their contents rather than their names. Describe a topic, code behavior or image in natural language, search a persistent local vector index, and open matches in their registered Windows applications.
+FuzzyFindAnything 2.0 is a native WPF desktop application for finding files when you remember their contents rather than their names. Describe a topic, code behavior or image in natural language, search a persistent local vector index, and open matches in their registered Windows applications.
 
-The application uses .NET and native Windows libraries, with ONNX Runtime for local EmbeddingGemma 2 inference and Microsoft DiskANN for vector search. Model assets are acquired separately; see the [model provisioning instructions](QUICKSTART.md#2-provision-the-native-model).
+Search and inference run locally. The application uses .NET/native Windows libraries, ONNX Runtime and Microsoft DiskANN; normal setup and runtime do not require Python. Model assets are acquired separately under their upstream terms. The [binary-first quickstart](QUICKSTART.md) includes a public-model setup that needs no source build or private model bundle.
+
+The repository, executable and persistent data-directory names remain **`FuzzyFindAnything`**. The 2.0 suffix is app branding, not a data migration.
 
 ## What it provides
 
@@ -56,10 +61,10 @@ Text and code are read directly; source code is **never executed**. Other docume
 ## Get started
 
 1. Download a native package matching your PC, and extract the **complete** ZIP.
-2. Acquire the approved, pre-exported ONNX model bundle with the included `Get-Model.ps1`.
+2. Follow **[Prepare models](QUICKSTART.md#2-prepare-models)**: use the public MiniLM/CLIP starter configuration or provision the approved EmbeddingGemma2 native bundle.
 3. Open `FuzzyFindAnything.exe`, add a small folder, and try a natural-language search.
 
-A release includes .NET, ONNX Runtime, SQLite, DiskANN and architecture-matched app-local C++ runtimes. Recipients do not need an SDK, Python, pip, Git or Visual Studio. Model assets occupy approximately **1.8 GB uncompressed** and are intentionally separate from the application.
+A binary package includes .NET, ONNX Runtime, Windows ML, SQLite, DiskANN and architecture-matched app-local C++ runtimes. Ordinary Hugging Face users do not need an SDK, Python, pip, Git or Visual Studio. Models are intentionally separate; their size and memory needs depend on the selection. The default native EmbeddingGemma2 bundle is approximately **1.8 GB uncompressed**. Optional Microsoft models have additional authentication prerequisites described in the [employee quickstart](QUICKSTART.md#microsoft-employees-psapi-models).
 
 The [quickstart](QUICKSTART.md) includes exact download, verification, model and first-search steps. Existing users should read the [migration runbook](docs/MIGRATION.md) before switching deployments.
 
@@ -67,7 +72,7 @@ The [quickstart](QUICKSTART.md) includes exact download, verification, model and
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/search-dark.png">
-  <img alt="Fuzzy Find Anything showing separate document, code and image results" src="docs/images/search-light.png">
+  <img alt="FuzzyFindAnything 2.0 showing separate document, code and image results" src="docs/images/search-light.png">
 </picture>
 
 *The actual application layout, rendered with synthetic demonstration data.*
@@ -90,9 +95,20 @@ The [quickstart](QUICKSTART.md) includes exact download, verification, model and
 | **Configuration** | Enable/disable logging and choose its destination |
 | **Model configuration** | Apply compatible local embedding models and inspect their indexes and execution devices |
 
-The window opens maximized. Minimizing or closing it hides it in the **system tray** while indexing continues, without leaving a taskbar button. Click the tray icon or choose **Open Fuzzy Find Anything** from its menu to restore the window; **Quit** in either the window or tray menu stops the application. Windows may place the icon in the notification-area overflow menu. The app does not install a service or register automatic startup at sign-in.
+The window opens maximized. Minimizing or closing it hides it in the **system tray** while indexing continues, without leaving a taskbar button. Click the tray icon or choose **Open FuzzyFindAnything 2.0** to restore the window; **Quit** in either the window or tray menu stops the application. Windows may place the icon in the notification-area overflow menu. The app does not install a service or register automatic startup at sign-in.
 
-## Architecture
+## Tech stack and architecture layers
+
+| Layer | Technology | Responsibility |
+|---|---|---|
+| Desktop experience | C#, .NET 10, WPF, Windows shell | Search, folder scope, settings, thumbnails, file opening and tray lifecycle |
+| Coordination | .NET, supervised JSON-line process IPC | Durable work scheduling, model changes, resource admission and recovery |
+| Content preparation | Windows IFilters, native image decoding, Tree-sitter 1.3.0 | Text extraction, document/code boundaries, image orientation and provenance |
+| Local inference | ONNX Runtime 1.31.0, Windows ML 2.4.89, native tokenizers | Reviewed embedding and image-understanding recipes; real CPU/GPU/NPU checks |
+| Persistence and retrieval | SQLite, DiskANN 0.7.0 through a C++ bridge | Authoritative metadata/vectors, resumable jobs and rebuildable ANN snapshots |
+| Change tracking | USN journal, directory notifications, reconciliation | Incremental indexing, restart deltas and stale-source detection |
+
+The optional Microsoft companion adds another supervised local inference process; it is not a cloud inference service or part of the public binary payload.
 
 ```mermaid
 flowchart LR
@@ -110,7 +126,15 @@ flowchart LR
 
 The ARM64 package uses **native ARM64 UI and inference**, with an **x64 coordinator, DiskANN and IFilter helper**. The current C++ DiskANN/MKL implementation requires this deliberate process boundary; no mixed-architecture DLLs are loaded into one process. The x64 package uses x64 throughout.
 
-EmbeddingGemma2 remains the pre-filled default for every file type, with no tokenizer or pipeline setup. The **Model configuration** tab resolves reviewed native recipes for text/code embeddings and retains direct CLIP image support. Query instructions, tokenization, pooling, tensor interfaces and device qualification are part of the recipe, not arbitrary downloaded model code. Unsupported families, missing exports, text-only image assignments and unusable device profiles are rejected before an index is changed.
+### Chunking and retrieval
+
+The app chooses chunks; the embedding model does not split files. Documents use available headings, paragraphs and sentence boundaries. Code uses native syntax/declaration units with explicit line-aware fallbacks. The selected model's tokenizer measures every chunk against its input budget. Boundaries, overlap, source lines and symbols remain associated with the stored vector and matched-chunk preview. See [the chunking strategy](docs/CHUNKING.md).
+
+Direct image embeddings do not use document/code chunks. Caption/OCR/region pipelines first produce text, retain that generation artifact, then embed the text. Region search matches labeled region text and returns the original image with the best matching box, not a separate crop-vector index.
+
+### Model choices
+
+EmbeddingGemma2 is the built-in default for every file type; the optional public starter configuration uses MiniLM/CLIP instead. Tokenizer and pipeline settings are resolved automatically. The **Model configuration** tab resolves reviewed native recipes for text/code embeddings and retains direct CLIP image support. Query instructions, tokenization, pooling, tensor interfaces and device qualification are part of the recipe, not arbitrary downloaded model code. Unsupported families, missing exports, text-only image assignments and unusable device profiles are rejected before an index is changed.
 
 Examples include `Qwen/Qwen3-Embedding-0.6B`, `intfloat/e5-base-v2`, `vectoriseai/e5-small-v2`, the existing MiniLM examples and `Xenova/clip-vit-base-patch32`. The Qwen card resolves to a pinned stateless Qdrant ONNX export; the UI discloses the actual artifact source. Qwen Coder generation models are not interchangeable with text embedding checkpoints.
 
@@ -147,15 +171,13 @@ Process isolation is fault containment, not a security sandbox. Installed IFilte
 Use **PowerShell 7**, Windows 11, the **.NET 10 SDK**, Git and Visual Studio 2022 or later with **Desktop development with C++**, CMake and a Windows SDK. ARM64 packages also need the ARM64 C++ redistributable files supplied with the corresponding MSVC tools.
 
 ```powershell
-git clone --branch dev https://github.com/sumanthewhiz/FuzzyFindAnything.git
+git clone https://github.com/sumanthewhiz/FuzzyFindAnything.git
 Set-Location .\FuzzyFindAnything
 .\Setup.ps1 -SkipModel
-.\Get-Model.ps1 -SourceDirectory 'D:\ApprovedModels\embeddinggemma-2-onnx-v1'
 .\Build.ps1 -SkipSetup
-& .\artifacts\FuzzyFindAnything\FuzzyFindAnything.exe
 ```
 
-Setup builds the pinned DiskANN source and native utilities; NuGet restores managed dependencies. No global interpreter environment is installed or modified. Models, downloads, build output and personal data are excluded from Git.
+Setup builds the pinned DiskANN source and native utilities; NuGet restores managed dependencies. Then use the [quickstart](QUICKSTART.md#2-prepare-models) from `artifacts\FuzzyFindAnything`. No global interpreter environment is installed or modified. Models, downloads, build output and personal data are excluded from Git. Contributor requirements and focused test guidance are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ### Verification and distribution
 
@@ -167,14 +189,14 @@ Setup builds the pinned DiskANN source and native utilities; NuGet restores mana
 
 The [build workflow](.github/workflows/build.yml) produces self-contained architecture-specific ZIPs and SHA-256 sidecars. Release verification checks the complete file inventory, architecture boundaries, relative runtime paths, model/user-data exclusion, and absence of interpreter payloads. Relocated native smoke tests run with Python absent from `PATH`.
 
-Pull requests and branch builds produce temporary Actions artifacts. A matching version tag publishes release downloads. Model bundles are prepared separately and are **not automatically uploaded**.
+Pull requests and branch builds produce downloadable Actions artifacts. Tagged releases additionally require the approved model-parity source configured by the maintainer. Model bundles are prepared separately and are **not automatically uploaded**. Download a package matching 2.0.0, not an older release or GitHub's source-code ZIP.
 
 Packages are unsigned. Checksums detect altered downloads but do not replace code signing or publisher verification.
 
 ## Requirements and limits
 
 - Windows 11, at least two physical cores, and an AVX2-capable x64 CPU or Windows ARM64 with compatible x64 emulation.
-- At least **5 GiB available RAM** for one model; approximately **8 GiB available** permits two. These are planning estimates, not quotas. Large indexes need additional memory; 16 GB system RAM or more is recommended.
+- At least **5 GiB available RAM** for the default model; approximately **8 GiB available** permits its optional second copy. These are planning estimates, not quotas. Large indexes need additional memory; 16 GB system RAM or more is recommended.
 - Florence-2 Large profiles require approximately **3.07 GiB of downloaded graph assets** and a **6.5 GiB generator memory allowance plus 2 GiB system reserve**. Idle embedders can be unloaded to make room; keeping both resident requires additional memory. Admission is checked before loading; download size is not peak RAM.
 - Scanned PDFs need an OCR-capable installed IFilter. Protected documents are not decrypted.
 - Online-only files must be available locally. Junctions and symbolic links are not traversed.
@@ -189,6 +211,9 @@ Packages are unsigned. Checksums detect altered downloads but do not replace cod
 | [Architecture and operations](docs/ARCHITECTURE.md) | Process boundaries, model contract, queue, monitoring, settings, logs and maintenance |
 | [Migration and rollback](docs/MIGRATION.md) | Preserving existing scope, vectors, queued work and preferences |
 | [Validation](docs/VALIDATION.md) | Acceptance commands, evidence and reproducible test coverage |
+| [Licenses and model terms](THIRD-PARTY-NOTICES.md) | MIT application scope, dependency notices and upstream artifact terms |
+| [Contributing](CONTRIBUTING.md) | Development, tests, compatibility and contribution terms |
+| [Security policy](SECURITY.md) | Private reporting, trust boundaries and sensitive-data handling |
 
 For issues, include the version, Windows/CPU architecture and relevant error text. **Do not upload private documents, unredacted logs, credentials or your catalog.**
 
@@ -196,6 +221,6 @@ For issues, include the version, Windows/CPU architecture and relevant error tex
 
 Copyright © 2026 **Suman Ghosh**.
 
-An open-source license for the application's own source has not been designated. Dependency licenses do not license the application. Packages retain component notices and a versioned inventory. EmbeddingGemma 2 and its model card/terms are acquired separately; Office/PDF filters are not redistributed.
+The application's original source and documentation are licensed under **MIT**; see [LICENSE](LICENSE). Dependencies, native runtimes, SDKs and model artifacts retain their respective licenses. **Models downloaded via Hugging Face are subject to their creators' upstream licenses and terms of use.** The app's MIT grant does not relicense those artifacts or grant access to internal Microsoft components. See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) and the original notices included with binary packages.
 
 [LinkedIn](https://www.linkedin.com/in/ghoshsuman/) · [GitHub](https://github.com/sumanthewhiz)

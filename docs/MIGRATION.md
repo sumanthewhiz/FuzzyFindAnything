@@ -1,45 +1,47 @@
-# Native upgrade and rollback
+# Upgrading FuzzyFindAnything
 
 [Overview](../README.md) · [Quickstart](../QUICKSTART.md) · [Architecture](ARCHITECTURE.md)
 
 ## Compatibility policy
 
-**1.5.0-dev.4** moves new companion downloads to a pinned release in a Microsoft enterprise-internal channel. It does not replace existing provider registrations, model bindings, folder scope or vectors. Microsoft GitHub enterprise members can retrieve the companion without an invitation to the maintainer's personal repository. A public, owner-only private, wrong-repository or wrong-release response is rejected; registry access remains a separate check.
+An application update should preserve configured folders, model choices, search preferences and completed indexing work. FuzzyFindAnything keeps the same executable and `%LOCALAPPDATA%\FuzzyFindAnything` data location. The 2.0 branding is not a reason to reset the database or rename existing folders.
 
-The memory-lifecycle update in **1.5.0-dev.3** retains existing folders, model assignments, vectors and schema versions. Idle workers can become cold and restart on demand; this is not a database reset or a model change. New provider preparations require the approved companion's protocol version 2 so temporary qualification participates in the same memory admission as production workers. Update that separately installed companion alongside the application; an older companion receives an explicit update diagnostic rather than an uncoordinated model switch.
+Back up the complete data directory before changing deployments. Storage formats are feature-dependent and are not downgraded when a feature is deselected. An older application may be unable to open data written by a newer one; rollback requires the complete pre-upgrade backup, not a manually edited schema number.
 
-Provider-aware builds use **XML version 4** and **catalog schema 10** when Microsoft/local-provider models are applied. Bindings store separate `provider`, `modelId` and exact `version` attributes rather than fake Hugging Face URLs. Optional execution policies are retained. Saving appearance, logging or per-kind search settings preserves these bindings. Existing XML versions 1-3 and default/HF vector fingerprints remain readable and unchanged.
+### What can trigger reindexing?
 
-The catalog stores provider vector/tokenizer contracts and resolved execution identities alongside existing routes. Applying a different provider/drop/device rebuilds only affected representations; unrelated file ownership, folders, vectors and cached image-understanding artifacts remain intact. Restoring HF models does not downgrade schema 10 or XML version 4. Older binaries require a complete pre-change backup for rollback.
+| Change | Expected effect |
+|---|---|
+| Theme, logging, selected search types or similarity thresholds | No file reindexing |
+| Query-purpose setting with an unchanged document-vector contract | Existing document embeddings retained |
+| Document/code model or chunking-profile change | Only affected file types are rebuilt |
+| Provider model, SDK drop or device-specific vector identity change | Affected representations are rebuilt after validation |
+| Image text embedder change | Valid captions/OCR/regions are reused; their embeddings are rebuilt |
+| Image producer, task recipe or source-image revision change | Affected generation artifacts and vectors are refreshed |
+| Native graph snapshot missing or damaged | Graph rebuilt from durable SQLite vectors, without repeating completed inference |
 
-Private providers are separately installed per user under `%LOCALAPPDATA%\FuzzyFindAnythingProviders`; they are not inside application ZIPs. An absent companion can be acquired from the authorized private release channel during source discovery, using existing GitHub CLI authentication. Existing registrations are not silently overwritten. If an applied provider or required device disappears, startup reports the missing dependency rather than querying the old index with a substitute encoder. Keep the approved companion and its immutable versioned asset cache available, or explicitly apply a different model/device.
+Model dimensions alone do not establish compatibility. The app records vector, tokenizer, preprocessing, chunking and execution identities and validates a new selection before committing it. Failed or cancelled preparation retains the applied settings and index. Idle model-worker eviction is memory management, not reindexing.
 
-Region-search builds (`1.5.0-dev.1` and later) opt into catalog schema 9 when a regional task is selected. Optional region JSON is persisted with image task artifacts, prepared passages and vectors; existing source IDs, non-region vectors and caption/OCR artifacts are retained. XML version 3 stores the optional regional task as `Tasks@regions`. Direct image configurations remain unchanged. Older binaries cannot open schema 9: rollback requires the complete pre-change backup, not editing a schema number.
+### Data-format compatibility
 
-The reviewed Florence base/base-ft manifests gain additional tasks without changing their existing model, caption or OCR fingerprints. A verified cache whose original tasks remain unchanged can use the new approved tasks without downloading the same weights again. Large/large-ft are separate pinned profiles with separate assets and memory admission. Applying a different producer selectively reindexes images; changing only the final text embedder reuses valid generated regions.
+The current app reads configuration versions 1-4. Per-type search and regional-task settings use XML version 3; provider-aware bindings use version 4. Older global similarity settings are read as all three per-type thresholds without rewriting the file simply to read it.
 
-Content-aware chunking/search builds use catalog schema 8 and XML version 3 when saving per-type search preferences. The legacy global threshold is copied to all three search types on read without rewriting the file; all types default to selected. On the first successful model startup, document/code representations are rebuilt in the background under the new chunking profiles. Images and cached generated descriptions are retained. Keep a complete pre-upgrade backup for rollback to binaries that do not support these versions.
+Catalog formats distinguish model routing, generated image artifacts, structured chunks, regions and provider identities. Current structured chunks use schema 8, regions use 9 and provider-aware data uses 10. Existing lower-format data is upgraded as its features are used. A changed chunking profile schedules affected document/code representations while retaining image artifacts and unrelated data.
 
-Configurable-model builds (1.2.0 and later) leave an unchanged default-model catalog at schema 4. Applying a different model assignment upgrades it to schema 5. Restoring the default model does not downgrade the schema; use a complete pre-change backup to return to an older application build.
+Saving unrelated preferences preserves model/source/version bindings. Returning to Hugging Face or a direct image model does not downgrade the catalog or configuration. For the detailed contracts, see [architecture](ARCHITECTURE.md) and [chunking](CHUNKING.md).
 
-Extensible embedding builds (`1.2.0-dev.2` and later) also read existing XML version 1 and catalog schemas 4/5. New recipe or query/device bindings use XML version 2 and schema 6. Merely opening an unchanged installation does not rewrite its preferences, change legacy vector fingerprints, or re-embed its files. Saving unrelated preferences preserves additional XML sections. A query-only change updates the binding without advancing vector generations; document-encoding or chunking changes invalidate only affected file types.
+### Models and optional providers
 
-Old binaries must not open version-2/schema-6 data. Restore a complete pre-upgrade backup if rolling back; changing the XML version number by hand is not a downgrade. Returning to the default models keeps the newer schema/configuration format and removes irrelevant query options, rather than silently restoring an older binary's compatibility.
+Keep verified model caches and the separately installed Microsoft companion available. If an applied provider or required device disappears, startup reports the dependency rather than querying an index with a substitute encoder. Use the [employee setup](../QUICKSTART.md#microsoft-employees-psapi-models) to obtain the approved companion; existing registrations are not silently overwritten.
 
-Image-understanding builds (`1.3.0-dev.1` and later) opt into catalog schema 7 only when an image pipeline is applied. Existing direct-only catalogs retain their prior schema. Schema 7 adds image representations, passage/vector provenance and per-operation reindex cohorts; legacy vectors and file IDs are retained during metadata migration without new inference. Switching an image pipeline or its final embedder invalidates derived vectors rather than deleting stable source records. Completed caption/OCR artifacts survive an embedder-only change and are removed when their last configured folder owner disappears.
-
-The XML remains version 2, adding described-image tasks and a linked/custom embedding dependency under the Image binding. Direct-model selections discard inactive pipeline options. Restoring direct image models does not downgrade schema 7; older binaries must use a complete pre-change backup, not a manually edited schema number.
-
-The application retains the established model fingerprint, schema-4 catalog, folder ownership, file/vector identifiers, prepared passages and committed embedding batches. Tokenization, chunk decoding, embeddings and retrieval have explicit parity gates; matching dimensions alone is not treated as compatibility proof.
+Model source packages and execution formats are not interchangeable. The default native bundle requires its ONNX language/vision graphs, external data and tokenizer configuration; a source `model.safetensors` file is not a replacement. Preserve the previous model installation for rollback, or explicitly select another supported model and allow selective reindexing.
 
 Native graph loading is attempted only after checksums, model identity and generation agree. A missing, incompatible or damaged graph is reconstructed from SQLite vectors without re-embedding completed content. The native graph format is not a reason to clear the catalog or folder list.
-
-The native model **installation layout is different**. It requires `language.onnx`, `vision.onnx`, their external data, tokenizer assets and configuration from the approved native bundle. Keep the old safetensors model and deployment for rollback; do not overwrite either in place.
 
 ## Trial without touching the original installation
 
 1. Build or extract native binaries into a new directory. Provision and verify the native model separately.
-2. Use **Quit** in the old application before copying its database. Closing its window only minimizes it.
+2. Use **Quit** in the old application before copying its database. Closing its window only hides it in the tray.
 3. Copy the complete data directory into a new trial directory. Never copy only the main SQLite file while a writer is active; the WAL belongs to the same transactional state.
 4. Redirect the **copied** XML log destination before launching, so the trial does not append to the original logs.
 5. Launch the native binary with `--data-dir` pointing at the trial copy.
@@ -55,7 +57,13 @@ Copy-Item -LiteralPath $original -Destination $trial -Recurse
 $preferences = Join-Path $trial 'settings.xml'
 if (Test-Path -LiteralPath $preferences) {
     [xml]$settings = Get-Content -LiteralPath $preferences -Raw
-    $settings.FuzzyFindAnythingConfiguration.Logging.directory = Join-Path $trial 'Logs'
+    $logging = $settings.DocumentElement.SelectSingleNode('Logging')
+    if (-not $logging) {
+        $logging = $settings.CreateElement('Logging')
+        $logging.SetAttribute('enabled', 'true')
+        $null = $settings.DocumentElement.AppendChild($logging)
+    }
+    $logging.SetAttribute('directory', (Join-Path $trial 'Logs'))
     $settings.Save($preferences)
 }
 
@@ -66,7 +74,7 @@ Configured roots still refer to the same original documents, which the applicati
 
 Do not run both deployments against the same data directory. The engine lease rejects a second writer. Do not defeat that lock by deleting `engine.lock`.
 
-## Approved cutover
+## Apply the upgrade
 
 Cutover is a separate operator decision; builds and tests do not stop or replace an existing installation automatically.
 
@@ -76,7 +84,7 @@ Cutover is a separate operator decision; builds and tests do not stop or replace
 4. Verify native model hashes and package checksums, then launch the selected native deployment.
 5. Confirm first-model readiness, folder scope, index counts, saved preferences and representative searches.
 
-No reset is required merely to remove Python. `Reset-Index.ps1` is a separate, destructive maintenance operation; use it only when a full rebuild is explicitly intended. `-ClearFolders` is a further, explicit choice.
+An ordinary application update does not require a reset. `Reset-Index.ps1` is a separate, destructive maintenance operation; use it only when a full rebuild is explicitly intended. `-ClearFolders` is a further, explicit choice.
 
 ## Rollback
 

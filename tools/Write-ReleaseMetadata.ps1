@@ -9,22 +9,15 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $Package = [IO.Path]::GetFullPath($Package)
-$licenses = Join-Path $root '.downloads\licenses'
-New-Item -ItemType Directory -Force -Path $licenses | Out-Null
+$licenses = Join-Path $root 'licenses\upstream'
 $sources = Get-Content -LiteralPath (Join-Path $root 'native\license-sources.json') -Raw | ConvertFrom-Json
 foreach ($source in $sources) {
     $fileName = if ($source.file_name) { $source.file_name } else { $source.name + '.txt' }
     $path = Join-Path $licenses $fileName
     if (-not (Test-Path -LiteralPath $path)) {
-        & curl.exe --fail --location --silent --show-error --retry 2 --connect-timeout 30 --max-time 180 `
-            --tls-max 1.2 --http1.1 $source.url --output ($path + '.partial')
-        if ($LASTEXITCODE -ne 0) { throw "Acquiring the $($source.name) redistribution notice failed." }
-        if ((Get-FileHash -LiteralPath ($path + '.partial') -Algorithm SHA256).Hash -ine $source.sha256) {
-            throw "The $($source.name) notice checksum does not match its pinned source."
-        }
-        Move-Item -LiteralPath ($path + '.partial') -Destination $path
+        throw "Missing checked-in redistribution notice: $path. Restore the pinned upstream license before packaging."
     }
-    if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ine $source.sha256) { throw "Invalid cached notice: $path" }
+    if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ine $source.sha256) { throw "Invalid upstream notice: $path" }
 }
 $nuget = $env:NUGET_PACKAGES
 if (-not $nuget) {
@@ -98,11 +91,12 @@ if ($LASTEXITCODE -ne 0) { throw 'Cannot record the source revision.' }
 $dirty = [bool](git -C $root status --porcelain)
 if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect source provenance.' }
 [IO.File]::WriteAllText((Join-Path $Package 'THIRD-PARTY-NOTICES.txt'), @'
-Fuzzy Find Anything - bundled component notices
+FuzzyFindAnything 2.0 - bundled component notices
 
-Application copyright 2026 Suman Ghosh. No open-source license has been
-designated for the application's own source. Dependency licenses do not
-grant a license for the application.
+Application copyright 2026 Suman Ghosh. The application's original source
+and documentation are licensed under MIT; see APPLICATION-LICENSE.
+This does not relicense bundled dependencies, SDKs or model artifacts.
+See THIRD-PARTY-NOTICES.md and the original component terms in third-party.
 
 Exact component versions, source revision, CRT file versions and complete
 file checksums are recorded in release-manifest.json. Original component
@@ -112,14 +106,18 @@ The app-local Microsoft Visual C++ runtime files are redistributed from the
 Visual Studio redist directories under Microsoft's redistribution terms:
 https://learn.microsoft.com/cpp/windows/redistributing-visual-cpp-files
 
-EmbeddingGemma 2 model assets and their model card/terms are acquired
-separately. Windows and installed PDF/Office IFilters are not bundled.
+Models downloaded from Hugging Face are subject to their respective
+creators' upstream licenses and terms of use, including the selected
+artifact/export repository. Model weights are acquired separately.
+Windows ML, Windows and installed PDF/Office IFilters retain their own
+terms. Windows and the installed filters are not bundled.
 '@)
 $files = @(Get-ChildItem -LiteralPath $Package -Recurse -File | ForEach-Object {
     @{ path=[IO.Path]::GetRelativePath($Package,$_.FullName).Replace('\','/'); bytes=$_.Length; sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
 })
 $manifest = @{
-    schema_version=2;application='Fuzzy Find Anything';version=$Version;runtime_id=$RuntimeIdentifier
+    schema_version=2;application='FuzzyFindAnything 2.0';version=$Version;runtime_id=$RuntimeIdentifier
+    author='Suman Ghosh';application_license='MIT'
     built_at=[DateTime]::UtcNow.ToString('O');source_commit=$sourceCommit;source_dirty=$dirty
     source_repository='https://github.com/sumanthewhiz/FuzzyFindAnything'
     architectures=@{ui=$RuntimeIdentifier;inference=$RuntimeIdentifier;engine='win-x64';extractor='win-x64';tools='win-x64'}

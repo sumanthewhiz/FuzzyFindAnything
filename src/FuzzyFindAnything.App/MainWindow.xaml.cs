@@ -628,7 +628,7 @@ public partial class MainWindow : Window
         catch (Exception exception)
         {
             MessageBox.Show(this, $"Shutdown encountered an error: {exception.Message}\nCommitted indexing work is recoverable on restart.",
-                "Fuzzy Find Anything", MessageBoxButton.OK, MessageBoxImage.Warning);
+                "FuzzyFindAnything 2.0", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         finally
         {

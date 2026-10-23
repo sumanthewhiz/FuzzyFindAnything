@@ -160,12 +160,14 @@ jobs:
           helper deliberately use x64 compatibility.
 
           This release contains the application/runtime only, not personal indexes,
-          folder configuration, or model weights. See bundled notices for component
-          licensing; no open-source license has been designated for the application.
+          folder configuration, or model weights. FuzzyFindAnything 2.0 is authored
+          by Suman Ghosh. Application code is MIT-licensed; dependencies and models
+          retain their upstream licenses and terms. See APPLICATION-LICENSE and
+          the bundled third-party notices.
           NOTES
           prerelease=()
           if [[ "$RELEASE_TAG" == *-* ]]; then prerelease=(--prerelease); fi
           gh release create "$RELEASE_TAG" --verify-tag --draft \
-            --title "Fuzzy Find Anything $RELEASE_TAG" --notes-file release-notes.md \
+            --title "FuzzyFindAnything 2.0 ($RELEASE_TAG)" --notes-file release-notes.md \
             "${prerelease[@]}" *.zip *.sha256
           gh release edit "$RELEASE_TAG" --draft=false

@@ -24,7 +24,8 @@ $payload = Join-Path $working 'FuzzyFindAnything'
 $temporaryArchive = $archive + '.' + [Guid]::NewGuid().ToString('N') + '.tmp'
 try {
     & (Join-Path $root 'Build.ps1') -SkipSetup -RuntimeIdentifier $RuntimeIdentifier -Version $Version -OutputDirectory $payload
-    foreach ($name in @('Get-Model.ps1', 'Reset-Index.ps1', 'QUICKSTART.md', 'README.md')) {
+    foreach ($name in @('Get-Model.ps1', 'Reset-Index.ps1', 'QUICKSTART.md', 'README.md',
+        'LICENSE', 'CONTRIBUTING.md', 'SECURITY.md', 'THIRD-PARTY-NOTICES.md')) {
         Copy-Item -LiteralPath (Join-Path $root $name) -Destination $payload
     }
     Copy-Item -LiteralPath (Join-Path $root 'docs') -Destination (Join-Path $payload 'docs') -Recurse

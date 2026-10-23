@@ -1,4 +1,4 @@
-# Content chunking
+# FuzzyFindAnything 2.0: content chunking
 
 [Overview](../README.md) · [Architecture](ARCHITECTURE.md) · [Migration](MIGRATION.md)
 
@@ -44,8 +44,11 @@ All final chunk inputs are checked with the **actual selected model tokenizer**.
 | Reviewed Qwen embedding recipe | 512 total formatted chunk tokens, including applicable prefix/special tokens, within the 2,048-token runtime ceiling. |
 | Other reviewed embedding recipes | Their declared `chunk_tokens`, including their document prefix and special tokens. |
 | Legacy compatible BERT/CLIP text encoders | Their admitted sequence limit, with special tokens counted before accepting a chunk. |
+| Approved local-provider text/code encoders | The provider contract's chunk budget, measured using its native tokenizer and role formatting; no arbitrary character-based truncation. |
 
 Code context contains a bounded parent/symbol signature; document context contains the available heading. Context is counted in the same input budget and capped separately so it cannot crowd out the source body.
+
+Provider SDKs may tokenize or process a bounded sequence internally, but the application still chooses the file's chunks and retains their provenance. An embedding model's advertised context length is not a file-chunking strategy.
 
 Whole units that fit are not arbitrarily sliced. Oversized units use overlap bounded by **64 tokenizer tokens or one eighth of the chunk budget**, whichever is smaller, preferring a structural/line boundary. This replaces the compatible host's earlier character-count overlap for document/code preparation. Boundaries do not split UTF-16 surrogate pairs.
 

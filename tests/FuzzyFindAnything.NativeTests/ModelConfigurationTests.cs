@@ -192,4 +192,51 @@ internal static class ModelConfigurationTests
         Program.Require(results.Count == 2 && (await engine.SearchAsync("apple", 0.3, 1)).Single().Kind == "Document",
             "Per-index budgets or the user's explicit similarity threshold were not respected.");
     });
+
+    public static Task BinaryQuickstartAsync(string package, string data) => Check.TemporaryAsync(async root =>
+    {
+        if (File.Exists(Path.Combine(data, "catalog.sqlite3")))
+            throw new ArgumentException("Use newly prepared quickstart data without an existing catalog.");
+        var selection = ModelSelection.Load(data);
+        Program.Require(selection.DistinctUrls.All(url => url != ModelSelection.DefaultUrl) && !selection.UsesExternalModels,
+            "The public quickstart fixture must not depend on a default bundle or internal provider.");
+        string settingsHash = FilePaths.Hash(Path.Combine(data, "settings.xml"));
+        string missingDefault = Path.Combine(root, "unprovisioned-default-model");
+        string corpus = Path.Combine(root, "files");
+        Directory.CreateDirectory(corpus);
+        File.WriteAllText(Path.Combine(corpus, "journey.txt"), "A holiday itinerary for a passenger train journey through the mountains.");
+        File.WriteAllText(Path.Combine(corpus, "average.py"),
+            "def arithmetic_mean(values):\n    \"\"\"Compute the arithmetic average of a list of numbers.\"\"\"\n    return sum(values) / len(values)\n");
+        Fixtures.Image(Path.Combine(corpus, "red.png"), true);
+        await using (var engine = new EngineProcess(package, missingDefault, data))
+        {
+            await engine.ReadyAsync();
+            await engine.RequestAsync<System.Text.Json.JsonElement>("add_folder", new { path = corpus });
+            await engine.WaitAsync(state => state.FileCount == 3 && state.QueueCount == 0 && state.ReconcilingFolders == 0,
+                "The documented public-model setup did not index its synthetic files.");
+            foreach (var (kind, query, expected) in new[]
+            {
+                ("Document", "A passenger train holiday itinerary in the mountains", "journey.txt"),
+                ("Code", "Compute the arithmetic average of a list of numbers", "average.py"),
+                ("Image", "a red circle on a white background", "red.png")
+            })
+            {
+                var options = new SearchPreferences(kind == "Document", kind == "Code", kind == "Image", 0, 0, 0);
+                var matches = await engine.RequestAsync<List<ResultFile>>("search", new { query, options });
+                Program.Require(matches.FirstOrDefault()?.Name == expected, "The public binary quickstart failed retrieval for " + kind);
+            }
+        }
+        await using (var reopened = new EngineProcess(package, missingDefault, data))
+        {
+            await reopened.ReadyAsync();
+            await reopened.WaitAsync(state => state.QueueCount == 0 && state.ReconcilingFolders == 0,
+                "The public binary quickstart did not restore after restart.");
+            var state = await reopened.RequestAsync<EngineState>("status");
+            Program.Require(state.FileCount == 3 && state.InferenceBatches.CompletedInputs == 0 &&
+                state.Models?.Selection == selection, "The binary quickstart lost its selection or repeated committed inference.");
+        }
+        Program.Require(!Directory.Exists(missingDefault) && FilePaths.Hash(Path.Combine(data, "settings.xml")) == settingsHash,
+            "The public starter path required the default bundle or rewrote the documented settings.");
+        Console.WriteLine("PASS binary-only public model setup, all search kinds and unchanged-data restart without a default bundle");
+    });
 }

@@ -19,18 +19,18 @@ internal sealed class SystemTrayIcon : IDisposable
             ?? throw new FileNotFoundException("The application notification-area icon is missing.");
         using var resource = new Drawing.Icon(stream);
         image = (Drawing.Icon)resource.Clone();
-        menu = new Forms.ContextMenuStrip { ShowImageMargin = false, AccessibleName = "Fuzzy Find Anything tray menu" };
+        menu = new Forms.ContextMenuStrip { ShowImageMargin = false, AccessibleName = "FuzzyFindAnything 2.0 tray menu" };
         icon = new Forms.NotifyIcon();
         try
         {
-            var open = new Forms.ToolStripMenuItem("Open Fuzzy Find Anything");
+            var open = new Forms.ToolStripMenuItem("Open FuzzyFindAnything 2.0");
             open.Click += (_, _) => restore();
             var exit = new Forms.ToolStripMenuItem("Quit");
             exit.Click += (_, _) => quit();
             menu.Items.AddRange([open, new Forms.ToolStripSeparator(), exit]);
             menu.Opening += (_, _) => ApplyTheme();
             icon.Icon = image;
-            icon.Text = "Fuzzy Find Anything";
+            icon.Text = "FuzzyFindAnything 2.0";
             icon.ContextMenuStrip = menu;
             icon.MouseClick += (_, args) => { if (args.Button == Forms.MouseButtons.Left) restore(); };
             icon.MouseDoubleClick += (_, args) => { if (args.Button == Forms.MouseButtons.Left) restore(); };

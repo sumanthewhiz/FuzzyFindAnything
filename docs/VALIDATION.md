@@ -1,30 +1,30 @@
-# Native validation
+# FuzzyFindAnything 2.0: verification and release process
 
 [Overview](../README.md) · [Architecture](ARCHITECTURE.md) · [Migration](MIGRATION.md)
 
-## Current development acceptance
+## 2.0 release gates
 
-**1.5.0-dev.4** adds employee-accessible companion distribution. Tests reject public or owner-only private channels, incorrect repository identities, unrelated release tags and drafts while allowing the explicitly pinned published companion prerelease. Both architecture packages passed inventory/checksum/PE checks. A clean authenticated installation from the Internal channel passed relocated live-registry discovery. Unauthenticated API access returned 404, and the package endpoint redirected to Microsoft enterprise SSO without returning the archive. The shared repository's default branch and unrelated release were unchanged.
+Release verification covers inference, chunking, storage, current UI/tray branding, author metadata, MIT application licensing, required legal/contribution documents, hash-verified upstream notices and binary-only onboarding.
 
-The **1.5.0-dev.3** checks cover pressure-aware model loading and restoration, active-batch draining without starvation, provider memory handoff, registry-gated source choices, discovery-error cleanup and authenticated private companion installation. Full native/headless regressions passed. Four real mixed CPU/NPU configurations exercised retrieval, selective reindexing, rejected-device preservation, no-op Apply and restart without re-embedding, including current-drop NPU document/code and image execution.
+Run the native/headless suites and solution build/format checks, build both architecture packages, and verify package inventories, original license texts and relocation. UI branding must be checked through current XAML renders and the isolated UI workflow. Execute the documented public-model setup against a fresh data directory without relying on a default model bundle or build tools.
 
-Four concurrent catalog requests completed through the serialized discovery queue without a busy error. A disconnected child-process proxy returned no selectable provider models or versions without changing the parent environment. Both private companion packages passed complete inventory/checksum/PE checks; a clean authenticated download, relocated installation and live registry discovery also passed. These runs used isolated test data rather than clearing the production index.
+Branch parity is an explicit release check:
 
-Current documentation images are synthetic-data renders of the actual XAML in both themes, including per-type thresholds, matched chunks, region overlays and themed region options. The original 1.1.0 evidence below is historical, not a claim that those earlier binaries include today's controls.
+```powershell
+git fetch origin main dev
+git diff --exit-code origin/main origin/dev
+git rev-parse origin/main origin/dev
+```
 
-## Release 1.1.0 acceptance
+The branch heads should be the same verified commit. Branch artifacts are available without publishing model weights. A version tag additionally requires the maintainer's approved `NATIVE_MODEL_BASE_URI` parity source; do not weaken that gate or upload private model payloads just to publish a tag.
 
-Version **1.1.0** was rebuilt from `main` after consolidating the application changes. The runtime, native bridge, model contract and build implementation match the validated native baseline at `33c3635`; this promotion changes release metadata and documentation, not indexing behavior.
+## Validation principles
 
-Fresh acceptance covered:
+Use isolated data directories and synthetic corpora. Never clear the user's index, alter source documents, weaken memory reserves or substitute placeholder vectors to make a check pass. Record the package/source revision, architecture, model/artifact identity, actual execution provider and result for each run.
 
-- A clean native DiskANN build, the .NET solution, formatting, workflow lint, native core regressions and headless UI/settings checks.
-- Both self-contained release packages, their complete checksum inventories, PE architecture boundaries and relocated runtime smoke tests.
-- The full numerical matrix on each architecture: 40 embedding cases, 250 tokenizer cases, 16 chunk/decode fixtures, text batches through eight inputs and two-image scheduling.
-- Real document/code/image search, installed IFilters, live updates and abrupt-exit recovery in each extracted package. Both retained eight committed passages and computed only the remaining 39.
-- Model acquisition/verification and the complete private-desktop UI suite, including both themes, gallery thumbnails, clearing, folder management, logging, saved preferences and window lifecycle.
+Unit and orchestration tests do not replace real native execution checks. Package presence is not device qualification, and an ARM64 CPU result does not certify an NPU or an unrelated x64 GPU. Report skipped hardware checks explicitly.
 
-These runs used isolated data directories and did not reset or launch against the existing production index. Detailed machine-readable results are retained in the release workspace's ignored `.test-data` directory. The sections below describe the acceptance contract and prior migration evidence.
+Documentation images are renders of the current XAML with synthetic data. They show UI layout, not personal search results or evidence that a model executed on particular hardware.
 
 ## Acceptance layers
 
@@ -38,7 +38,9 @@ Informational native-runtime capability messages must reach diagnostic logs with
 
 `providers` (also in the ordinary core suite) checks typed references, mixed-source XML version 4, rejection of provider bindings in older formats, exact source/version validation, independent execution identities, zero-padding invariants, real 104-dimensional DiskANN retrieval, schema-10 restart and preservation of unrelated sources. Headless WPF tests cover mixed source controls, selection/device retention, unchanged HF defaults, unavailable-model guards and saving unrelated settings without losing provider bindings.
 
-`provider-integration <application-directory> <default-model-directory> <HF-cache> <approved-configurations.json> <output-directory>` takes a caller-supplied array of approved `ModelSelection` configurations; no private model identities or payloads are embedded in the public fixtures. It exercises real mixed-provider document/code/image retrieval, native structural chunk provenance, unchanged-role vector retention, no-op Apply, strict missing-device rejection, restart without re-embedding and restoration of HF models. Local acceptance included native 100-to-104-dimensional storage and separate CPU/NPU spaces for the same provider model.
+Companion bootstrap tests reject public or owner-only private channels, incorrect repository identities, unrelated release tags, drafts and replacement archives, even when an unapproved archive agrees with its own checksum sidecar. End-to-end acceptance includes authenticated installation/relocation, live registry discovery and anonymous denial through Microsoft enterprise SSO. Disconnected checks must expose no selectable Microsoft models or versions and must not change the parent environment.
+
+`provider-integration <application-directory> <default-model-directory> <HF-cache> <approved-configurations.json> <output-directory>` takes a caller-supplied array of approved `ModelSelection` configurations; no private model identities or payloads are embedded in the public fixtures. It exercises real mixed-provider document/code/image retrieval, native structural chunk provenance, unchanged-role vector retention, no-op Apply, strict missing-device rejection, restart without re-embedding and restoration of HF models.
 
 `RunUiSmoke.ps1 -ProviderConfiguration <approved-configurations.json> -ModelCache <HF-cache> -ApplicationDirectory <build>` exercises actual WPF source pickers, authenticated live version refresh, version-specific fixed model choices, conditional controls, Apply, image retrieval, XML persistence, appearance changes and tray lifecycle. The internal companion separately qualifies supported SDK/model combinations on real CPU/NPU hardware; package presence alone is not counted as execution evidence.
 
@@ -72,7 +74,7 @@ The enhanced isolated UI workflow checks all-three-selected defaults, each slide
 
 `extensible-models <application-directory> <default-model-directory> <recipe-cache> <output-directory>` runs the real native Qwen3-Embedding-0.6B, E5-base-v2 and E5-small-v2 recipes. It requires those reviewed assets to have been acquired into the supplied isolated cache with the packaged `prepare-hf-model` tool. Coverage includes exact Qwen tokenizer fixtures, the upstream score matrix (maximum error `0.0001`), mixed-length batch/single agreement (cosine above `0.99999`), chunk/prefix token budgets and source coverage, code retrieval, maximum-profile workload probes, cancellation, incompatible image rejection, shared text/code spaces with distinct query roles, query-only changes, unavailable strict-device rejection, restart without re-embedding and restoration of the defaults.
 
-The first new artifact profile is stateless fp32, 1,024 dimensions and a 2,048-token input ceiling; the 512-token chunk and total batch-token budgets are distinct. The two E5 checkpoints use the same prefix/mean-pooling recipe without adding model-specific UI or indexing logic. This acceptance does not claim support for Qwen generation models, Florence, every checkpoint or every GPU/NPU.
+The reviewed Qwen artifact is stateless fp32, 1,024 dimensions and a 2,048-token input ceiling; the 512-token chunk and total batch-token budgets are distinct. The two E5 checkpoints use the same prefix/mean-pooling recipe without adding model-specific UI or indexing logic. This acceptance does not claim support for Qwen generation models, Florence, every checkpoint or every GPU/NPU.
 
 The private-desktop runner accepts `-EmbeddingModelCache <recipe-cache>` in addition to the existing `-ModelCache`. It checks automatic requirements, optional query-purpose disclosure, search availability during validation, real Qwen Apply, query-only persistence, and returning to the simple Gemma form without leaked hidden settings. Offscreen WPF renders cover the collapsed/expanded recipe details in both themes.
 
@@ -80,11 +82,11 @@ All model and UI runs use isolated corpora/catalogs. Existing configured folders
 
 ### Configurable-model acceptance
 
-The new model-routing tests use `all-MiniLM-L6-v2`, `paraphrase-MiniLM-L3-v2`, `Xenova/clip-vit-base-patch32` and the existing EmbeddingGemma2 bundle. Seven real configurations exercise three distinct models, shared text/code, one multimodal model for all types, shared text/images, shared code/images, default text/images with alternate code, and restoration of all defaults. Both architecture builds passed these permutations.
+Model-routing tests use `all-MiniLM-L6-v2`, `paraphrase-MiniLM-L3-v2`, `Xenova/clip-vit-base-patch32` and the default EmbeddingGemma2 bundle. Configurations exercise three distinct models, shared text/code, one multimodal model for all types, shared text/images, shared code/images, default text/images with alternate code, and restoration of all defaults.
 
 Each case checks index count and file ownership, matching semantic queries, retained vector IDs for unchanged assignments, no-op Apply, rejection of a text-only image selection, and XML persistence. Additional checks cover non-default restart without re-embedding, XML write rollback and recovery when saved XML intent precedes the catalog commit.
 
-On the ARM64 acceptance device, explicit MiniLM inference probes succeeded on CPU, DirectML GPU and Qualcomm QNN NPU. Runtime profiling confirmed actual accelerator kernel execution rather than an all-CPU fallback. A nonexistent provider/device was rejected. GPU/NPU eligibility is conditional on hardware, usable drivers/providers and graph compatibility; these results do not certify all models on all devices.
+Real-device probes must confirm accelerator kernel execution rather than an all-CPU fallback and reject nonexistent requested providers/devices. GPU/NPU eligibility is conditional on hardware, usable drivers/providers and graph compatibility; qualification of one profile does not certify all models on all devices.
 
 The model-tab UI check verifies the three default URLs, unchanged Apply, invalid-host preservation, an actual code-model change and restoration of EmbeddingGemma2. Its corpus/catalog are isolated from the user's configuration and indexes. The existing default production-data hashes are checked separately for preservation.
 
@@ -94,6 +96,7 @@ Validation uses temporary catalogs and synthetic fixtures. It does not launch th
 |---|---|---|
 | Native core | `.\tests\RunChecks.ps1` | Real DiskANN, SQL transactions, ownership, revisions, recovery, batching, CPU plans, process lifecycle, USN, extraction supervision, acquisition and logging |
 | Managed UI contracts | Included in `RunChecks.ps1` | XML defaults/persistence, invalid values, document/code/image grouping, search clearing, startup sequencing and footer/layout |
+| Binary-only onboarding | `binary-quickstart <application-directory> <prepared-data-directory>` | Public models prepared by the documented packaged commands; all search types and restart without a default model bundle |
 | Model acceptance | `.\tests\RunChecks.ps1 -WithModel` | Exact tokenization/chunking, text/image embeddings, mixed batches, norm/similarity gates and retrieval |
 | Packaged integration | `.\tests\RunChecks.ps1 -Integration -ApplicationDirectory <published-folder>` | Real model, real DiskANN, installed IFilters, live deltas, queries and abrupt-exit resume |
 | Private-desktop UI | `.\tests\RunUiSmoke.ps1 -Enhanced -ApplicationDirectory <published-folder>` | Native WPF controls, themes, three result sections, thumbnails, metadata, logging, settings and window lifecycle |
@@ -103,9 +106,9 @@ Validation uses temporary catalogs and synthetic fixtures. It does not launch th
 
 Build dependencies first with `Setup.ps1 -SkipModel`. Model acceptance requires the approved native asset bundle. Real document integration requires installed PDF/Office IFilters; portable core tests use isolated helper fixtures and do not install filters.
 
-The native core executable accepts `core --require-usn` to require an active local journal. Without that option it explicitly reports a skipped live USN test on unsupported/inactive volumes; parser and directory-notification regressions still run. The migration acceptance host exercised the live USN-only path, not just directory notifications.
+The native core executable accepts `core --require-usn` to require an active local journal. Without that option it explicitly reports a skipped live USN test on unsupported/inactive volumes; parser and directory-notification regressions still run.
 
-## Numerical evidence
+## Numerical acceptance
 
 The committed `tests\Fixtures\goldens.json` and small synthetic images/Office files are frozen reference data, not model weights. They were captured independently from the pinned reference pipeline. Native tests consume them directly; fixture creation or Python is not a test prerequisite.
 
@@ -128,21 +131,17 @@ The production native implementation is checked against:
 | Pairwise cosine drift | <= 0.005 |
 | Clearly separated top result | Same winner; near ties recorded separately |
 
-Both ARM64 and x64 inference passed the numerical matrix. The ARM64 acceptance run recorded minimum embedding cosine **0.999942543**, maximum unit-norm error **1.58e-8**, and maximum pairwise drift **0.001227515**. All exact tokenizer/chunk cases and batch gates passed. Ten query-ranking comparisons included three explicitly recorded near ties.
-
 Expanded codec coverage includes DIB-encoded 24/32-bit ICO, grayscale PNG/JPEG, JPEG profiles, palette transparency, BMP, odd large dimensions and extreme aspect ratios. Small lossless RGB decoding is checked against reference bytes; codec/resampling numerical differences remain subject to the image and retrieval gates.
 
-Two migration defects were found through these checks and corrected before acceptance: ordinary newline tokens were being dropped by generic passage decoding, and unprivileged USN records with redacted names needed parent-directory reconciliation.
+## Desktop acceptance
 
-## Native desktop evidence
-
-The original release 1.1.0 ARM64 package passed private-desktop UI Automation with Python absent from `PATH`: maximized startup, attribution links, all four tabs, light/dark switching, native folder selection, real document/code/image retrieval, gallery thumbnails, live metadata, clearing completed/in-flight searches, logging changes, XML persistence, scope removal, its then-current close-to-taskbar behavior, single-instance restoration and Quit. A complete restart retained theme, logging and the changed similarity value.
+The isolated UI suite covers maximized startup, current app/author branding, all five tabs, light/dark appearance, native folder selection, document/code/image retrieval, gallery thumbnails, live metadata, search clearing, model configuration, logging and saved preferences. Tray tests verify hide/restore, single-instance activation and graceful Quit without losing committed indexing progress.
 
 Current regression coverage adds offline restart deltas (including deleted subfolders, timestamp-only notifications with unchanged content, and partially committed work), search while monitoring setup is blocked, and a no-change second restart with no new embeddings. The real-engine integration test changes/adds/deletes files while stopped and asserts that only the two changed/new files are embedded. The UI suite now checks minimize/close-to-tray behavior, ongoing indexing while hidden, absence of the taskbar button, tray click/menu restoration, single-instance activation and Quit from the tray while hidden. On the private desktop, shell callbacks are delivered to the real .NET notification-icon window because that desktop has no Explorer taskbar.
 
 Private-desktop compositor captures were not usable as visual evidence. Separate offscreen renders of the actual XAML/resources, with synthetic data and no application window or engine, were inspected in both themes. Those renders are the documentation previews; they are not screenshots of personal search results.
 
-## Durability and functional evidence
+## Durability and functional acceptance
 
 Core regression cases cover real native graph insertion/search/deletion, uint32 tags, capacity growth, Unicode paths, packed save/load, missing/corrupted snapshots and interrupted checkpoint publication. SQL tests cover file deduplication, stale revisions, overlapping ownership, fair claims, transient/permanent errors, reset modes and active-engine lease refusal.
 
@@ -152,53 +151,15 @@ A six-reader test retains **six simultaneous file pipelines with one model**. Se
 
 Live USN-only tests disable directory notifications and exercise creation, preserved-timestamp edits, rename, deletion and cursor ordering. A cursor cannot advance while delivery is blocked before durable queue publication.
 
-Both extracted native packages indexed **nine successful files** (six documents, one source file and two images), classified two permanent errors, and searched all three result kinds. Real installed `.pdf`, `.rtf`, `.docx`, `.pptx` and `.xlsx` filters were exercised without modifying the input files. Their captured process/module trees used the package's own ONNX Runtime, DiskANN and C++ runtimes, with a shared affinity mask and no interpreter.
-
-The real crash test interrupted a 47-passage file after eight passages committed. Restart retained those eight and computed **only the remaining 39**. Unrelated completed vector IDs remained unchanged.
-
-A separate numeric workbook (512 rows by 12 columns) produced **36,445 extracted characters and 80 distinct passages**. All 80 were indexed, searchable and retained after checkpoint/reload; the original fixture hash was unchanged. This verifies full workbook processing rather than a sampled or truncated proxy. The previously mentioned `3d_model.xls` was not present in the retained catalog or searched local locations, so this run does not claim to have retested that specific historical file.
+Packaged integration uses mixed-format synthetic files and classified-error cases, including installed PDF/Office filters where available. Source hashes must remain unchanged. Abrupt-exit tests preserve committed passages and compute only missing work after restart; unrelated vector IDs must remain stable. Numeric-workbook checks require complete supported extraction and retrieval, not sampling.
 
 ## Existing-data compatibility
 
-A read-only SQLite backup and copied native snapshot of the existing application catalog were opened in the native implementation:
-
-| Item | Result |
-|---|---|
-| Existing file records | 158 retained |
-| Existing vectors | 1,956 retained |
-| Existing graph | Loaded directly without a recovery rebuild |
-| Folder identities / vector blobs / staged passages | Unchanged digests |
-| XML preferences | Unchanged digest |
-
-The source catalog, snapshots and configuration were not reset or migrated in place. Synthetic tests separately cover an active durable queue, since this copied real catalog had no pending jobs.
+Use a read-only SQLite backup and copied native snapshots, never the live writer's files. Compare folder identities, file/vector ownership, vector bytes, staged passage progress and XML settings before and after opening the copy. Exercise pending as well as completed jobs. Verify that an unchanged configuration does not trigger new inference and that a changed profile invalidates only its dependent representations.
 
 ## Performance interpretation
 
-On the acceptance machine (Windows 11 ARM64, 12 physical cores, shared six-core affinity), final extracted-package runs reported:
-
-| Measurement | ARM64 package | x64 package under Windows compatibility |
-|---|---:|---:|
-| First-model service readiness | 15.03 s | 24.88 s |
-| Nine-file mixed-format corpus | 44.20 s | 80.42 s |
-| Maximum active files | 6 | 6 |
-| Representative document query | 380.6 ms | 515.0 ms |
-| Coordinator peak working set | 108.2 MiB | 133.7 MiB |
-| Largest inference-process peak working set | 2,193.4 MiB | 2,288.0 MiB |
-
-These are workload-specific measurements, not guarantees or a controlled speedup claim against another release. Images, document passage counts, memory pressure and warm caches strongly affect results. A native model process is not a file pipeline; CPU eligibility is a ceiling rather than a utilization target.
-
-### Controlled warm text workload
-
-A separate sequential comparison used the same 18 source files, one warmed model, six eligible cores and six model compute threads on the same host. The earlier Python-backed implementation at commit `db527d1` was run read-only with temporary catalogs as an engineering reference, not as a native-product dependency.
-
-| Implementation | One file pipeline | Six file pipelines |
-|---|---:|---:|
-| Python-backed baseline (`db527d1`) | 12.437 s | 7.875 s |
-| Native, cooperative ONNX workers | 4.556 s | 3.571 s |
-
-The native six-pipeline run processed three batches of six, reached six active files and was approximately **2.2x faster** than the earlier six-pipeline baseline on this workload. Before disabling idle ONNX spin waits, the native result was slower; the accepted setting removes that shared-core contention. This does not imply the same speedup for image or workbook workloads.
-
-The native benchmark captured its process/module tree: affinity mask `0x3f` throughout, no Python modules/processes, and approximately **1,595 MiB peak working set** for the inference process. The 3 GiB-per-model planning estimate therefore remains conservative for this measured text workload; larger batches and images can use more.
+Measure service readiness, indexing throughput, query latency, batch sizes, worker residency and peak working set on a declared corpus and hardware profile. Record cold/warm cache conditions and available memory. Images, document passage counts and worker eviction strongly affect results; a model process is not a file pipeline, and CPU eligibility is a ceiling rather than a utilization target. Do not generalize a single workload into a universal speedup or memory guarantee.
 
 The benchmark is reproducible with the native test executable's `benchmark <application-directory> <model-directory> <output-directory>` command. `verify-files <application-directory> <model-directory> <output-directory> <file>...` performs explicit full-file extraction, passage-count, search, checkpoint/reload and source-integrity checks using copies. It never alters the supplied originals.
 
@@ -210,6 +171,6 @@ Native releases retain the x64/ARM64 process boundary, include app-local C++ run
 
 Relocated probes execute the native DiskANN/SQLite utility and ONNX Runtime CPU-provider host with `PATH` restricted to Windows system binaries. Missing-model verification is read-only. These checks do not uninstall software or change the shared host.
 
-Package validation caught an x64-only companion DLL in Microsoft's ARM64 CRT redistribution directory; staging now filters CRT files by their actual PE architecture. The publication regression uses a real directory-read sharing lock, confirms that a failed move leaves the original output intact, then verifies a complete replacement after the lock is released.
+Staging filters CRT files by their actual PE architecture. The publication regression uses a real directory-read sharing lock, confirms that a failed move leaves the original output intact, then verifies a complete replacement after the lock is released.
 
-The workflow is configured for architecture-matched Windows runners and was checked with actionlint. Local x64 execution was under Windows ARM64 compatibility, not a separate Intel/AMD machine; a remote CI run is not claimed by these local results. An approved `NATIVE_MODEL_BASE_URI` enables numerical acceptance in CI and is required for native tagged releases. Public model hosting is a separately approved release operation; package builds never upload model files automatically.
+The workflow uses architecture-matched Windows runners. Distinguish native x64 execution from x64 compatibility on ARM64 when recording results. An approved `NATIVE_MODEL_BASE_URI` enables numerical acceptance in CI and is required for tagged releases. Package builds never upload model weights automatically.

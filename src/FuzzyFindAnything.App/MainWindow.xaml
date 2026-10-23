@@ -1,7 +1,7 @@
 <Window x:Class="FuzzyFindAnything.App.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Fuzzy Find Anything" WindowState="Maximized" Width="1280" Height="860"
+        Title="FuzzyFindAnything 2.0" WindowState="Maximized" Width="1280" Height="860"
         MinWidth="960" MinHeight="700" Background="{DynamicResource WindowBackground}"
         FontFamily="Segoe UI Variable, Segoe UI" FontSize="14" Foreground="{DynamicResource Ink}"
         Icon="Assets/app.ico" Loaded="Window_Loaded" Closing="Window_Closing"
@@ -184,7 +184,7 @@
                      Foreground="{DynamicResource OnAccent}" HorizontalAlignment="Center" VerticalAlignment="Center" />
         </Border>
         <StackPanel Grid.Column="1" VerticalAlignment="Center">
-          <TextBlock Text="Fuzzy Find Anything" FontSize="24" FontWeight="SemiBold" />
+          <TextBlock Text="FuzzyFindAnything 2.0" FontSize="24" FontWeight="SemiBold" />
           <TextBlock Text="Semantic file search" Foreground="{DynamicResource Muted}" Margin="0,3,0,0" FontSize="13" />
         </StackPanel>
         <StackPanel Grid.Column="2" Width="200" Margin="16,0,24,0" VerticalAlignment="Center"
@@ -728,9 +728,9 @@
                   </StackPanel>
                 </Expander>
                 <TextBlock Text="Compatible embeddings share an index. Only affected representations are replaced when you apply a change."
-                           TextWrapping="Wrap" Foreground="{DynamicResource Muted}" />
+                           TextWrapping="Wrap" Foreground="{DynamicResource Muted}" AutomationProperties.AutomationId="ModelCompatibilityGuidance" />
                 <TextBlock Text="A model must have a supported native adapter and pass local execution checks. Optional sources require their approved local provider and verified registry access. No hosted inference or remote model code is used."
-                           TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,10,0,0" />
+                           TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,10,0,0" AutomationProperties.AutomationId="ModelExecutionGuidance" />
                 <TextBlock Text="{Binding ModelConfigurationMessage}" TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,10,0,0"
                            AutomationProperties.AutomationId="ModelConfigurationStatus" />
               </StackPanel>

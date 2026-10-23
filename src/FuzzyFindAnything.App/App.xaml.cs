@@ -51,7 +51,7 @@ public partial class App : Application
         }
         catch (Exception exception)
         {
-            MessageBox.Show($"Fuzzy Find Anything could not start:\n\n{exception.Message}", "Fuzzy Find Anything",
+            MessageBox.Show($"FuzzyFindAnything 2.0 could not start:\n\n{exception.Message}", "FuzzyFindAnything 2.0",
                 MessageBoxButton.OK, MessageBoxImage.Error);
             Shutdown(1);
         }
@@ -78,7 +78,7 @@ public partial class App : Application
         {
             await Dispatcher.InvokeAsync(() => MessageBox.Show(window,
                 $"The app is running, but single-instance activation is unavailable: {exception.Message}",
-                "Fuzzy Find Anything", MessageBoxButton.OK, MessageBoxImage.Warning));
+                "FuzzyFindAnything 2.0", MessageBoxButton.OK, MessageBoxImage.Warning));
         }
     }
 
