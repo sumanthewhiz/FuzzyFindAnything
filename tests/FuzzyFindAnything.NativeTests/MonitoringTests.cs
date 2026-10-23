@@ -247,12 +247,22 @@ internal static class MonitoringTests
 
         IndexingEngine Engine(IEmbeddings model) => new(data, Path.Combine(root, "models"), Path.Combine(root, "unused.exe"),
             Path.Combine(root, "app"), new(12, 6, 63), model, new EngineLog(data), new(), watch: false);
-        var model = new FakeEmbeddings();
+        var replacement = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var model = new FakeEmbeddings
+        {
+            BeforeEmbedding = (passages, cancellation) => passages.Contains("boats source")
+                ? replacement.Task.WaitAsync(cancellation) : Task.CompletedTask
+        };
         await using (var resumed = Engine(model))
         {
             resumed.Start();
             await Check.UntilAsync(() => resumed.Store.Counts() == (5, 7) && resumed.Status().ReconcilingFolders == 0,
                 "Startup did not reconcile offline additions, deletions and timestamp changes.");
+            Program.Require(resumed.Store.QueueCounts().Queued > 0 && !model.Embedded.Contains("boats source"),
+                "The fixture did not expose the same-count replacement before it completed.");
+            replacement.SetResult();
+            await Check.UntilAsync(() => resumed.Status() is { ModelState: "Ready", QueueCount: 0, ReconcilingFolders: 0 } &&
+                resumed.Store.Counts() == (5, 7), "Startup did not finish replacing changed content.");
             Program.Require(resumed.Store.Folders().Single().Id == folder && resumed.Store.FindFile(gone) is null,
                 "Restart lost folder configuration or retained a deleted subtree.");
             Program.Require(resumed.Store.FindFile(keep)!.Id == keepId && resumed.Store.FindFile(touched)!.Id == touchedId &&

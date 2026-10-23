@@ -254,6 +254,7 @@ internal sealed class FakeEmbeddings : IEmbeddings
     public IReadOnlyList<IEmbeddings> ActiveModels => QueryModels ?? new[] { this };
     public bool BlockAfterFirstBatch { get; init; }
     public bool BlockStartup { get; init; }
+    public Func<string[], CancellationToken, Task>? BeforeEmbedding { get; init; }
     public bool Started { get; private set; }
     public bool Disposed { get; private set; }
     private int batches;
@@ -274,6 +275,7 @@ internal sealed class FakeEmbeddings : IEmbeddings
     public async Task<float[][]> DocumentsAsync(string title, string[] passages, CancellationToken cancellation)
     {
         if (Interlocked.Increment(ref batches) > 1 && BlockAfterFirstBatch) await Task.Delay(Timeout.Infinite, cancellation);
+        if (BeforeEmbedding is not null) await BeforeEmbedding(passages, cancellation);
         await Task.Delay(15, cancellation);
         foreach (string passage in passages) Embedded.Add(passage);
         return passages.Select(passage => Program.Vector(passage.Contains("apple") ? 0 : 1)).ToArray();

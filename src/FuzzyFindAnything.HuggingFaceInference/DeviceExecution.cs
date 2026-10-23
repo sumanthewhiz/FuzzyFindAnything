@@ -18,8 +18,16 @@ internal static class DeviceExecution
         try
         {
             var catalog = ExecutionProviderCatalog.GetDefault();
-            foreach (var provider in catalog.FindAllProviders())
+            var providers = catalog?.FindAllProviders();
+            if (providers is null)
+                Report("Windows execution-provider catalog is unavailable on this host; using CPU and any registered native devices.");
+            foreach (var provider in providers ?? [])
             {
+                if (provider is null)
+                {
+                    Report("The Windows execution-provider catalog returned an empty provider entry.");
+                    continue;
+                }
                 if (provider.ReadyState == ExecutionProviderReadyState.NotPresent)
                 {
                     Report($"Device execution provider {provider.Name} is compatible with this device but not installed.");
@@ -28,9 +36,9 @@ internal static class DeviceExecution
                 if (provider.ReadyState == ExecutionProviderReadyState.NotReady)
                 {
                     var ready = provider.EnsureReadyAsync().AsTask().GetAwaiter().GetResult();
-                    if (ready.Status != ExecutionProviderReadyResultState.Success)
+                    if (ready is null || ready.Status != ExecutionProviderReadyResultState.Success)
                     {
-                        Report($"Installed provider {provider.Name} is not usable: {ready.DiagnosticText}");
+                        Report($"Installed provider {provider.Name} is not usable: {ready?.DiagnosticText ?? "No readiness result was returned."}");
                         continue;
                     }
                 }
@@ -42,9 +50,17 @@ internal static class DeviceExecution
         {
             Report("Windows execution-provider catalog is unavailable: " + error.Message);
         }
-        foreach (var device in OrtEnv.Instance().GetEpDevices())
+        var nativeDevices = OrtEnv.Instance().GetEpDevices();
+        if (nativeDevices is null) Report("ONNX Runtime reported no registered execution-provider devices.");
+        foreach (var device in nativeDevices ?? [])
         {
-            string type = device.HardwareDevice.Type.ToString();
+            var hardware = device?.HardwareDevice;
+            if (device is null || hardware is null)
+            {
+                Report("ONNX Runtime returned an execution-provider entry without hardware metadata.");
+                continue;
+            }
+            string type = hardware.Type.ToString();
             if (device.EpName is "CPUExecutionProvider" or "AzureExecutionProvider") continue;
             if (type is not ("CPU" or "GPU" or "NPU")) continue;
             devices.Add(new(device.EpName, $"{device.EpVendor} {type}", type, device));
