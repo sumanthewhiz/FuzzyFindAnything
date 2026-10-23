@@ -17,6 +17,7 @@
         <Setter.Value>
           <Style TargetType="ComboBoxItem">
             <Setter Property="AutomationProperties.Name" Value="{Binding Label}" />
+            <Setter Property="AutomationProperties.ItemStatus" Value="{Binding Id}" />
             <Setter Property="Foreground" Value="{DynamicResource Ink}" />
             <Setter Property="Background" Value="{DynamicResource Surface}" />
             <Setter Property="Padding" Value="10,7" />
@@ -57,6 +58,37 @@
         </Setter.Value>
       </Setter>
     </Style>
+    <DataTemplate x:Key="ModelSourceTemplate">
+      <StackPanel Margin="0,8,0,8">
+        <ComboBox ItemsSource="{Binding Sources}" DisplayMemberPath="Label" SelectedValuePath="Id" SelectedValue="{Binding Source}"
+                  Style="{StaticResource ModelQuerySelector}" AutomationProperties.AutomationId="{Binding SourceControlId}" />
+        <StackPanel Margin="0,10,0,0" Visibility="{Binding IsMicrosoft, Converter={StaticResource BoolToVisibility}}">
+          <ComboBox ItemsSource="{Binding Models}" DisplayMemberPath="Label" SelectedValuePath="Id" SelectedValue="{Binding Model}"
+                    Style="{StaticResource ModelQuerySelector}" IsEnabled="{Binding CanSelect}" AutomationProperties.AutomationId="{Binding ModelControlId}">
+            <ComboBox.ItemContainerStyle>
+              <Style TargetType="ComboBoxItem">
+                <Setter Property="AutomationProperties.Name" Value="{Binding Label}" />
+                <Setter Property="AutomationProperties.ItemStatus" Value="{Binding Id}" />
+                <Setter Property="IsEnabled" Value="{Binding Available}" />
+                <Setter Property="Foreground" Value="{DynamicResource Ink}" />
+                <Setter Property="Background" Value="{DynamicResource Surface}" />
+              </Style>
+            </ComboBox.ItemContainerStyle>
+          </ComboBox>
+          <TextBlock Text="{Binding Message}" TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource Muted}" Margin="0,6,0,0" />
+          <Expander Header="PSAPI drop version" Margin="0,8,0,0" AutomationProperties.AutomationId="{Binding VersionOptionsControlId}">
+            <StackPanel Margin="0,8,0,0">
+              <ComboBox ItemsSource="{Binding Versions}" DisplayMemberPath="Label" SelectedValuePath="Id" SelectedValue="{Binding Version}"
+                        Style="{StaticResource ModelQuerySelector}" IsEnabled="{Binding CanSelect}" AutomationProperties.AutomationId="{Binding VersionControlId}" />
+              <Button Content="Refresh available versions" Click="RefreshProviderVersions_Click" IsEnabled="{Binding CanSelect}"
+                      HorizontalAlignment="Left" Margin="0,8,0,0" AutomationProperties.AutomationId="{Binding RefreshControlId}" />
+              <TextBlock Text="Uses the approved internal feed. A different drop must pass SDK, model and device validation before Apply changes the index."
+                         TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource Muted}" Margin="0,6,0,0" />
+            </StackPanel>
+          </Expander>
+        </StackPanel>
+      </StackPanel>
+    </DataTemplate>
     <DataTemplate x:Key="ModelRequirementTemplate">
       <StackPanel Margin="0,0,0,14" Visibility="{Binding IsVisible, Converter={StaticResource BoolToVisibility}}">
         <TextBlock Text="{Binding Summary}" Foreground="{DynamicResource Muted}" FontSize="12" TextWrapping="Wrap" />
@@ -72,6 +104,11 @@
                   AutomationProperties.AutomationId="ModelDetailsExpander">
           <StackPanel Margin="0,8,0,0">
             <TextBlock Text="{Binding Details}" TextWrapping="Wrap" Foreground="{DynamicResource Muted}" FontSize="12" />
+            <StackPanel Margin="0,8,0,0" Visibility="{Binding HasDeviceOptions, Converter={StaticResource BoolToVisibility}}">
+              <TextBlock Text="Execution device" Foreground="{DynamicResource Muted}" FontSize="12" />
+              <ComboBox ItemsSource="{Binding Devices}" DisplayMemberPath="Label" SelectedValuePath="Id" SelectedValue="{Binding SelectedDevice}"
+                        Style="{StaticResource ModelQuerySelector}" AutomationProperties.AutomationId="ProviderDeviceChoice" />
+            </StackPanel>
             <StackPanel Margin="0,8,0,0" Visibility="{Binding HasQueryOptions, Converter={StaticResource BoolToVisibility}}">
               <TextBlock Text="Query purpose" Foreground="{DynamicResource Muted}" FontSize="12" />
               <ComboBox ItemsSource="{Binding QueryProfiles}" DisplayMemberPath="Label" SelectedValuePath="Id"
@@ -382,6 +419,14 @@
                             <Grid>
                               <Image Source="{Binding Thumbnail}" Stretch="Uniform" Margin="4" AutomationProperties.Name="Image thumbnail"
                                      AutomationProperties.ItemStatus="{Binding ThumbnailStatus}" />
+                              <Viewbox Margin="4" Stretch="Uniform" IsHitTestVisible="False"
+                                       Visibility="{Binding HasRegion, Converter={StaticResource BoolToVisibility}}">
+                                <Canvas Width="{Binding Thumbnail.PixelWidth}" Height="{Binding Thumbnail.PixelHeight}">
+                                  <Rectangle Canvas.Left="{Binding RegionLeft}" Canvas.Top="{Binding RegionTop}" Width="{Binding RegionWidth}" Height="{Binding RegionHeight}"
+                                             Stroke="{DynamicResource Accent}" StrokeThickness="{Binding RegionStroke}" Fill="#184E3DD1"
+                                             AutomationProperties.AutomationId="MatchedRegionOverlay" />
+                                </Canvas>
+                              </Viewbox>
                               <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center"
                                           Visibility="{Binding HasNoThumbnail, Converter={StaticResource BoolToVisibility}}" Margin="8">
                                 <TextBlock Text="&#xEB9F;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="28"
@@ -394,7 +439,7 @@
                           <TextBlock Text="{Binding Result.Name}" FontSize="13" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" Margin="2,10,2,5" />
                           <TextBlock Text="{Binding Result.ScoreLabel}" FontSize="11" FontWeight="Normal" Foreground="{DynamicResource SuccessText}" Margin="2,0" />
                           <TextBlock Text="{Binding Result.Metadata}" FontSize="10" FontWeight="Normal" Foreground="{DynamicResource Muted}" Margin="2,5,2,0" />
-                          <TextBlock Text="{Binding Result.EvidenceLabel}" ToolTip="{Binding Result.Snippet}" TextWrapping="Wrap"
+                          <TextBlock Text="{Binding Result.EvidenceLabel}" ToolTip="{Binding Result.EvidenceText}" TextWrapping="Wrap"
                                      FontSize="10" Foreground="{DynamicResource Accent}" Margin="2,5,2,0"
                                      Visibility="{Binding Result.HasGeneratedEvidence, Converter={StaticResource BoolToVisibility}}"
                                      AutomationProperties.AutomationId="ImageMatchEvidence" />
@@ -620,22 +665,28 @@
         <ScrollViewer VerticalScrollBarVisibility="Auto" Foreground="{DynamicResource Ink}">
           <StackPanel>
             <TextBlock Text="Model configuration" FontSize="28" FontWeight="SemiBold" />
-            <TextBlock Text="Choose compatible Hugging Face models for documents, code and images." Foreground="{DynamicResource Muted}" Margin="0,6,0,0" />
+            <TextBlock Text="Choose local Hugging Face or approved Microsoft models independently for documents, code and images." Foreground="{DynamicResource Muted}" Margin="0,6,0,0" />
             <Border Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Line}" BorderThickness="1"
                     CornerRadius="12" Padding="28" Margin="0,22,0,0">
               <StackPanel>
                 <TextBlock Text="Documents / text" FontWeight="SemiBold" />
+                <ContentControl Content="{Binding TextSource}" ContentTemplate="{StaticResource ModelSourceTemplate}" IsEnabled="{Binding IsConfigurationIdle}" />
                 <TextBox Text="{Binding TextModelUrl, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding IsConfigurationIdle}"
+                         Visibility="{Binding TextSource.IsHuggingFace, Converter={StaticResource BoolToVisibility}}"
                          TextChanged="ModelUrl_Changed" Margin="0,8,0,18" AutomationProperties.AutomationId="TextModelUrl" AutomationProperties.Name="Text model Hugging Face URL" />
                 <ContentControl Content="{Binding TextRequirements}" ContentTemplate="{StaticResource ModelRequirementTemplate}"
                                 IsEnabled="{Binding IsConfigurationIdle}" AutomationProperties.AutomationId="TextModelRequirements" />
                 <TextBlock Text="Source code" FontWeight="SemiBold" />
+                <ContentControl Content="{Binding CodeSource}" ContentTemplate="{StaticResource ModelSourceTemplate}" IsEnabled="{Binding IsConfigurationIdle}" />
                 <TextBox Text="{Binding CodeModelUrl, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding IsConfigurationIdle}"
+                         Visibility="{Binding CodeSource.IsHuggingFace, Converter={StaticResource BoolToVisibility}}"
                          TextChanged="ModelUrl_Changed" Margin="0,8,0,18" AutomationProperties.AutomationId="CodeModelUrl" AutomationProperties.Name="Code model Hugging Face URL" />
                 <ContentControl Content="{Binding CodeRequirements}" ContentTemplate="{StaticResource ModelRequirementTemplate}"
                                 IsEnabled="{Binding IsConfigurationIdle}" AutomationProperties.AutomationId="CodeModelRequirements" />
                 <TextBlock Text="Images" FontWeight="SemiBold" />
+                <ContentControl Content="{Binding ImageSource}" ContentTemplate="{StaticResource ModelSourceTemplate}" IsEnabled="{Binding IsConfigurationIdle}" />
                 <TextBox Text="{Binding ImageModelUrl, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding IsConfigurationIdle}"
+                         Visibility="{Binding ImageSource.IsHuggingFace, Converter={StaticResource BoolToVisibility}}"
                          TextChanged="ModelUrl_Changed" Margin="0,8,0,18" AutomationProperties.AutomationId="ImageModelUrl" AutomationProperties.Name="Image model Hugging Face URL" />
                 <ContentControl Content="{Binding ImageRequirements}" ContentTemplate="{StaticResource ModelRequirementTemplate}"
                                 IsEnabled="{Binding IsConfigurationIdle}" AutomationProperties.AutomationId="ImageModelRequirements" />
@@ -653,6 +704,18 @@
                                 Visibility="{Binding ImageProcessing.SupportsOcr, Converter={StaticResource BoolToVisibility}}"
                                 AutomationProperties.AutomationId="ImageOcrTask" />
                     </StackPanel>
+                    <StackPanel Margin="0,0,0,12" Visibility="{Binding ImageProcessing.SupportsRegions, Converter={StaticResource BoolToVisibility}}">
+                      <TextBlock Text="Region search (optional)" Foreground="{DynamicResource Muted}" FontSize="12" />
+                      <ComboBox ItemsSource="{Binding ImageProcessing.RegionChoices}" DisplayMemberPath="Label" SelectedValuePath="Id"
+                                SelectedValue="{Binding ImageProcessing.RegionTask, Mode=TwoWay}" Margin="0,6,0,0"
+                                AutomationProperties.AutomationId="ImageRegionTask">
+                        <ComboBox.ItemContainerStyle>
+                          <Style TargetType="ComboBoxItem"><Setter Property="AutomationProperties.Name" Value="{Binding Label}" /></Style>
+                        </ComboBox.ItemContainerStyle>
+                      </ComboBox>
+                      <TextBlock Text="Index detected labels or region descriptions. Turn off Caption to use regions instead of a whole-image caption."
+                                 Foreground="{DynamicResource Muted}" FontSize="12" TextWrapping="Wrap" Margin="0,6,0,0" />
+                    </StackPanel>
                     <CheckBox Content="Use the Documents / text model for description embeddings" IsChecked="{Binding ImageProcessing.UseTextModel}"
                               AutomationProperties.AutomationId="ImageUseTextModel" />
                     <StackPanel Margin="0,10,0,0" Visibility="{Binding ImageProcessing.UsesCustomEmbedding, Converter={StaticResource BoolToVisibility}}">
@@ -666,7 +729,7 @@
                 </Expander>
                 <TextBlock Text="Compatible embeddings share an index. Only affected representations are replaced when you apply a change."
                            TextWrapping="Wrap" Foreground="{DynamicResource Muted}" />
-                <TextBlock Text="A model must provide a supported native ONNX export and pass local CPU, GPU or NPU execution checks. No hosted inference or remote model code is used."
+                <TextBlock Text="A model must have a supported native adapter and pass local execution checks. Microsoft models require the separately installed internal provider. No hosted inference or remote model code is used."
                            TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,10,0,0" />
                 <TextBlock Text="{Binding ModelConfigurationMessage}" TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,10,0,0"
                            AutomationProperties.AutomationId="ModelConfigurationStatus" />

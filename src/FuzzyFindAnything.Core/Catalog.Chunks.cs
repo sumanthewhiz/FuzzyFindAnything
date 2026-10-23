@@ -4,7 +4,7 @@ namespace FuzzyFindAnything.Core;
 
 public sealed partial class Catalog
 {
-    private bool HasChunkSchema => Setting("schema_version") == "8";
+    private bool HasChunkSchema => Setting("schema_version") is "8" or "9" or "10";
     private void EnsureChunkSchema()
     {
         Transaction(() =>
@@ -22,7 +22,7 @@ public sealed partial class Catalog
             Add("vectors", "chunk_text", "TEXT NOT NULL DEFAULT ''");
             Add("vectors", "chunk_json", "TEXT");
             Add("job_passages", "chunk_json", "TEXT");
-            SetSetting("schema_version", "8");
+            if (!HasRegionSchema) SetSetting("schema_version", "8");
         });
     }
     public string[] ConfigureChunkingProfiles(IReadOnlyDictionary<string, string> profiles)

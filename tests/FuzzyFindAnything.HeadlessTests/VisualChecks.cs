@@ -42,7 +42,8 @@ internal static class VisualChecks
         model.FinishSearch([
             new(@"C:\Sample files\Shape guide.txt", "Shape guide.txt", "Document", 400, 0, "A red circle is a round shape on a white background.", 0.87),
             new(@"C:\Sample files\Draw circle.py", "Draw circle.py", "Code", 200, 0, "def draw_circle(canvas):\n    return canvas.create_oval(40, 40, 216, 216)", 0.81),
-            new(@"C:\Sample files\Red circle.png", "Red circle.png", "Image", 1024, 0, "Visual content", 0.92)
+            new(@"C:\Sample files\Red circle.png", "Red circle.png", "Image", 1024, 0, "Red circle", 0.92, Evidence: "objects",
+                Region: new("0", "Red circle", 0.15625, 0.15625, 0.84375, 0.84375, 256, 256))
         ], TimeSpan.FromMilliseconds(180));
         var picture = new DrawingVisual();
         using (var drawing = picture.RenderOpen())

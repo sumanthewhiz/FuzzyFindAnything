@@ -3,6 +3,9 @@ using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media.Imaging;
+using System.Windows.Media;
+using FuzzyFindAnything.Core;
+using FuzzyFindAnything.Inference;
 
 namespace FuzzyFindAnything.App.Services;
 
@@ -10,12 +13,30 @@ public static class ThumbnailLoader
 {
     private static readonly SemaphoreSlim Slots = new(2);
 
-    public static async Task<BitmapSource> LoadAsync(string path, CancellationToken cancellationToken)
+    public static async Task<BitmapSource> LoadAsync(SearchResult match, CancellationToken cancellationToken)
     {
         await Slots.WaitAsync(cancellationToken);
         try
         {
-            return await Task.Run(() => Load(path, cancellationToken), cancellationToken);
+            return await Task.Run(() =>
+            {
+                string path = match.Path;
+                var region = match.Region;
+                if (region is null) return Load(path, cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                region.Validate();
+                var source = FilePaths.Inspect(path);
+                if (source.MtimeNs != match.MtimeNs || source.Size != match.Size)
+                    throw new IOException("Image changed; search again after reindexing for the region preview.");
+                var decoded = ImagePipeline.Decode(path);
+                if (decoded.Width != region.SourceWidth || decoded.Height != region.SourceHeight || FilePaths.Inspect(path) != source)
+                    throw new IOException("Image changed; search again after reindexing for the region preview.");
+                double scale = Math.Min(360d / decoded.Width, 240d / decoded.Height);
+                var pixels = ImagePipeline.Resize(decoded, Math.Max(1, (int)Math.Round(decoded.Width * scale)),
+                    Math.Max(1, (int)Math.Round(decoded.Height * scale)));
+                var result = BitmapSource.Create(pixels.Width, pixels.Height, 96, 96, PixelFormats.Rgb24, null, pixels.Pixels, pixels.Width * 3);
+                result.Freeze(); cancellationToken.ThrowIfCancellationRequested(); return result;
+            }, cancellationToken);
         }
         finally
         {

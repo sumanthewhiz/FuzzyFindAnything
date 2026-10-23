@@ -133,6 +133,6 @@ public sealed record ModelOptions(string QueryProfile = "", string Device = "Aut
 
 public sealed record ModelRequirement(string Kind, string ModelUrl, string State, string Summary, string Details,
     QueryProfile[] QueryProfiles, string DefaultQuery, bool IsSimple, string? Error = null,
-    ImageModelDefinition? ImageModel = null, string? EmbeddingModel = null);
+    ImageModelDefinition? ImageModel = null, string? EmbeddingModel = null, ProviderDevice[]? Devices = null);
 
 public sealed record ModelInspection(ModelSelection Selection, ModelRequirement[] Requirements);

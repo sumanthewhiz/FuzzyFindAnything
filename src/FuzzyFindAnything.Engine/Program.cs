@@ -63,6 +63,25 @@ internal static class Program
                     id = request.GetProperty("id").GetString();
                     string command = request.GetProperty("command").GetString() ?? "";
                     var arguments = request.TryGetProperty("args", out var value) ? value : default;
+                    if (command == "provider_catalog")
+                    {
+                        inspections.RemoveAll(task => task.IsCompleted);
+                        if (inspections.Count >= 3) throw new InvalidOperationException("Provider discovery is already in progress. Wait for the current checks.");
+                        string provider = arguments.GetProperty("provider").GetString() ?? throw new ArgumentException("A model provider is required.");
+                        string? version = arguments.TryGetProperty("version", out var requestedVersion) ? requestedVersion.GetString() : null;
+                        bool refresh = arguments.TryGetProperty("refresh", out var requestedRefresh) && requestedRefresh.GetBoolean();
+                        string? requestId = id;
+                        inspections.Add(Task.Run(async () =>
+                        {
+                            try { Send(new { id = requestId, ok = true, result = await engine.ProviderCatalogAsync(provider, version, refresh) }); }
+                            catch (Exception error)
+                            {
+                                log.Write("provider", error.ToString());
+                                Send(new { id = requestId, ok = false, error = error.Message });
+                            }
+                        }));
+                        continue;
+                    }
                     if (command is "apply_models" or "inspect_models")
                     {
                         if (command == "apply_models" && applying is { IsCompleted: false })

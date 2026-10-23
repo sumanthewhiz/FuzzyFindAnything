@@ -96,6 +96,9 @@ internal sealed class ImageSequenceModel : IDisposable
     public static ImageSequenceModel Create(string directory, ImageModelDefinition model, int threads,
         Action<string> progress, string? requiredDevice)
     {
+        var probeTasks = model.Tasks.Where(task => task.OutputKind == "text").ToArray();
+        if (probeTasks.Length == 0)
+            throw new NotSupportedException("This native image adapter requires a reviewed text task for its startup execution probe.");
         var devices = DeviceExecution.Candidates();
         if (requiredDevice is not null)
         {
@@ -116,7 +119,9 @@ internal sealed class ImageSequenceModel : IDisposable
                     new byte[] { 255, 0, 0, 255, 0, 0, 255, 0, 0, 255, 0, 0 }, 6);
                 var png = new PngBitmapEncoder(); png.Frames.Add(BitmapFrame.Create(image));
                 using (var file = File.Create(probe)) png.Save(file);
-                foreach (var task in model.Tasks)
+                // A blank readiness image has no objects. Text tasks exercise the same native
+                // graph/cache path; region task quality is qualified with real image fixtures.
+                foreach (var task in probeTasks)
                 {
                     var result = candidate.Generate(probe, task.Id);
                     result.Validate(task.Id);
@@ -221,6 +226,8 @@ internal sealed class ImageSequenceModel : IDisposable
         finally { foreach (var state in past.Values) state.Dispose(); }
         string text = tokenizer.Decode(generated.Where(value =>
             value != recipe.BeginningToken && value != recipe.EndToken && value != recipe.PaddingToken)).Trim();
+        if (task.OutputKind == "regions")
+            return RegionPostprocessor.Parse(task.Id, text, source.Width, source.Height, finished, generated.Count);
         if (text.Length == 0)
             return taskId == "ocr" && finished ? new(taskId, "", "Empty", generated.Count) :
                 new(taskId, "", "Failed", generated.Count, Error: "No valid image description was generated.", ErrorCode: "image_no_description");

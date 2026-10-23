@@ -264,6 +264,9 @@ public sealed class IndexingEngine : IAsyncDisposable
         inspection.CancelAfter(TimeSpan.FromSeconds(30));
         return await manager.InspectAsync(selection, inspection.Token);
     }
+    public Task<ProviderCatalog> ProviderCatalogAsync(string provider, string? version, bool refresh) =>
+        model is ModelManager manager ? manager.ProviderCatalogAsync(provider, version, refresh, lifetime.Token) :
+            throw new NotSupportedException("Local model providers are not available.");
     private async Task LoadAsync()
     {
         try
@@ -517,14 +520,19 @@ public sealed class IndexingEngine : IAsyncDisposable
                     var warnings = new List<string>();
                     foreach (string task in understanding.Descriptor.Tasks)
                     {
+                        var profile = understanding.Descriptor.Model.Task(task);
                         string key = understanding.Descriptor.Model.TaskKey(task);
                         var stored = Store.ReadImageTask(job, key);
                         if (stored is null || stored.Result.State == "Failed" && stored.Result.Retryable &&
                             (stored.RetryAt is null || stored.RetryAt <= FilePaths.UnixNow))
                         {
-                            Activity(job, "Generating " + understanding.Descriptor.Model.Task(task).Label);
+                            Activity(job, "Generating " + profile.Label);
                             ImageTaskResult result;
-                            try { result = await understanding.GenerateAsync(job.Path, task, cancellation); }
+                            try
+                            {
+                                result = await understanding.GenerateAsync(job.Path, task, cancellation);
+                                result.Validate(profile);
+                            }
                             catch (Exception failure) when (failure is IOException or TimeoutException)
                             {
                                 result = new(task, "", "Failed", Error: failure.Message,
@@ -536,14 +544,26 @@ public sealed class IndexingEngine : IAsyncDisposable
                                 job.ContentHash.Length > 0 && FilePaths.Hash(job.Path) != job.ContentHash) throw new SourceChanged();
                             stored = Store.SaveImageTask(job, key, result);
                         }
+                        stored.Result.Validate(profile);
                         outcomes.Add(stored);
                         if (stored.Result.Warning is { Length: > 0 } warning) warnings.Add(task + ": " + warning);
                         if (stored.Result.State == "Failed") warnings.Add(task + ": " + stored.Result.Error);
                         if (stored.Result.State is "Completed" or "Partial")
                         {
                             Activity(job, "Preparing image text");
-                            string[] parts = await encoder.SplitAsync(stored.Result.Text, cancellation);
-                            passages.AddRange(parts.Select(text => new Passage(0, text, task, stored.Id)));
+                            if (stored.Result.Regions is { } regions)
+                            {
+                                foreach (var region in regions)
+                                {
+                                    string[] parts = await encoder.SplitAsync(region.Text, cancellation);
+                                    passages.AddRange(parts.Select(text => new Passage(0, text, task, stored.Id, region)));
+                                }
+                            }
+                            else
+                            {
+                                string[] parts = await encoder.SplitAsync(stored.Result.Text, cancellation);
+                                passages.AddRange(parts.Select(text => new Passage(0, text, task, stored.Id)));
+                            }
                         }
                     }
                     CheckCurrent(job, cancellation); CheckSourceScope(job);

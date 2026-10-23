@@ -22,6 +22,11 @@ internal static class Program
         if (args.Length > 0 && args[0] == "model-config") { ModelConfigurationTests.Run(); return 0; }
         if (args.Length > 0 && args[0] == "embedding-recipes") { EmbeddingRecipeTests.Run(); return 0; }
         if (args.Length > 0 && args[0] == "image-pipeline") { ImagePipelineTests.Run(); return 0; }
+        if (args.Length > 0 && args[0] == "regions") { RegionTests.Run(); return 0; }
+        if (args.Length > 0 && args[0] == "providers") { ProviderTests.Run(); return 0; }
+        if (args.Length > 0 && args[0] == "provider-integration") { ProviderIntegrationTests.RunAsync(args[1], args[2], args[3], args[4], args[5], args.Length > 6 ? args[6] : null).GetAwaiter().GetResult(); return 0; }
+        if (args.Length > 0 && args[0] == "region-models") { RegionModelTests.RunAsync(args[1], args[2], args[3], args[4]).GetAwaiter().GetResult(); return 0; }
+        if (args.Length > 0 && args[0] == "region-integration") { RegionModelTests.IntegrationAsync(args[1], args[2], args[3], args[4], args[5], args[6]).GetAwaiter().GetResult(); return 0; }
         if (args.Length > 0 && args[0] == "chunking") { ContentChunkingTests.Run(); return 0; }
         if (args.Length > 0 && args[0] == "search-options") { SearchPreferenceTests.Run(); return 0; }
         if (args.Length > 0 && args[0] == "chunking-runtime") { ContentChunkingTests.RuntimeAsync(args[1], args[2], args[3], args[4]).GetAwaiter().GetResult(); return 0; }
@@ -51,6 +56,8 @@ internal static class Program
         ModelConfigurationTests.Run();
         EmbeddingRecipeTests.Run();
         ImagePipelineTests.Run();
+        RegionTests.Run();
+        ProviderTests.Run();
         ContentChunkingTests.Run();
         SearchPreferenceTests.Run();
         SchedulingTests.RunAsync().GetAwaiter().GetResult();

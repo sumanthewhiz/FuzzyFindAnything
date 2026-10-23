@@ -7,7 +7,7 @@ public sealed record StoredImageTask(long Id, ImageTaskResult Result, int Attemp
 
 public sealed partial class Catalog
 {
-    private bool HasImageSchema => Setting("schema_version") is "7" or "8";
+    private bool HasImageSchema => Setting("schema_version") is "7" or "8" or "9" or "10";
     private string IndexingKey(string kind) => kind == "Image" && imagePipeline is not null
         ? imagePipeline.Fingerprint : routes[kind].IndexingFingerprint +
             (kind is "Document" or "Code" ? ":" + (Setting("chunking:" + kind) ?? ChunkingProfiles.Legacy) : "");
@@ -68,12 +68,13 @@ public sealed partial class Catalog
         Transaction(() =>
         {
             long file = ImageFile(job);
-            result = Query("""
-                SELECT id,task,content,state,generated_tokens,warning,error,error_code,retryable,attempts,retry_at
+            result = Query($"""
+                SELECT id,task,content,state,generated_tokens,warning,error,error_code,retryable,attempts,retry_at,{(HasRegionSchema ? "region_json" : "NULL")}
                 FROM image_representations WHERE file_id=$p0 AND source_key=$p1 AND task_key=$p2
                 """, row => new StoredImageTask(row.GetInt64(0),
                     new(row.GetString(1), row.GetString(2), row.GetString(3), row.GetInt32(4), NullableString(row, 5),
-                        NullableString(row, 6), NullableString(row, 7), row.GetBoolean(8)),
+                        NullableString(row, 6), NullableString(row, 7), row.GetBoolean(8),
+                        row.IsDBNull(11) ? null : JsonSerializer.Deserialize<ImageRegion[]>(row.GetString(11), Protocol.Json)),
                     row.GetInt32(9), row.IsDBNull(10) ? null : row.GetDouble(10)), file, SourceKey(job), taskKey).FirstOrDefault();
         });
         return result;
@@ -101,6 +102,9 @@ public sealed partial class Catalog
                 result.GeneratedTokens, attempts, retryable, retryAt, DateTimeOffset.UtcNow.ToString("O"));
             long id = Scalar<long>("SELECT id FROM image_representations WHERE file_id=$p0 AND source_key=$p1 AND task_key=$p2",
                 file, SourceKey(job), taskKey);
+            if (result.Regions is not null && !HasRegionSchema) throw new InvalidDataException("Region storage is not enabled.");
+            if (HasRegionSchema) Execute("UPDATE image_representations SET region_json=$p0 WHERE id=$p1",
+                result.Regions is null ? null : JsonSerializer.Serialize(result.Regions, Protocol.Json), id);
             saved = new(id, result, attempts, retryAt);
         });
         return saved!;
@@ -113,8 +117,17 @@ public sealed partial class Catalog
         {
             if (!IsCurrent(job)) return;
             for (int index = 0; index < passages.Count; index++)
+            {
                 Execute("INSERT OR IGNORE INTO job_passages(job_id,ordinal,content,representation,representation_id) VALUES($p0,$p1,$p2,$p3,$p4)",
                     job.Id, index, passages[index].Content, passages[index].Representation, passages[index].RepresentationId);
+                if (passages[index].Region is { } region)
+                {
+                    if (!HasRegionSchema) throw new InvalidDataException("Region passage storage is unavailable.");
+                    region.Validate();
+                    Execute("UPDATE job_passages SET region_json=$p0 WHERE job_id=$p1 AND ordinal=$p2",
+                        JsonSerializer.Serialize(region, Protocol.Json), job.Id, index);
+                }
+            }
             Execute("UPDATE index_jobs SET prepared=1,warning=$p0 WHERE id=$p1", warning, job.Id);
             prepared = true;
         });

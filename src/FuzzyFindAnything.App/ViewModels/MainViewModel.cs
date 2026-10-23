@@ -56,6 +56,17 @@ public sealed class MainViewModel : ObservableObject
     {
         foreach (var requirement in new[] { TextRequirements, CodeRequirements, ImageRequirements })
             requirement.PropertyChanged += (_, _) => Changed(nameof(CanApplyModels));
+        foreach (var source in ModelSources)
+        {
+            source.PropertyChanged += (_, _) => Changed(nameof(CanApplyModels));
+            source.SelectionChanged += reload =>
+            {
+                var requirements = source.Kind == "Document" ? TextRequirements : source.Kind == "Code" ? CodeRequirements : ImageRequirements;
+                requirements.Reset(false);
+                if (source.Kind == "Image") ImageProcessing.Reset(source.IsMicrosoft ? "" : ImageModelUrl);
+                ModelSourceChanged?.Invoke(source, reload);
+            };
+        }
     }
     private string query = "";
     private SearchPreferences searchOptions = new();
@@ -92,6 +103,11 @@ public sealed class MainViewModel : ObservableObject
     public ModelRequirementViewModel TextRequirements { get; } = new();
     public ModelRequirementViewModel CodeRequirements { get; } = new();
     public ModelRequirementViewModel ImageRequirements { get; } = new();
+    public ModelSourceViewModel TextSource { get; } = new("Document");
+    public ModelSourceViewModel CodeSource { get; } = new("Code");
+    public ModelSourceViewModel ImageSource { get; } = new("Image");
+    public IEnumerable<ModelSourceViewModel> ModelSources => [TextSource, CodeSource, ImageSource];
+    public event Action<ModelSourceViewModel, bool>? ModelSourceChanged;
     public ImagePipelineViewModel ImageProcessing { get; } = new();
     private ImagePipelineStatus? imagePipelineStatus;
     public bool HasImagePipeline => imagePipelineStatus is not null;
@@ -121,13 +137,13 @@ public sealed class MainViewModel : ObservableObject
             Set(ref imageModelUrl, value);
         }
     }
-    public ModelSelection DraftModels => new ModelSelection(TextModelUrl, CodeModelUrl, ImageModelUrl,
+    public ModelSelection DraftModels => new ModelSelection(TextSource.Reference(TextModelUrl), CodeSource.Reference(CodeModelUrl), ImageSource.Reference(ImageModelUrl),
         TextRequirements.Options, CodeRequirements.Options, ImageProcessing.IsVisible
             ? ImageRequirements.Options is { } options ? options with { QueryProfile = "" } : null : ImageRequirements.Options,
         ImageProcessing.Options(ImageRequirements.SelectedQueryProfile)).Normalize();
     public string ModelConfigurationMessage { get => modelConfigurationMessage; set => Set(ref modelConfigurationMessage, value); }
     public ObservableCollection<ModelIndexState> ModelIndexes { get; } = [];
-    public bool CanApplyModels => CanConfigure && !IsEngineLoading && !FoldersBusy &&
+    public bool CanApplyModels => CanConfigure && !IsEngineLoading && !FoldersBusy && ModelSources.All(source => source.IsReady) &&
         new[] { TextRequirements, CodeRequirements, ImageRequirements }.All(requirement =>
             !requirement.RequiresQueryChoice || requirement.SelectedQueryProfile.Length > 0);
 
@@ -332,7 +348,10 @@ public sealed class MainViewModel : ObservableObject
 
     public void ApplyModels(ModelSelection selection)
     {
-        TextModelUrl = selection.Text; CodeModelUrl = selection.Code; ImageModelUrl = selection.Image;
+        foreach (var source in ModelSources) source.Restore(selection.ReferenceFor(source.Kind));
+        if (TextSource.IsHuggingFace) TextModelUrl = selection.Text;
+        if (CodeSource.IsHuggingFace) CodeModelUrl = selection.Code;
+        if (ImageSource.IsHuggingFace) ImageModelUrl = selection.Image;
         TextRequirements.Restore(selection.OptionsFor("Document"));
         CodeRequirements.Restore(selection.OptionsFor("Code"));
         ImageRequirements.Restore(selection.OptionsFor("Image"));
@@ -503,8 +522,19 @@ public sealed class ImageResultViewModel(SearchResult result) : ObservableObject
     public BitmapSource? Thumbnail
     {
         get => thumbnail;
-        set { Set(ref thumbnail, value); Changed(nameof(HasNoThumbnail)); Changed(nameof(ThumbnailStatus)); }
+        set
+        {
+            Set(ref thumbnail, value); Changed(nameof(HasNoThumbnail)); Changed(nameof(ThumbnailStatus));
+            foreach (string property in new[] { nameof(HasRegion), nameof(RegionLeft), nameof(RegionTop), nameof(RegionWidth), nameof(RegionHeight), nameof(RegionStroke) })
+                Changed(property);
+        }
     }
+    public bool HasRegion => Thumbnail is not null && Result.Region is not null;
+    public double RegionLeft => (Result.Region?.Left ?? 0) * (Thumbnail?.PixelWidth ?? 1);
+    public double RegionTop => (Result.Region?.Top ?? 0) * (Thumbnail?.PixelHeight ?? 1);
+    public double RegionWidth => ((Result.Region?.Right ?? 0) - (Result.Region?.Left ?? 0)) * (Thumbnail?.PixelWidth ?? 1);
+    public double RegionHeight => ((Result.Region?.Bottom ?? 0) - (Result.Region?.Top ?? 0)) * (Thumbnail?.PixelHeight ?? 1);
+    public double RegionStroke => Math.Max((Thumbnail?.PixelWidth ?? 1) / 152d, (Thumbnail?.PixelHeight ?? 1) / 116d) * 2;
     public bool HasNoThumbnail => Thumbnail is null;
     public string ThumbnailStatus => HasNoThumbnail ? ThumbnailMessage : "Preview loaded";
     public string ThumbnailMessage

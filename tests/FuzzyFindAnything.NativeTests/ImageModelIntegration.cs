@@ -11,7 +11,6 @@ namespace FuzzyFindAnything.NativeTests;
 internal static class ImageModelIntegration
 {
     private const string FineTuned = "https://huggingface.co/microsoft/Florence-2-base-ft";
-    private const string Base = "https://huggingface.co/microsoft/Florence-2-base";
     private const string Text = "https://huggingface.co/sentence-transformers/paraphrase-MiniLM-L3-v2";
     private const string Alternate = "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2";
     private const string Clip = "https://huggingface.co/Xenova/clip-vit-base-patch32";
@@ -52,9 +51,9 @@ internal static class ImageModelIntegration
         string fixture = Path.Combine(output, "caption-ocr.png"); Fixture(fixture);
         var imageAssets = new ImageModelAssets(imageCache);
         var nativeResults = new List<object>();
-        foreach (string url in new[] { FineTuned, Base })
+        foreach (var definition in ImageModelRecipes.Registered)
         {
-            var definition = ImageModelRecipes.Find(url)!;
+            string url = definition.ModelUrls[0];
             await using var worker = await InferenceClient.StartAsync(
                 Path.Combine(package, "hf-inference", "FuzzyFindAnything.HuggingFaceInference.exe"),
                 imageAssets.DirectoryFor(definition), 2, (_, stage) => Console.WriteLine(stage), Console.Error.WriteLine,

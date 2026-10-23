@@ -5,7 +5,9 @@ param(
     [string]$ApplicationDirectory,
     [string]$ModelCache,
     [string]$EmbeddingModelCache,
-    [string]$ImageModelCache
+    [string]$ImageModelCache,
+    [string]$RegionImage,
+    [string]$ProviderConfiguration
 )
 
 $ErrorActionPreference = 'Stop'
@@ -184,6 +186,18 @@ function Read-QueryPurpose {
     $selection[0].Current.Name
 }
 
+function Select-ModelChoice([string]$id, [string]$value) {
+    $control = Find-Id $id
+    if (-not $control) { throw "Missing model selector $id" }
+    ([System.Windows.Automation.ExpandCollapsePattern]$control.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)).Expand()
+    $choices = $control.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+        (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::IsSelectionItemPatternAvailableProperty, $true)))
+    $choice = @($choices | Where-Object { $_.Current.ItemStatus -eq $value }) | Select-Object -First 1
+    if (-not $choice) { throw "Missing model choice $value in $id" }
+    ([System.Windows.Automation.SelectionItemPattern]$choice.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)).Select()
+    ([System.Windows.Automation.ExpandCollapsePattern]$control.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)).Collapse()
+}
+
 function Set-SearchThreshold([string]$kind, [double]$value) {
     ([System.Windows.Automation.RangeValuePattern](Find-Id ($kind + 'MinimumSimilarity')).GetCurrentPattern(
         [System.Windows.Automation.RangeValuePattern]::Pattern)).SetValue($value)
@@ -259,10 +273,16 @@ try {
         $configuration = New-Object Xml.XmlDocument
         $configuration.LoadXml('<FuzzyFindAnythingConfiguration version="2"><Models><Text modelUrl="https://huggingface.co/sentence-transformers/paraphrase-MiniLM-L3-v2"/><Code modelUrl="https://huggingface.co/sentence-transformers/paraphrase-MiniLM-L3-v2"/><Image modelUrl="https://huggingface.co/microsoft/Florence-2-base-ft" mode="described"><Tasks caption="true" ocr="false"/><Embedding use="Text"/></Image></Models></FuzzyFindAnythingConfiguration>')
         $configuration.Save((Join-Path $data 'settings.xml'))
+        if ($RegionImage) { Copy-Item -LiteralPath $RegionImage -Destination (Join-Path $corpus 'Region car.jpg') }
     }
     if ($EmbeddingModelCache) {
         New-Item -ItemType Directory -Force -Path (Join-Path $data 'models') | Out-Null
         Get-ChildItem -LiteralPath $EmbeddingModelCache -Directory | Copy-Item -Destination (Join-Path $data 'models') -Recurse
+    }
+    if ($ProviderConfiguration) {
+        $configuration = New-Object Xml.XmlDocument
+        $configuration.LoadXml('<FuzzyFindAnythingConfiguration version="2"><Models><Text modelUrl="https://huggingface.co/sentence-transformers/paraphrase-MiniLM-L3-v2"/><Code modelUrl="https://huggingface.co/sentence-transformers/paraphrase-MiniLM-L3-v2"/><Image modelUrl="https://huggingface.co/Xenova/clip-vit-base-patch32"/></Models></FuzzyFindAnythingConfiguration>')
+        $configuration.Save((Join-Path $data 'settings.xml'))
     }
     $process = Start-Process -FilePath $app -ArgumentList @('--data-dir', "`"$data`"") -PassThru
     Wait-Check {
@@ -305,9 +325,70 @@ try {
         return
     }
     Wait-Check { Select-Tab 'SearchTab'; (Find-Id 'SearchButton').Current.IsEnabled } 'model ready' 360
+    if ($ProviderConfiguration) {
+        $providerCases = Get-Content -LiteralPath $ProviderConfiguration -Raw | ConvertFrom-Json
+        $selection = $providerCases[0]
+        Select-Tab 'FoldersTab'
+        Wait-Check { (Find-Id 'IndexCounts').Current.Name -like '3 files |*' } 'provider baseline indexing' 180
+        Select-Tab 'ModelsTab'
+        foreach ($binding in @(@{Prefix='Text';Reference=$selection.text},@{Prefix='Code';Reference=$selection.code},@{Prefix='Image';Reference=$selection.image})) {
+            $reference = [Uri]$binding.Reference
+            if ($reference.Scheme -ne 'provider') { continue }
+            $prefix = $binding.Prefix
+            $parts = $reference.AbsolutePath.Trim('/').Split('/')
+            Select-ModelChoice ($prefix+'ModelSource') 'microsoft'
+            Wait-Check { (Find-Id ($prefix+'MicrosoftModel')).Current.IsEnabled } 'Microsoft catalog readiness' 180
+            ([System.Windows.Automation.ExpandCollapsePattern](Find-Id ($prefix+'PsapiOptions')).GetCurrentPattern(
+                [System.Windows.Automation.ExpandCollapsePattern]::Pattern)).Expand()
+            Invoke-Button ($prefix+'PsapiRefresh')
+            Wait-Check { (Find-Id ($prefix+'PsapiRefresh')).Current.IsEnabled } 'live PSAPI version discovery' 180
+            Select-ModelChoice ($prefix+'PsapiVersion') $parts[0]
+            Wait-Check { (Find-Id ($prefix+'MicrosoftModel')).Current.IsEnabled } 'selected drop model catalog' 180
+            Select-ModelChoice ($prefix+'MicrosoftModel') $parts[1]
+        }
+        if ((Find-Id 'CodeModelUrl') -or (Find-Id 'ImageModelUrl') -or (Find-Id 'ImagePipelineOptions')) {
+            throw 'Microsoft direct models leaked Hugging Face or image-generation controls.'
+        }
+        Wait-Check { (Find-Id 'ApplyModelsButton').Current.IsEnabled } 'valid mixed-source selection' 90
+        Invoke-Button 'ApplyModelsButton'
+        Wait-Check { (Find-Id 'ApplyModelsButton').Current.IsEnabled -and
+            (Find-Id 'ModelConfigurationStatus').Current.Name -like '*Reindexing complete*' } 'mixed provider Apply and indexing' 600
+        [xml]$providerSettings = Get-Content -LiteralPath (Join-Path $data 'settings.xml') -Raw
+        foreach ($kind in @('Code','Image')) {
+            $node = $providerSettings.FuzzyFindAnythingConfiguration.Models.SelectSingleNode($kind)
+            $reference = [Uri]$selection.($kind.ToLowerInvariant())
+            $parts = $reference.AbsolutePath.Trim('/').Split('/')
+            if ($node.provider -ne 'microsoft' -or $node.version -ne $parts[0] -or $node.modelId -ne $parts[1] -or $node.modelUrl) {
+                throw 'The mixed provider/source/version selection was not persisted.'
+            }
+        }
+        Select-Tab 'SearchTab'
+        foreach ($kind in @('Document','Code','Image')) { Set-SearchThreshold $kind 0 }
+        ([System.Windows.Automation.ValuePattern](Find-Id 'SearchInput').GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)).SetValue('a red circle on a white background')
+        Invoke-Button 'SearchButton'
+        Wait-Check {
+            $window.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
+                (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Red circle.png'))) -ne $null
+        } 'Microsoft-backed image gallery result' 90
+        Toggle-Control 'ThemeToggle'
+        Toggle-Control 'ThemeToggle'
+        [xml]$saved = Get-Content -LiteralPath (Join-Path $data 'settings.xml') -Raw
+        if ($saved.FuzzyFindAnythingConfiguration.version -ne '4' -or $saved.FuzzyFindAnythingConfiguration.Models.Code.provider -ne 'microsoft') {
+            throw 'Saving appearance lost provider settings.'
+        }
+        Minimize-ToTray
+        [FfaUiChecks]::TrayClick($trayHandle, $false)
+        Wait-Check { [FfaUiChecks]::IsWindowVisible([FfaUiChecks]::FindWindow($process.Id, $false)) } 'provider-test tray restore' 15
+        Refresh-Window
+        Invoke-Button 'QuitButton'
+        if (-not $process.WaitForExit(50000)) { throw 'The mixed-provider UI did not quit.' }
+        Write-Output 'ALL NATIVE PROVIDER UI CHECKS PASSED: independent sources, live versions, fixed models, adaptive controls, Apply, retrieval and persistence'
+        return
+    }
     if ($ImageModelCache) {
         Select-Tab 'FoldersTab'
-        Wait-Check { (Find-Id 'IndexCounts').Current.Name -like '3 files |*' } 'initial described image' 360
+        $expectedFiles = if ($RegionImage) { 4 } else { 3 }
+        Wait-Check { (Find-Id 'IndexCounts').Current.Name -like "$expectedFiles files |*" } 'initial described image' 360
         Select-Tab 'ModelsTab'
         Wait-Check { Find-Id 'ImagePipelineOptions' } 'model-specific image requirements' 60
         ([System.Windows.Automation.ExpandCollapsePattern](Find-Id 'ImagePipelineOptions').GetCurrentPattern(
@@ -331,6 +412,41 @@ try {
         Wait-Check { (Find-Id 'ImageMatchEvidence') -and (Find-Id 'ImageMatchEvidence').Current.Name -eq 'OCR text' } 'OCR-backed image gallery result' 90
         if ((Find-Id 'ImageMatchEvidence').Current.HelpText -notlike '*HELLO SEARCH 123*') { throw 'The image match lost its generated-text evidence.' }
         Select-Tab 'ModelsTab'
+        if ($RegionImage) {
+            $regions = Find-Id 'ImageRegionTask'
+            ([System.Windows.Automation.ExpandCollapsePattern]$regions.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)).Expand()
+            $choices = $regions.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::IsSelectionItemPatternAvailableProperty, $true)))
+            $choice = @($choices | Where-Object { $_.Current.Name -eq 'Object labels' }) | Select-Object -First 1
+            if (-not $choice) { throw 'The region task selector has no accessible Object labels choice.' }
+            ([System.Windows.Automation.SelectionItemPattern]$choice.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)).Select()
+            ([System.Windows.Automation.ExpandCollapsePattern]$regions.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)).Collapse()
+            Toggle-Control 'ImageCaptionTask'
+            Toggle-Control 'ImageOcrTask'
+            Invoke-Button 'ApplyModelsButton'
+            Wait-Check { (Find-Id 'ApplyModelsButton').Current.IsEnabled -and
+                (Find-Id 'ModelConfigurationStatus').Current.Name -match 'Reindexing (complete|finished)' } 'region-only image indexing' 360
+            [xml]$regionSettings = Get-Content -LiteralPath (Join-Path $data 'settings.xml') -Raw
+            if ($regionSettings.FuzzyFindAnythingConfiguration.Models.Image.Tasks.regions -ne 'objects' -or
+                $regionSettings.FuzzyFindAnythingConfiguration.Models.Image.Tasks.caption -ne 'false') { throw 'Region-only selection was not retained.' }
+            Select-Tab 'SearchTab'
+            ([System.Windows.Automation.ValuePattern](Find-Id 'SearchInput').GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)).SetValue('wheel')
+            Invoke-Button 'SearchButton'
+            Wait-Check {
+                $gallery = Find-Id 'ImageGallery'
+                $script:regionCard = $gallery.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
+                    (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty,'Region car.jpg')))
+                $script:regionCard -ne $null
+            } 'region-backed image match' 90
+            Wait-Check {
+                $evidence = $script:regionCard.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
+                    (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty,'ImageMatchEvidence')))
+                $evidence -and $evidence.Current.Name -eq 'Region label' -and $evidence.Current.HelpText -like '*wheel*'
+            } 'matched region evidence'
+            [FfaUiChecks]::Capture($mainHandle, (Join-Path $root '.downloads\\ui-region-match.png'))
+            Select-Tab 'ModelsTab'
+            Write-Output 'PASS optional region-only configuration, persisted task, image retrieval and region evidence'
+        }
         ([System.Windows.Automation.ValuePattern](Find-Id 'ImageModelUrl').GetCurrentPattern(
             [System.Windows.Automation.ValuePattern]::Pattern)).SetValue('https://huggingface.co/Xenova/clip-vit-base-patch32')
         Wait-Check { -not (Find-Id 'ImagePipelineOptions') } 'direct-model simple configuration' 45

@@ -72,7 +72,7 @@ public sealed record FolderState(int Id, string Path, string Status = "In Progre
 public sealed record IndexInfo(string TypeVersion, string DatabaseLocation, long TotalFiles, long TotalDocuments,
     long TotalImages, long DatabaseSizeBytes, string? LastRefreshed, long TotalCodeFiles = 0);
 public sealed record ResultFile(string Path, string Name, string Kind, long Size, long MtimeNs, string Snippet, double Score,
-    string Evidence = "", string MatchedChunk = "", ChunkMetadata? Chunk = null);
+    string Evidence = "", string MatchedChunk = "", ChunkMetadata? Chunk = null, ImageRegion? Region = null);
 public sealed record CpuState(int TotalCores, int CoreLimit, int WorkerCount, int ThreadsPerWorker,
     int FileWorkerCount, int LastBatchSize);
 public sealed record ActivityState(string Path, string Stage, int CompletedPassages, int TotalPassages);
@@ -98,7 +98,7 @@ public sealed record IndexedFile(long Id, string Path, string PathKey, Fingerpri
     string? Error, string? ErrorCode, double? RetryAfter, int FailureCount, string? Warning, string ContentHash);
 public sealed record IndexJob(long Id, string Path, string PathKey, Fingerprint Fingerprint, string ContentHash,
     string Kind, int Revision, bool Prepared, int Attempts, double ElapsedMs);
-public sealed record Passage(int Ordinal, string Content, string Representation = "", long? RepresentationId = null);
+public sealed record Passage(int Ordinal, string Content, string Representation = "", long? RepresentationId = null, ImageRegion? Region = null);
 
 public sealed class StartupProgress(Action<StartupState>? report = null)
 {

@@ -5,6 +5,7 @@ public sealed class ModelManager : IEmbeddings
     private readonly object gate = new();
     private readonly HuggingFaceModels cache;
     private readonly ImageModelAssets imageAssets;
+    private readonly ExternalModels external;
     private readonly string legacyHost, compatibleHost, dataDirectory;
     private readonly CpuBudget budget;
     private readonly Action<string> log;
@@ -20,12 +21,13 @@ public sealed class ModelManager : IEmbeddings
     private string warning = "";
 
     public ModelManager(string dataDirectory, string modelDirectory, string legacyHost, string compatibleHost,
-        CpuBudget budget, Action<string> log)
+        CpuBudget budget, Action<string> log, string? providerDirectory = null)
     {
         this.dataDirectory = dataDirectory; this.legacyHost = legacyHost; this.compatibleHost = compatibleHost;
         this.budget = budget; this.log = log;
         cache = new(Path.Combine(dataDirectory, "models"), modelDirectory);
         imageAssets = new(Path.Combine(dataDirectory, "models", "image-understanding"));
+        external = new(Path.Combine(dataDirectory, "models", "external"), log, providerDirectory);
     }
     public void Bind(Catalog store) => catalog = store;
     public ModelSelection Selection { get { lock (gate) return applied; } }
@@ -47,6 +49,8 @@ public sealed class ModelManager : IEmbeddings
     private static string QueryFor(string kind, EmbeddingSpace space, ModelOptions options) =>
         options.QueryProfile.Length > 0 ? options.QueryProfile : space.Recipe?.DefaultQuery(kind) ?? "default";
     private static string SessionKey(EmbeddingSpace space, ModelOptions options) => space.CacheKey + ":" + options.Device;
+    private static string LookupKey(ModelSelection selection, string kind) => selection.ReferenceFor(kind) is ProviderModelReference
+        ? selection.ForKind(kind) + "\n" + selection.OptionsFor(kind).Device : selection.ForKind(kind);
     public int ReadyWorkers => ActiveModels.Sum(model => model.ReadyWorkers) + (ImageUnderstanding?.IsLoaded == true ? 1 : 0);
     public int Threads => ActiveModels.Select(model => model.Threads).DefaultIfEmpty(1).Max();
     public int BatchConcurrency => Math.Max(1, Math.Min(budget.Processors, ReadyWorkers * 2));
@@ -67,8 +71,14 @@ public sealed class ModelManager : IEmbeddings
         var wanted = ModelSelection.Load(dataDirectory);
         var encoded = wanted.EmbeddingSelection();
         var spaces = new Dictionary<string, EmbeddingSpace>();
-        foreach (string url in encoded.DistinctUrls)
-            spaces[url] = catalog?.Spaces.FirstOrDefault(space => space.ModelUrl == url) ?? cache.FindCached(url);
+        foreach (string kind in new[] { "Document", "Code", "Image" })
+        {
+            string url = encoded.ForKind(kind), key = LookupKey(encoded, kind);
+            if (spaces.ContainsKey(key)) continue;
+            spaces[key] = ModelReference.Parse(url) is ProviderModelReference reference
+                ? external.FindCached(reference, encoded.OptionsFor(kind))
+                : catalog?.Spaces.FirstOrDefault(space => space.ModelUrl == url) ?? cache.FindCached(url);
+        }
         encoded = NormalizeSelection(encoded, spaces);
         wanted = wanted.WithEmbeddingOptions(encoded);
         var next = BuildRoutes(encoded, spaces, wanted.UsesImageUnderstanding);
@@ -101,7 +111,9 @@ public sealed class ModelManager : IEmbeddings
         }
     }
     private ModelPool CreatePool(EmbeddingSpace space, int count, ModelOptions options) => new(
-        space == EmbeddingSpace.Default ? legacyHost : compatibleHost, cache.DirectoryFor(space), budget, log,
+        space.External is not null ? external.ExecutableFor(space) : space == EmbeddingSpace.Default ? legacyHost : compatibleHost,
+        space.External is not null ? external.DirectoryFor((ProviderModelReference)ModelReference.Parse(space.ModelUrl), options.Device) : cache.DirectoryFor(space),
+        budget, log,
         space: space, workerLimit: count > 1 || space != EmbeddingSpace.Default ? 1 : null,
         threadLimit: count > 1 ? Math.Max(1, budget.Processors / count) : null,
         requiredProvider: space == EmbeddingSpace.Default ? null : options.ProviderSelector);
@@ -110,7 +122,7 @@ public sealed class ModelManager : IEmbeddings
     {
         ModelOptions? Options(string kind)
         {
-            var space = spaces[selection.ForKind(kind)];
+            var space = spaces[LookupKey(selection, kind)];
             var value = selection.OptionsFor(kind);
             string profile = QueryFor(kind, space, value);
             if (profile == "choose") throw new ArgumentException($"Choose an approved query purpose for {kind} before applying this model.");
@@ -134,26 +146,41 @@ public sealed class ModelManager : IEmbeddings
             {
                 var options = selection.EffectiveImagePipeline;
                 foreach (string task in options.Tasks) _ = image.Task(task);
+                if (options.RegionTask.Length > 0 && image.Task(options.RegionTask).OutputKind != "regions")
+                    throw new ArgumentException("Choose a region-output task for regional image search.");
                 string embedder = options.EmbeddingModel ?? selection.Text;
-                var target = await cache.InspectAsync("Document", embedder, cancellation);
+                var target = await InspectBindingAsync("Document", embedder, cancellation);
                 requirements.Add(new("Image", selection.Image, target.State,
                     $"Image descriptions ({string.Join(" + ", options.Tasks)}) -> {embedder}",
                     $"Native image-understanding recipe {image.Recipe.Id}; {image.ArtifactUrl}@{image.Revision}. " +
                     "Task prompts, tokenizer and stages are automatic. Generated text is searched with the selected text embedder.",
                     target.QueryProfiles, target.DefaultQuery, false, target.Error, image, embedder));
             }
-            else requirements.Add(await cache.InspectAsync(kind, selection.ForKind(kind), cancellation));
+            else requirements.Add(await InspectBindingAsync(kind, selection.ForKind(kind), cancellation));
         }
         return new(selection, requirements.ToArray());
     }
+    private Task<ModelRequirement> InspectBindingAsync(string kind, string reference, CancellationToken cancellation) =>
+        ModelReference.Parse(reference) is ProviderModelReference provider
+            ? external.InspectAsync(kind, provider, cancellation) : cache.InspectAsync(kind, reference, cancellation);
+
+    public Task<ProviderCatalog> ProviderCatalogAsync(string provider, string? version, bool refresh, CancellationToken cancellation) =>
+        external.CatalogAsync(provider, version, refresh, cancellation);
 
     private static Dictionary<string, EmbeddingSpace> BuildRoutes(ModelSelection selection, IReadOnlyDictionary<string, EmbeddingSpace> spaces,
         bool describedImages = false)
     {
         var result = new Dictionary<string, EmbeddingSpace>
-        { ["Document"] = spaces[selection.Text], ["Code"] = spaces[selection.Code], ["Image"] = spaces[selection.Image] };
+        {
+            ["Document"] = spaces[LookupKey(selection, "Document")],
+            ["Code"] = spaces[LookupKey(selection, "Code")],
+            ["Image"] = spaces[LookupKey(selection, "Image")]
+        };
         if (!describedImages && !result["Image"].SupportsImages)
             throw new NotSupportedException($"The image selection is a text-only model: {selection.Image}. The current indexes were not changed.");
+        foreach (var (kind, space) in result)
+            if (space.External is { } provider && !provider.Kinds.Contains(kind == "Image" && describedImages ? "Document" : kind))
+                throw new NotSupportedException($"The selected provider model is not qualified for {kind}. The current indexes were not changed.");
         return result;
     }
     private static ImagePipelineDescriptor Pipeline(ModelSelection selection, EmbeddingSpace embedder)
@@ -161,6 +188,8 @@ public sealed class ModelManager : IEmbeddings
         var model = ImageModelRecipes.Find(selection.Image) ?? throw new NotSupportedException("The image-understanding adapter is unavailable.");
         var options = selection.EffectiveImagePipeline;
         foreach (string task in options.Tasks) _ = model.Task(task);
+        if (options.RegionTask.Length > 0 && model.Task(options.RegionTask).OutputKind != "regions")
+            throw new ArgumentException("Choose a region-output task for regional image search.");
         return new(selection.Image, model, options.Tasks, embedder, selection.EmbeddingSelection().OptionsFor("Image"), selection.OptionsFor("Image").Device);
     }
     private ImageUnderstandingPool CreateImagePool(ImagePipelineDescriptor descriptor, CancellationToken cancellation) =>
@@ -175,11 +204,19 @@ public sealed class ModelManager : IEmbeddings
             await previousImages.ReleaseIfIdleAsync();
         var encoded = selection.EmbeddingSelection();
         var spaces = new Dictionary<string, EmbeddingSpace>();
-        foreach (string url in encoded.DistinctUrls)
+        foreach (string kind in new[] { "Document", "Code", "Image" })
         {
+            string url = encoded.ForKind(kind), key = LookupKey(encoded, kind);
+            if (spaces.ContainsKey(key)) continue;
             EmbeddingSpace? existing;
-            lock (gate) existing = routes.Values.FirstOrDefault(space => space.ModelUrl == url);
-            spaces[url] = existing ?? cache.FindVerified(url, progress) ?? await cache.ResolveAsync(url, progress, linked.Token);
+            lock (gate) existing = routes.Where(pair => pair.Value.ModelUrl == url &&
+                (pair.Value.External is null || embeddingSelection.OptionsFor(pair.Key).Device == encoded.OptionsFor(kind).Device))
+                .Select(pair => pair.Value).FirstOrDefault();
+            if (ModelReference.Parse(url) is ProviderModelReference reference)
+            {
+                spaces[key] = existing ?? await external.ResolveAsync(reference, encoded.OptionsFor(kind), progress, linked.Token);
+            }
+            else spaces[key] = existing ?? cache.FindVerified(url, progress) ?? await cache.ResolveAsync(url, progress, linked.Token);
         }
         encoded = NormalizeSelection(encoded, spaces);
         selection = selection.WithEmbeddingOptions(encoded);

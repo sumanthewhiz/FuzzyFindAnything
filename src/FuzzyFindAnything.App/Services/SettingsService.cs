@@ -40,7 +40,7 @@ public sealed class SettingsService
                 MaxCharactersInDocument = 1_048_576
             });
             var root = XDocument.Load(reader).Root;
-            if (root?.Name != "FuzzyFindAnythingConfiguration" || (string?)root.Attribute("version") is not ("1" or "2" or "3"))
+            if (root?.Name != "FuzzyFindAnythingConfiguration" || (string?)root.Attribute("version") is not ("1" or "2" or "3" or "4"))
                 throw new InvalidDataException("The configuration has an unsupported format or version.");
             string theme = (string?)root.Element("Appearance")?.Attribute("theme") ?? "Light";
             var logging = root.Element("Logging");
@@ -78,7 +78,7 @@ public sealed class SettingsService
             }
             else document = new XDocument(new XElement("FuzzyFindAnythingConfiguration", new XAttribute("version", "1")));
             var root = document.Root!;
-            root.SetAttributeValue("version", "3");
+            root.SetAttributeValue("version", settings.ModelSelection.UsesExternalModels || (string?)root.Attribute("version") == "4" ? "4" : "3");
             XElement Section(string name)
             {
                 if (root.Element(name) is { } existing) return existing;

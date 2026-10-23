@@ -332,15 +332,17 @@ public sealed record FolderStatus(
 
 public sealed record SearchResult(
     string Path, string Name, string Kind, long Size, long MtimeNs, string Snippet, double Score, string Evidence = "",
-    string MatchedChunk = "", ChunkMetadata? Chunk = null)
+    string MatchedChunk = "", ChunkMetadata? Chunk = null, ImageRegion? Region = null)
 {
     public string ChunkText => MatchedChunk.Length > 0 ? MatchedChunk : Snippet;
     public string ChunkLabel => Chunk is { } chunk
         ? $"Matched chunk / lines {chunk.StartLine}-{chunk.EndLine}" + (chunk.Symbol.Length > 0 ? " / " + chunk.Symbol : "")
         : "Matched excerpt";
     public string ChunkFont => Kind == "Code" ? "Cascadia Code, Consolas" : "Segoe UI";
-    public bool HasGeneratedEvidence => Evidence is "caption" or "ocr";
-    public string EvidenceLabel => Evidence switch { "caption" => "Generated caption", "ocr" => "OCR text", _ => "" };
+    public bool HasGeneratedEvidence => Evidence is "caption" or "ocr" || Region is not null;
+    public string EvidenceLabel => Region is not null ? (Evidence == "objects" ? "Region label" : "Region description") :
+        Evidence switch { "caption" => "Generated caption", "ocr" => "OCR text", _ => "" };
+    public string EvidenceText => Region?.Text ?? Snippet;
     public string Glyph => Kind switch { "Image" => "\uEB9F", "Code" => "\uE943", _ => "\uE8A5" };
     public string Extension => System.IO.Path.GetExtension(Path).TrimStart('.').ToUpperInvariant() is { Length: > 0 } extension
         ? extension : Kind.ToUpperInvariant();

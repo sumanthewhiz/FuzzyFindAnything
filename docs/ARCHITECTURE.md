@@ -70,7 +70,7 @@ A custom `-Destination` does not automatically change `runtime.json`; update its
 
 ## Configurable models and device checks
 
-The **Model configuration** tab stores three Hugging Face model-card URLs in the same versioned XML configuration:
+The **Model configuration** tab keeps one source/model binding per file type. Hugging Face bindings retain the established model-card URLs:
 
 ```xml
 <Models text="https://huggingface.co/google/embeddinggemma-2"
@@ -116,7 +116,7 @@ Schema 4 is retained for unchanged default installations. Legacy model assignmen
 
 ### Native image-understanding pipelines
 
-`model-assets\image-recipes.json` defines reviewed image-input/task providers separately from embedding recipes. The first adapter is `vision-text-seq2seq-bpe-v1`, with Florence-2 base and base-ft checkpoints using the same implementation. A definition supplies pinned component graphs, image normalization/shape, tokenizer/decoder geometry, task prompts and output limits. The shared compatible-model executable runs this provider in a separate `--image-model` process; it does not run Hugging Face Python or JavaScript.
+`model-assets\image-recipes.json` defines reviewed image-input/task providers separately from embedding recipes. The first adapter is `vision-text-seq2seq-bpe-v1`, with Florence-2 base, base-ft, large and large-ft checkpoints using the same implementation. A definition supplies pinned component graphs, image normalization/shape, tokenizer/decoder geometry, task prompts and output limits. Large profiles specify 1,024 hidden dimensions, 16 heads and 12 layers instead of the base profile's 768/12/6. Their graph payload is about 3.07 GiB; the generator planning allowance is 6.5 GiB plus the usual 2 GiB system reserve. The shared compatible-model executable runs this provider in a separate `--image-model` process; it does not run Hugging Face Python or JavaScript.
 
 The native path performs safe image decoding and recipe-specific bicubic resize/RGB normalization, vision encoding, task-token embedding, a text/image encoder and bounded cached decoding. The current qualified policy is greedy decoding with a forced beginning token, EOS termination and three-token repetition blocking. Caption and OCR have separate token limits; reaching a limit produces a partial/truncated outcome, not false successful completion. Cached decoder cross-attention states are retained from the first step because subsequent merged-graph outputs for them are empty.
 
@@ -129,6 +129,30 @@ Image model changes use persisted reindex-operation membership and initial-scan 
 Generation is single-task-per-worker, lazy on restart, bounded by the shared CPU affinity, and subject to memory/device admission. Idle generation workers are released without affecting search and can be released before qualifying a different image model. Existing direct Gemma/CLIP configurations do not create a generator or require downstream/tokenizer/task controls. A described-image model automatically links to Text unless the user chooses a separate embedder; that dependency is included in invalidation rather than copied as an unrelated URL.
 
 Other checkpoints of a supported native task ABI require reviewed recipe data and qualification. New processors/architectures still require another native adapter; sparse/multi-vector retrieval, hybrid visual-plus-caption fusion, arbitrary remote code and VQA are not implicitly supported.
+
+### Optional internal model providers
+
+`ModelReference` distinguishes Hugging Face cards from typed provider/model/version references. The coordinator resolves external models through `ExternalModels`, using a user-local `provider.json` registration and a supervised executable protocol. The registration and private companion live outside the public application package. Catalog/inspection/acquisition requests never contain user documents or queries; inference stays in separate local workers using the existing bounded JSON-line protocol, CPU-affinity policy and killable cancellation boundary.
+
+The Microsoft source has a fixed per-role model picker rather than a free-form card URL. Version controls are disclosed only for that source, and the approved companion queries its authenticated release feed. No usable package/device combination produces an explicit unavailable state. Changing to a drop lacking the selected model retains an unavailable selection and requires an explicit choice; it does not silently switch models. Saved source, model, drop and execution choices survive Apply and unrelated appearance/search/logging updates.
+
+`ExternalEmbeddingContract` identifies the actual native vector contract, tokenizer, logical/storage dimensions, roles and resolved execution profile. A 100-dimensional provider uses a versioned symmetric zero-padding transform to 104 dimensions; indexed and query vectors are normalized consistently, nonzero padding is rejected, and raw cosine scoring is unchanged. Provider identities do not impersonate HF URLs or Git revisions. Existing HF fingerprints remain unchanged.
+
+CPU and accelerator outputs have separate conservative vector identities. Changing a Microsoft execution profile selectively rebuilds affected representations instead of assuming cross-device numerical equivalence. The same model can therefore serve documents on CPU and code on NPU in separate indexes. Native query/document purpose is applied per call; the app retains its structural document/code chunker and asks the provider's matching tokenizer to measure the fully formatted inputs. Truncation warnings, missing devices, wrong widths and changed artifact identities fail explicitly before settings/index publication.
+
+SDK/package versions and hardware architecture alone are not proof of usable inference. The companion checks package coverage and installed execution providers, then qualifies the requested native device with real inputs. Explicit device requests remain strict. The internal SDK can manage its own thread pools, but all worker processes remain subject to the application's shared half-physical-core affinity ceiling. Private runtime libraries are isolated from the existing Gemma/HF runtime versions.
+
+The public application remains buildable without private feeds or SDKs. Private headers, encrypted model assets, provider registration/configuration and companion binaries are not copied into public builds; release validation rejects internal-provider and encrypted-model payloads. The internal companion has its own approved acquisition/build/servicing instructions.
+
+### Typed region output and retrieval
+
+`ImageTaskProfile` declares an output kind and reviewed postprocessor. `ImageRegion` is a provider-neutral contract containing region ID, text, optional genuine confidence and finite normalized bounds in the oriented source-image coordinate system. The first postprocessor, `florence-boxes-v1`, qualifies object detection (`<OD>`) and dense region captioning (`<DENSE_REGION_CAPTION>`). It supports multiple boxes after a shared label and dequantizes the model's 1,000 bins as `(bin + 0.5) / 1000`. It does not infer confidence or silently repair reversed/out-of-range boxes.
+
+Outputs are bounded to 64 unique regions and 4,096 characters per label/description. Empty completed output is distinct from failure. Truncated/malformed output can retain complete valid regions with an explicit Partial outcome; raw location/control tokens never become embedding text. Startup probes execute the shared graph/cache path through a reviewed text task; regional correctness is separately qualified on meaningful image fixtures. A future region-only model definition needs an appropriate reviewed readiness probe rather than passing startup without executing inference.
+
+The optional region selector comes from the selected model's capabilities. One regional task may run alone or alongside caption/OCR. Each retained region is independently split and embedded by the final text encoder. The catalog carries its typed geometry through prepared passages and committed vectors; the task artifact retains the full region array. Search uses region text, not a visual crop vector, and deduplicates at the original image, exposing the best matching region. Gallery overlays use the same EXIF-aware image decoder as inference, not a shell-cropped thumbnail. Preview loading checks the indexed timestamp/size, decode-time file identity and oriented dimensions, rejecting stale previews when those differ.
+
+Schema 9 adds optional `region_json` to task artifacts, prepared passages and vectors. It is opt-in for region tasks and does not renumber sources or alter old caption/OCR fingerprints. Adding approved task profiles to an otherwise identical cached model does not redownload weights or discard existing text artifacts. Changing only the final embedder reuses valid regions; changing the image revision, producer/task recipe or removing the last folder owner invalidates them. Restarted searches use retained region vectors without loading the generator.
 
 ## Startup and resource budgeting
 

@@ -2,7 +2,7 @@
 
 **Find documents, source code and images by meaning, on your Windows PC.**
 
-This checkout is **1.4.0-dev.1**, including content-aware chunking, per-type search controls, extensible native embeddings and image-understanding pipelines. Earlier release packages do not contain these additions.
+This checkout is **1.5.0-dev.1**, adding region-based image retrieval, larger Florence-2 profiles and an opt-in internal Microsoft model-provider integration to the extensible native model pipelines. Earlier release packages do not contain these additions.
 
 [![Build and release](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml/badge.svg?branch=dev)](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml)
 ![Windows 11](https://img.shields.io/badge/platform-Windows%2011-0078D4)
@@ -36,8 +36,10 @@ The application uses .NET and native Windows libraries, with ONNX Runtime for lo
 | Durable progress | Completed files and committed passage batches survive crashes and normal exits |
 | Startup visibility | Sequenced percentage/phase checkpoints; the first ready model enables search |
 | Live index information | Backend/version, location, size, file/document/code/image counts and refresh time |
-| Model configuration | Hugging Face URLs with automatic tokenizer/pooling/device setup; extra controls appear only for applicable model requirements |
+| Model configuration | Independent Hugging Face or approved Microsoft sources per file type; automatic model-specific preparation and conditional controls |
+| Internal Microsoft models | A separately installed provider supplies version-aware fixed model choices, native tokenization and actual local device qualification; private payloads are not bundled |
 | Image understanding | Reviewed caption/OCR providers feed a linked or separate text embedder; completed generation stages are durable and reusable |
+| Regional image search | Qualified detectors/describers embed each region's text; gallery matches identify and highlight the best matching region |
 | Polished desktop controls | Light/dark appearance, persisted similarity, search clearing, configurable logs and keyboard access |
 
 ### Supported content
@@ -98,9 +100,15 @@ EmbeddingGemma2 remains the pre-filled default for every file type, with no toke
 
 Examples include `Qwen/Qwen3-Embedding-0.6B`, `intfloat/e5-base-v2`, `vectoriseai/e5-small-v2`, the existing MiniLM examples and `Xenova/clip-vit-base-patch32`. The Qwen card resolves to a pinned stateless Qdrant ONNX export; the UI discloses the actual artifact source. Qwen Coder generation models are not interchangeable with text embedding checkpoints.
 
-For image descriptions, `microsoft/Florence-2-base-ft` and `microsoft/Florence-2-base` are the first two checkpoints using the reusable native encoder-decoder recipe. Captions and optional OCR feed the selected text embedder; matches remain image-gallery items with caption/OCR evidence. The image recipe resolves its tokenizer, processor, graph bindings and task prompts automatically. Other compatible checkpoints can use reviewed recipe data; different architectures still require a native adapter. This is not unrestricted support for every vision model.
+For image understanding, `microsoft/Florence-2-base-ft`, `microsoft/Florence-2-base`, `microsoft/Florence-2-large-ft` and `microsoft/Florence-2-large` use the reusable native encoder-decoder recipe. Captions, optional OCR and optional **Object labels** (`<OD>`) or **Region descriptions** (`<DENSE_REGION_CAPTION>`) feed the selected text embedder. Region-only indexing is also supported. Each region's label/description is embedded separately; the gallery returns the original image once, with its best matching region highlighted and the matching text available on hover.
+
+The image recipe resolves its tokenizer, processor, graph bindings and task prompts automatically. Region controls appear only for a qualifying image model; direct Gemma/CLIP embeddings do not acquire a generation pipeline. Other compatible checkpoints can use reviewed recipe data; different architectures or output formats still require a native adapter/postprocessor and qualification. This is not unrestricted support for every vision model, and generated labels are not verified facts or confidence scores.
 
 The compatible-model host uses self-contained Windows ML to discover usable CPU, GPU and NPU execution providers. Acceptance depends on hardware, driver/provider, resource limits and real inference, not a blanket accelerator restriction. Query-only changes retain file embeddings; accepted document-model changes rebuild only affected file types. See [model configuration and device checks](docs/ARCHITECTURE.md#configurable-models-and-device-checks).
+
+For an authorized internal installation, each role can instead select **Microsoft (PSAPI)**. The provider supplies a fixed model list for the selected SDK drop; **PSAPI drop version / Refresh available versions** queries its approved feed. Hugging Face selections retain the model-card URL field. Native query/document purposes and matching tokenizers are automatic, and direct Microsoft image embeddings do not expose caption/region-generation controls. Model/package availability and detected hardware determine the offered choices; Apply still runs real native execution checks. An unavailable model is not silently replaced when the drop changes.
+
+The internal provider is registered separately under `%LOCALAPPDATA%\FuzzyFindAnythingProviders`. It is not included in the public application, source checkout or release ZIPs. Without it, Hugging Face behavior and defaults remain unchanged, and selecting Microsoft gives an explicit installation diagnostic. Feed authentication uses the native .NET Azure Artifacts credential provider, not Azure CLI or Python. See the provider's internal installation instructions for the approved SDK/model channel.
 
 The active mutable DiskANN graph resides in memory and is checkpointed to disk. SQLite retains vectors, folder ownership, source revisions and passage progress so a damaged or stale graph can recover without repeating committed inference. It is not an out-of-core index.
 
@@ -151,6 +159,7 @@ Packages are unsigned. Checksums detect altered downloads but do not replace cod
 
 - Windows 11, at least two physical cores, and an AVX2-capable x64 CPU or Windows ARM64 with compatible x64 emulation.
 - At least **5 GiB available RAM** for one model; approximately **8 GiB available** permits two. These are planning estimates, not quotas. Large indexes need additional memory; 16 GB system RAM or more is recommended.
+- Florence-2 Large profiles require approximately **3.07 GiB of downloaded graph assets** and a **6.5 GiB generator memory allowance plus 2 GiB system reserve**, in addition to the selected text embedder and other application memory. Admission is checked before loading; download size is not peak RAM.
 - Scanned PDFs need an OCR-capable installed IFilter. Protected documents are not decrypted.
 - Online-only files must be available locally. Junctions and symbolic links are not traversed.
 - Installed filters determine document coverage. Some Excel filters omit inline-string cells in otherwise valid workbooks.

@@ -17,6 +17,7 @@
     <Using Remove="System.Drawing" />
     <Resource Include="Assets\app.ico" />
     <ProjectReference Include="..\FuzzyFindAnything.Core\FuzzyFindAnything.Core.csproj" />
+    <Compile Include="..\FuzzyFindAnything.Inference\ImagePipeline.cs" Link="Services\SharedImagePipeline.cs" />
   </ItemGroup>
 
 </Project>

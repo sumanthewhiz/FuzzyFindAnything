@@ -4,6 +4,16 @@
 
 ## Compatibility policy
 
+Provider-aware builds use **XML version 4** and **catalog schema 10** when Microsoft/local-provider models are applied. Bindings store separate `provider`, `modelId` and exact `version` attributes rather than fake Hugging Face URLs. Optional execution policies are retained. Saving appearance, logging or per-kind search settings preserves these bindings. Existing XML versions 1-3 and default/HF vector fingerprints remain readable and unchanged.
+
+The catalog stores provider vector/tokenizer contracts and resolved execution identities alongside existing routes. Applying a different provider/drop/device rebuilds only affected representations; unrelated file ownership, folders, vectors and cached image-understanding artifacts remain intact. Restoring HF models does not downgrade schema 10 or XML version 4. Older binaries require a complete pre-change backup for rollback.
+
+Private providers are separately installed per user under `%LOCALAPPDATA%\FuzzyFindAnythingProviders`; application ZIP upgrades do not provision or replace them. If an applied provider or required device disappears, startup reports the missing dependency rather than querying the old index with a substitute encoder. Keep the approved companion and its immutable versioned asset cache available, or explicitly apply a different model/device.
+
+Region-search builds (`1.5.0-dev.1` and later) opt into catalog schema 9 when a regional task is selected. Optional region JSON is persisted with image task artifacts, prepared passages and vectors; existing source IDs, non-region vectors and caption/OCR artifacts are retained. XML version 3 stores the optional regional task as `Tasks@regions`. Direct image configurations remain unchanged. Older binaries cannot open schema 9: rollback requires the complete pre-change backup, not editing a schema number.
+
+The reviewed Florence base/base-ft manifests gain additional tasks without changing their existing model, caption or OCR fingerprints. A verified cache whose original tasks remain unchanged can use the new approved tasks without downloading the same weights again. Large/large-ft are separate pinned profiles with separate assets and memory admission. Applying a different producer selectively reindexes images; changing only the final text embedder reuses valid generated regions.
+
 Content-aware chunking/search builds use catalog schema 8 and XML version 3 when saving per-type search preferences. The legacy global threshold is copied to all three search types on read without rewriting the file; all types default to selected. On the first successful model startup, document/code representations are rebuilt in the background under the new chunking profiles. Images and cached generated descriptions are retained. Keep a complete pre-upgrade backup for rollback to binaries that do not support these versions.
 
 Configurable-model builds (1.2.0 and later) leave an unchanged default-model catalog at schema 4. Applying a different model assignment upgrades it to schema 5. Restoring the default model does not downgrade the schema; use a complete pre-change backup to return to an older application build.

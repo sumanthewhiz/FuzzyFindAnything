@@ -9,6 +9,13 @@ public sealed class ModelRequirementViewModel : ObservableObject
     private string device = "Automatic";
     private bool checking;
     public IReadOnlyList<QueryProfile> QueryProfiles { get; private set; } = [];
+    public IReadOnlyList<ProviderDevice> Devices { get; private set; } = [];
+    public bool HasDeviceOptions => Devices.Count > 2;
+    public string SelectedDevice
+    {
+        get => device;
+        set { if (value is not null) Set(ref device, value); }
+    }
     public string SelectedQueryProfile
     {
         get => selectedQueryProfile;
@@ -28,12 +35,12 @@ public sealed class ModelRequirementViewModel : ObservableObject
     public void Reset(bool isDefault)
     {
         requirement = null; checking = !isDefault;
-        SelectedQueryProfile = ""; device = "Automatic"; QueryProfiles = [];
+        SelectedQueryProfile = ""; device = "Automatic"; QueryProfiles = []; Devices = [];
         Changed(null);
     }
     public void Restore(ModelOptions options)
     {
-        SelectedQueryProfile = options.QueryProfile; device = options.Device;
+        SelectedQueryProfile = options.QueryProfile; SelectedDevice = options.Device;
     }
     public void Apply(ModelRequirement value)
     {
@@ -46,6 +53,11 @@ public sealed class ModelRequirementViewModel : ObservableObject
             Changed(nameof(QueryProfiles));
         }
         SelectedQueryProfile = value.State != "Available" || choices.Any(profile => profile.Id == previous) ? previous : "";
+        ProviderDevice[] devices = value.Devices is null ? [] :
+            [new("Automatic", "Automatic (qualified local device)", true), .. value.Devices];
+        if (device != "Automatic" && devices.Length > 0 && !devices.Any(value => value.Id == device))
+            devices = [.. devices, new(device, device + " (currently unavailable)", false)];
+        if (!Devices.SequenceEqual(devices)) Devices = devices;
         Changed(null);
     }
     public void Unavailable(string kind, string url, string message) =>

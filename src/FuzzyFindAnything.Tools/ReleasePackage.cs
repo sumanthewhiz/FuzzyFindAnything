@@ -46,9 +46,12 @@ public static class ReleasePackage
                 throw new InvalidDataException("Unsafe or duplicate archive path: " + name);
             string leaf = parts[^1].ToLowerInvariant();
             if (parts.Any(part => part.ToLowerInvariant() is ".git" or ".github" or ".runtime" or "__pycache__" or "site-packages" or "models" or "data" or "corpus" or "index") ||
-                leaf is "settings.xml" or "engine.lock" or "catalog.sqlite3" or "catalog.sqlite3-wal" or "catalog.sqlite3-shm" or ".env" ||
+                leaf is "settings.xml" or "engine.lock" or "catalog.sqlite3" or "catalog.sqlite3-wal" or "catalog.sqlite3-shm" or ".env" or
+                    "provider.json" or "provider-settings.json" or "provider-model.json" or "ffa_provider_bridge.dll" or
+                    "fuzzyfindanything.microsoftprovider.exe" or "fuzzyfindanything.microsoftprovider.dll" ||
                 leaf.EndsWith(".py", StringComparison.OrdinalIgnoreCase) || leaf.EndsWith(".pyc", StringComparison.OrdinalIgnoreCase) ||
                 leaf.EndsWith(".pyd", StringComparison.OrdinalIgnoreCase) || leaf.EndsWith(".onnx", StringComparison.OrdinalIgnoreCase) ||
+                leaf.EndsWith(".onnxe", StringComparison.OrdinalIgnoreCase) || leaf.EndsWith(".nupkg", StringComparison.OrdinalIgnoreCase) ||
                 leaf.EndsWith(".onnx.data", StringComparison.OrdinalIgnoreCase) || leaf.EndsWith(".safetensors", StringComparison.OrdinalIgnoreCase) ||
                 leaf.StartsWith("python", StringComparison.OrdinalIgnoreCase) ||
                 leaf.EndsWith(".log", StringComparison.OrdinalIgnoreCase) || leaf.EndsWith(".jsonl", StringComparison.OrdinalIgnoreCase))

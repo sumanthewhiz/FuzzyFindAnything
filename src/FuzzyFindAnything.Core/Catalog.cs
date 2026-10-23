@@ -149,7 +149,7 @@ public sealed partial class Catalog : IDisposable
             INSERT OR IGNORE INTO settings VALUES('schema_version','1');
             """);
         string version = Setting("schema_version")!;
-        if (version is not ("1" or "2" or "3" or "4" or "5" or "6" or "7" or "8"))
+        if (version is not ("1" or "2" or "3" or "4" or "5" or "6" or "7" or "8" or "9" or "10"))
             throw new InvalidDataException($"Unsupported catalog schema: {version}.");
         string? model = Setting("model");
         if (model is not null && model != ModelContract.Fingerprint)
@@ -164,11 +164,12 @@ public sealed partial class Catalog : IDisposable
             })
                 if (!columns.Contains(column.Name)) Execute($"ALTER TABLE files ADD COLUMN {column.Name} {column.Definition}");
             if (version is "1" or "2") Execute("UPDATE files SET retry_after=0 WHERE error IS NOT NULL");
-            SetSetting("schema_version", version is "5" or "6" or "7" or "8" ? version : "4");
+            SetSetting("schema_version", version is "5" or "6" or "7" or "8" or "9" or "10" ? version : "4");
             SetSetting("model", ModelContract.Fingerprint);
         });
-        if (version is "7" or "8") EnsureImageSchema();
-        if (version == "8") EnsureChunkSchema();
+        if (version is "7" or "8" or "9" or "10") EnsureImageSchema();
+        if (version is "8" or "9" or "10") EnsureChunkSchema();
+        if (version is "9" or "10") EnsureRegionSchema();
     }
 
     public string? Setting(string key)
@@ -182,7 +183,7 @@ public sealed partial class Catalog : IDisposable
     {
         var generations = changed.DistinctBy(space => space.Key).ToDictionary(space => space.Key, GenerationFor);
         Execute("UPDATE settings SET value=CAST(value AS INTEGER)+1 WHERE key='generation'");
-        if (Setting("schema_version") is "5" or "6" or "7" or "8")
+        if (Setting("schema_version") is "5" or "6" or "7" or "8" or "9" or "10")
             foreach (var pair in generations) SetSetting("generation:" + pair.Key, (pair.Value + 1).ToString(CultureInfo.InvariantCulture));
         SetSetting("last_refreshed", DateTimeOffset.UtcNow.ToString("O"));
     }
@@ -350,15 +351,16 @@ public sealed partial class Catalog : IDisposable
         lock (gate)
         {
             if (!IsCurrent(job)) return false;
-            var rows = Query($"SELECT content,embedding,{(HasImageSchema ? "representation,representation_id" : "'' AS representation,NULL AS representation_id")},{(HasChunkSchema ? "chunk_json" : "NULL")} FROM job_passages WHERE job_id=$p0 ORDER BY ordinal",
+            var rows = Query($"SELECT content,embedding,{(HasImageSchema ? "representation,representation_id" : "'' AS representation,NULL AS representation_id")},{(HasChunkSchema ? "chunk_json" : "NULL")},{(HasRegionSchema ? "region_json" : "NULL")} FROM job_passages WHERE job_id=$p0 ORDER BY ordinal",
                 row => (Text: row.GetString(0), Bytes: row.IsDBNull(1) ? null : (byte[])row[1],
                     Representation: row.GetString(2), RepresentationId: row.IsDBNull(3) ? (long?)null : row.GetInt64(3),
-                    Chunk: row.IsDBNull(4) ? null : JsonSerializer.Deserialize<ChunkMetadata>(row.GetString(4), Protocol.Json)), job.Id);
+                    Chunk: row.IsDBNull(4) ? null : JsonSerializer.Deserialize<ChunkMetadata>(row.GetString(4), Protocol.Json),
+                    Region: row.IsDBNull(5) ? null : JsonSerializer.Deserialize<ImageRegion>(row.GetString(5), Protocol.Json)), job.Id);
             if (rows.Count == 0 || rows.Any(row => row.Bytes is null)) throw new InvalidDataException("Cannot publish an incomplete file.");
             string? warning = Query("SELECT warning FROM index_jobs WHERE id=$p0", row => NullableString(row, 0), job.Id)[0];
             double? retry = job.Kind == "Image" && imagePipeline is not null ? NextImageRetry(job) : null;
             return Publish(job, rows.Select(row => new PublishedChunk(FilePaths.ScalarPrefix(job.Kind == "Code" ? row.Text.Trim() : FilePaths.CollapseWhitespace(row.Text), 400),
-                routes[job.Kind].Vector(row.Bytes!), row.Representation, row.RepresentationId, row.Text, row.Chunk)).ToArray(), warning, null, null, retry, job.Attempts,
+                routes[job.Kind].Vector(row.Bytes!), row.Representation, row.RepresentationId, row.Text, row.Chunk, row.Region)).ToArray(), warning, null, null, retry, job.Attempts,
                 coverage: job.Kind == "Image" ? warning is null ? "Complete" : "Partial" : "");
         }
     }
@@ -372,7 +374,7 @@ public sealed partial class Catalog : IDisposable
         }
     }
     private sealed record PublishedChunk(string Text, float[] Vector, string Representation, long? RepresentationId,
-        string FullText, ChunkMetadata? Chunk);
+        string FullText, ChunkMetadata? Chunk, ImageRegion? Region);
     private bool Publish(IndexJob job, IReadOnlyList<PublishedChunk> chunks, string? warning,
         string? error, string? errorCode, double? retryAt, int attempts, double elapsedMs = 0, string coverage = "")
     {
@@ -409,6 +411,9 @@ public sealed partial class Catalog : IDisposable
                 if (HasChunkSchema)
                     Execute("UPDATE vectors SET chunk_text=$p0,chunk_json=$p1 WHERE id=$p2", chunks[ordinal].FullText,
                         chunks[ordinal].Chunk is null ? null : JsonSerializer.Serialize(chunks[ordinal].Chunk, Protocol.Json), inserted[^1].Id);
+                if (HasRegionSchema)
+                    Execute("UPDATE vectors SET region_json=$p0 WHERE id=$p1",
+                        chunks[ordinal].Region is null ? null : JsonSerializer.Serialize(chunks[ordinal].Region, Protocol.Json), inserted[^1].Id);
             }
             if (HasImageSchema)
                 Execute("UPDATE files SET image_coverage=$p0 WHERE id=$p1",
@@ -638,18 +643,19 @@ public sealed partial class Catalog : IDisposable
                 {
                     var records = Query($"""
                         SELECT f.id,f.path,f.kind,f.size,f.mtime_ns,v.snippet,v.embedding,{(HasImageSchema ? "v.representation" : "''")},
-                          {(HasChunkSchema ? "v.chunk_text,v.chunk_json" : "v.snippet,NULL")} FROM vectors v JOIN files f ON f.id=v.file_id
+                          {(HasChunkSchema ? "v.chunk_text,v.chunk_json" : "v.snippet,NULL")},{(HasRegionSchema ? "v.region_json" : "NULL")} FROM vectors v JOIN files f ON f.id=v.file_id
                         WHERE v.id=$p0 AND f.error IS NULL AND EXISTS(SELECT 1 FROM folder_files WHERE file_id=f.id)
                         """, row => (Id: row.GetInt64(0), Path: row.GetString(1), Kind: row.GetString(2), Size: row.GetInt64(3),
                             Mtime: row.GetInt64(4), Snippet: row.GetString(5), Vector: space.Vector((byte[])row[6]), Evidence: row.GetString(7),
-                            ChunkText: row.GetString(8), Chunk: row.IsDBNull(9) ? null : JsonSerializer.Deserialize<ChunkMetadata>(row.GetString(9), Protocol.Json)), id);
+                            ChunkText: row.GetString(8), Chunk: row.IsDBNull(9) ? null : JsonSerializer.Deserialize<ChunkMetadata>(row.GetString(9), Protocol.Json),
+                            Region: row.IsDBNull(10) ? null : JsonSerializer.Deserialize<ImageRegion>(row.GetString(10), Protocol.Json)), id);
                     if (records.Count == 0) continue;
                     var record = records[0];
                     if (!File.Exists(record.Path) || routes[record.Kind].Key != space.Key || kinds is not null && !kinds.Contains(record.Kind)) continue;
                     double score = ModelContract.Similarity(query, record.Vector);
                     if (score < threshold || matches.TryGetValue(record.Id, out var old) && old.Score >= score) continue;
                     matches[record.Id] = new(record.Path, Path.GetFileName(record.Path), record.Kind, record.Size, record.Mtime, record.Snippet, score, record.Evidence,
-                        record.ChunkText.Length > 0 ? record.ChunkText : record.Snippet, record.Chunk);
+                        record.ChunkText.Length > 0 ? record.ChunkText : record.Snippet, record.Chunk, record.Region);
                 }
                 if (matches.Count >= limit || k == count) return matches.Values.OrderByDescending(value => value.Score)
                     .ThenBy(value => value.Path, StringComparer.Ordinal).Take(limit).ToList();
@@ -659,7 +665,7 @@ public sealed partial class Catalog : IDisposable
     }
 
     private sealed record RemovedVector(uint Id, EmbeddingSpace Space);
-    private long GenerationFor(EmbeddingSpace space) => Setting("schema_version") is "5" or "6" or "7" or "8"
+    private long GenerationFor(EmbeddingSpace space) => Setting("schema_version") is "5" or "6" or "7" or "8" or "9" or "10"
         ? long.Parse(Setting("generation:" + space.Key) ?? "0", CultureInfo.InvariantCulture) : Generation;
     private string KindsSql(EmbeddingSpace space)
     {
@@ -709,6 +715,9 @@ public sealed partial class Catalog : IDisposable
                 Transaction(() =>
                 {
                     if (pipeline is not null || HasImageSchema) EnsureImageSchema();
+                    bool externalModels = next.Values.Any(space => space.External is not null);
+                    if (pipeline?.Tasks.Any(task => pipeline.Model.Task(task).OutputKind == "regions") == true || HasRegionSchema || externalModels)
+                        EnsureRegionSchema();
                     foreach (var space in Spaces.Concat(next.Values).DistinctBy(value => value.Key))
                         if (Setting("generation:" + space.Key) is null)
                             SetSetting("generation:" + space.Key, (space == EmbeddingSpace.Default ? Generation : 0).ToString(CultureInfo.InvariantCulture));
@@ -722,7 +731,7 @@ public sealed partial class Catalog : IDisposable
                         }
                         else Execute("DELETE FROM files WHERE kind=$p0", kind);
                     }
-                    SetSetting("schema_version", HasChunkSchema ? "8" : HasImageSchema ? "7" : Setting("schema_version") == "6" || next.Values.Any(space => space.Recipe is not null) ||
+                    SetSetting("schema_version", HasExternalSchema || externalModels ? "10" : HasRegionSchema ? "9" : HasChunkSchema ? "8" : HasImageSchema ? "7" : Setting("schema_version") == "6" || next.Values.Any(space => space.Recipe is not null) ||
                         selection.RequiresVersion2 ? "6" : "5");
                     SetSetting("embedding_routes", JsonSerializer.Serialize(next, Protocol.Json));
                     SetSetting("model_selection", JsonSerializer.Serialize(selection, Protocol.Json));

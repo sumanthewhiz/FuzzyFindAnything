@@ -88,6 +88,7 @@ public sealed class ModelPool(string executable, string modelDirectory, CpuBudge
         {
             var capabilities = await client.RequestAsync("capabilities", new { }, cancellation);
             var actual = capabilities.GetProperty("space").Deserialize<EmbeddingSpace>(Protocol.Json);
+            actual?.Validate();
             if (actual?.Fingerprint != Space.Fingerprint) throw new InvalidDataException("The model worker loaded a different embedding space.");
             if (Space.Recipe is not null && (!capabilities.TryGetProperty("protocol_version", out var version) || version.GetInt32() != 2 ||
                 actual.Recipe?.ContractFingerprint != Space.Recipe.ContractFingerprint))
@@ -95,6 +96,11 @@ public sealed class ModelPool(string executable, string modelDirectory, CpuBudge
             Provider = capabilities.GetProperty("provider").GetString()!;
             Device = capabilities.GetProperty("device").GetString()!;
             SupportsStructuredChunking = capabilities.TryGetProperty("structured_chunking", out var chunking) && chunking.GetInt32() == 1;
+            if (Space.External is not null && (!capabilities.TryGetProperty("protocol_version", out var externalVersion) ||
+                externalVersion.GetInt32() != 3 || actual?.IndexingFingerprint != Space.IndexingFingerprint || !SupportsStructuredChunking))
+                throw new InvalidDataException("The provider worker does not implement the required preparation and embedding contract.");
+            if (capabilities.TryGetProperty("warning", out var warning) && warning.GetString() is { Length: > 0 } message)
+            { Warning = message; log(message); }
             return client;
         }
         catch { await client.DisposeAsync(); throw; }

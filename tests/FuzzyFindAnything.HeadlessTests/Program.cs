@@ -1,6 +1,8 @@
 using System.Globalization;
 using System.IO;
 using System.Text.Json;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Xml.Linq;
 using FuzzyFindAnything.App.Services;
 using FuzzyFindAnything.App.ViewModels;
@@ -20,6 +22,7 @@ internal static class Program
         Run("Existing preferences and index remain intact", ExistingSettings);
         Run("Invalid similarity is rejected without overwriting preferences", InvalidSimilarity);
         Run("Three result groups and clearing", ResultGroups);
+        Run("Region thumbnails preserve geometry and reject changed sources", RegionThumbnails);
         Run("Loading indicator state", LoadingState);
         Run("Startup reconciliation does not disable search", ReconciliationState);
         Run("Model defaults and XML round-trip", ModelsRoundTrip);
@@ -27,6 +30,7 @@ internal static class Program
         Run("Adaptive model requirements and extended XML bindings", AdaptiveModels);
         Run("WPF query-purpose selection survives Apply refresh", QueryPurposeBinding);
         Run("Image pipeline requirements stay hidden for direct models", ImageRequirements);
+        Run("Mixed provider choices, version persistence and unavailable-model guard", ProviderChoices);
         Run("Search type guardrail and independent thresholds", SearchOptions);
         Run("Footer alignment and results layout", () => LayoutContracts(args[0]));
         Console.WriteLine("All headless checks passed. No application window or engine was started.");
@@ -159,6 +163,62 @@ internal static class Program
         model.ClearResults();
         Require(model.CodeResults.Count == 0 && model.NoCode, "Folder changes retained code results.");
     }
+
+    private static void RegionThumbnails() => InTemporaryDirectory(directory =>
+    {
+        string path = Path.Combine(directory, "region.bmp");
+        var source = BitmapSource.Create(64, 32, 96, 96, PixelFormats.Rgb24, null, new byte[64 * 32 * 3], 64 * 3);
+        var encoder = new BmpBitmapEncoder();
+        encoder.Frames.Add(BitmapFrame.Create(source));
+        using (var stream = File.Create(path)) encoder.Save(stream);
+        var fingerprint = FilePaths.Inspect(path);
+        var region = new ImageRegion("0", "test region", 0.25, 0.25, 0.75, 0.75, 64, 32);
+        var result = new SearchResult(path, "region.bmp", "Image", fingerprint.Size, fingerprint.MtimeNs, region.Text, 1,
+            Region: region);
+        var thumbnail = ThumbnailLoader.LoadAsync(result, CancellationToken.None).GetAwaiter().GetResult();
+        Require(thumbnail.IsFrozen && thumbnail.PixelWidth == 360 && thumbnail.PixelHeight == 180,
+            "The region thumbnail lost the inference image's aspect ratio.");
+        void Reject(SearchResult changed)
+        {
+            try { ThumbnailLoader.LoadAsync(changed, CancellationToken.None).GetAwaiter().GetResult(); }
+            catch (IOException) { return; }
+            throw new InvalidOperationException("A stale region overlay was displayed.");
+        }
+        Reject(result with { Region = region with { SourceWidth = 32 } });
+        File.SetLastWriteTimeUtc(path, File.GetLastWriteTimeUtc(path).AddMinutes(1));
+        Reject(result);
+    });
+
+    private static void ProviderChoices() => InTemporaryDirectory(directory =>
+    {
+        var code = new ProviderModelReference("microsoft", "1.2.3.4", "code-text");
+        var image = new ProviderModelReference("microsoft", "1.2.3.4", "image-text");
+        var selection = new ModelSelection(ModelSelection.DefaultUrl, code.Key, image.Key,
+            CodeOptions: new(Device: "QNNExecutionProvider:NPU"));
+        var model = new MainViewModel();
+        model.ApplyModels(selection);
+        ProviderDevice[] devices = [new("CPU", "CPU", true), new("QNNExecutionProvider:NPU", "NPU", true)];
+        var catalog = new ProviderCatalog("microsoft", "1.2.3.4", [new("1.2.3.4", true)],
+            [new("code-text", "Code/text encoder", ["Document", "Code"], devices, "Available", ""),
+             new("image-text", "Paired image encoder", ["Image"], devices, "Available", "")]);
+        model.CodeSource.Apply(catalog); model.ImageSource.Apply(catalog);
+        model.ApplyModels(selection);
+        model.CodeSource.Apply(catalog);
+        Require(model.DraftModels == selection && model.TextSource.IsHuggingFace && model.CodeSource.IsMicrosoft &&
+            model.ImageSource.IsMicrosoft && !model.ImageProcessing.IsVisible, "Mixed sources, native device choices or simple image controls were lost.");
+        var settings = new SettingsService(directory);
+        settings.Save(settings.Current with { Models = selection });
+        settings.Save(settings.Current with { Theme = "Dark", LoggingEnabled = false });
+        Require(new SettingsService(directory).Current.ModelSelection == selection &&
+            (string?)XDocument.Load(settings.FilePath).Root!.Attribute("version") == "4", "Saving unrelated preferences lost provider bindings.");
+        model.CodeSource.Version = "1.2.3.5";
+        model.CodeSource.Apply(new("microsoft", "1.2.3.5", [new("1.2.3.5", true)], []));
+        Require(model.CodeSource.Model == "code-text" && !model.CodeSource.IsReady,
+            "An unavailable model silently changed to a fallback when the drop changed.");
+        model.ApplyModels(ModelSelection.Default);
+        Require(model.ModelSources.All(source => source.IsHuggingFace) && model.DraftModels == ModelSelection.Default,
+            "Returning to default models retained inactive provider controls/options.");
+    });
 
     private static void LoadingState()
     {
@@ -361,11 +421,14 @@ internal static class Program
             model.ImageProcessing.Caption && !model.ImageProcessing.Ocr && model.DraftModels.UsesImageUnderstanding,
             "The automatic described-image defaults were not resolved.");
         model.ImageProcessing.Ocr = true;
+        model.ImageProcessing.RegionTask = "objects";
         var selection = model.DraftModels;
-        Require(selection.EffectiveImagePipeline.Ocr && selection.EmbeddingSelection().Image == selection.Text,
+        Require(selection.EffectiveImagePipeline.Ocr && selection.EffectiveImagePipeline.RegionTask == "objects" &&
+            selection.EmbeddingSelection().Image == selection.Text,
             "Image task/embedding dependencies were not captured.");
         model.ApplyModels(selection);
-        Require(model.ImageProcessing.Ocr && model.ImageProcessing.UseTextModel, "Applied image options were not retained.");
+        Require(model.ImageProcessing.Ocr && model.ImageProcessing.RegionTask == "objects" && model.ImageProcessing.UseTextModel,
+            "Applied image options were not retained.");
         model.ImageProcessing.UseTextModel = false;
         model.ImageProcessing.EmbeddingModelUrl = "https://example.com/invalid";
         try { _ = model.DraftModels; throw new InvalidOperationException("An invalid image text-embedder URL was accepted."); }

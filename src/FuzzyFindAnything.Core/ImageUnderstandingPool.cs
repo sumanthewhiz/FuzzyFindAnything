@@ -77,7 +77,7 @@ public sealed class ImageUnderstandingPool : IImageUnderstanding
     }
     public async Task<ImageTaskResult> GenerateAsync(string path, string task, CancellationToken cancellation)
     {
-        _ = Descriptor.Model.Task(task);
+        var profile = Descriptor.Model.Task(task);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token, cancellation);
         await work.WaitAsync(linked.Token);
         try
@@ -86,7 +86,7 @@ public sealed class ImageUnderstandingPool : IImageUnderstanding
             var value = await client!.RequestAsync("describe", new { path, task }, linked.Token);
             var result = value.Deserialize<ImageTaskResult>(Protocol.Json)
                 ?? throw new InvalidDataException("The image worker returned no task result.");
-            result.Validate(task);
+            result.Validate(profile);
             return result;
         }
         finally { lastUsed = Environment.TickCount64; work.Release(); }

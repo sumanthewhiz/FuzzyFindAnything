@@ -6,6 +6,8 @@ param(
     [string]$ModelCache,
     [string]$EmbeddingModelCache,
     [string]$ImageModelCache,
+    [string]$RegionImage,
+    [string]$ProviderConfiguration,
     [ValidateRange(60, 1800)][int]$TimeoutSeconds = 900
 )
 
@@ -138,6 +140,14 @@ if ($EmbeddingModelCache) {
 if ($ImageModelCache) {
     $ImageModelCache = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($ImageModelCache)
     $options += " -ImageModelCache '" + $ImageModelCache.Replace("'", "''") + "'"
+}
+if ($RegionImage) {
+    $RegionImage = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($RegionImage)
+    $options += " -RegionImage '" + $RegionImage.Replace("'", "''") + "'"
+}
+if ($ProviderConfiguration) {
+    $ProviderConfiguration = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($ProviderConfiguration)
+    $options += " -ProviderConfiguration '" + $ProviderConfiguration.Replace("'", "''") + "'"
 }
 $command = "`"$executable`" -NoProfile -Command `"& { try { & '$script'$options } catch { Write-Output (`$_ | Out-String); Write-Output `$_.ScriptStackTrace; Write-Output `$_.Exception.ToString(); exit 1 } } *> '$log'`""
 $run = $null

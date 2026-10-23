@@ -28,7 +28,9 @@ internal static class ReleaseTests
         Create(archive);
         ReleasePackage.Validate(archive, "win-arm64", Version);
         foreach (string forbidden in new[] { "../outside.txt", "models/language.onnx", "MODELS/weights.txt", ".runtime/python.exe",
-            "module.py", "python311.dll", "settings.xml", "folder\\escape.txt", "folder/../escape", "folder//alias.txt" })
+            "module.py", "python311.dll", "settings.xml", "folder\\escape.txt", "folder/../escape", "folder//alias.txt",
+            "provider-settings.json", "provider.json", "provider-model.json", "ffa_provider_bridge.dll",
+            "model.quant.onnxe", "internal-sdk.nupkg", "FuzzyFindAnything.MicrosoftProvider.exe" })
         {
             Create(archive, payload => payload[forbidden] = [1]);
             Check.Throws<InvalidDataException>(() => ReleasePackage.Validate(archive, "win-arm64", Version));

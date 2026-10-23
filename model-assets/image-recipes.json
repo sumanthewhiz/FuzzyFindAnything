@@ -17,7 +17,9 @@
     },
     "tasks": [
       {"id": "caption", "label": "Caption", "prompt": "Describe in detail what is shown in the image.", "maximum_new_tokens": 256},
-      {"id": "ocr", "label": "OCR", "prompt": "What is the text in the image?", "maximum_new_tokens": 512}
+      {"id": "ocr", "label": "OCR", "prompt": "What is the text in the image?", "maximum_new_tokens": 512},
+      {"id": "objects", "label": "Object labels", "prompt": "Locate the objects with category name in the image.", "maximum_new_tokens": 768, "output_kind": "regions", "postprocessor": "florence-boxes-v1"},
+      {"id": "region-descriptions", "label": "Region descriptions", "prompt": "Locate the objects in the image, with their descriptions.", "maximum_new_tokens": 768, "output_kind": "regions", "postprocessor": "florence-boxes-v1"}
     ],
     "files": ["config.json", "generation_config.json", "tokenizer.json", "tokenizer_config.json", "vocab.json", "merges.txt", "preprocessor_config.json", "README.md", "onnx/vision_encoder.onnx", "onnx/embed_tokens.onnx", "onnx/encoder_model.onnx", "onnx/decoder_model_merged.onnx"],
     "checksums": {
@@ -45,7 +47,9 @@
     },
     "tasks": [
       {"id": "caption", "label": "Caption", "prompt": "Describe in detail what is shown in the image.", "maximum_new_tokens": 256},
-      {"id": "ocr", "label": "OCR", "prompt": "What is the text in the image?", "maximum_new_tokens": 512}
+      {"id": "ocr", "label": "OCR", "prompt": "What is the text in the image?", "maximum_new_tokens": 512},
+      {"id": "objects", "label": "Object labels", "prompt": "Locate the objects with category name in the image.", "maximum_new_tokens": 768, "output_kind": "regions", "postprocessor": "florence-boxes-v1"},
+      {"id": "region-descriptions", "label": "Region descriptions", "prompt": "Locate the objects in the image, with their descriptions.", "maximum_new_tokens": 768, "output_kind": "regions", "postprocessor": "florence-boxes-v1"}
     ],
     "files": ["config.json", "generation_config.json", "tokenizer.json", "tokenizer_config.json", "vocab.json", "merges.txt", "preprocessor_config.json", "README.md", "onnx/vision_encoder.onnx", "onnx/embed_tokens.onnx", "onnx/encoder_model.onnx", "onnx/decoder_model_merged.onnx"],
     "checksums": {
@@ -53,6 +57,66 @@
       "onnx/embed_tokens.onnx": "fec0fd20276af861afb6a23a11544bf1378c05e2a41001b610cc281e244c4b20",
       "onnx/encoder_model.onnx": "b155b5a0e56a4244c62060751bb1b70dfe481015d0dbfa6d19b1912d9e58da0d",
       "onnx/decoder_model_merged.onnx": "6d6e1266d7f94f5d4ec9cc07d9c1f7b3e47049c9b0de7bbe82a91e62dfd152af"
+    }
+  },
+  {
+    "model_urls": ["https://huggingface.co/microsoft/Florence-2-large-ft", "https://huggingface.co/onnx-community/Florence-2-large-ft"],
+    "artifact_url": "https://huggingface.co/onnx-community/Florence-2-large-ft",
+    "revision": "04ace74913c28d7ec94af32cee5c111a10126b6f",
+    "source_revision": "4a12a2b54b7016a48a22037fbd62da90cd566f2a",
+    "model_type": "florence2",
+    "memory_bytes": 6979321856,
+    "recipe": {
+      "id": "vision-text-seq2seq-bpe-v1",
+      "vision_graph": "onnx/vision_encoder.onnx",
+      "token_graph": "onnx/embed_tokens.onnx",
+      "encoder_graph": "onnx/encoder_model.onnx",
+      "decoder_graph": "onnx/decoder_model_merged.onnx",
+      "width": 768, "height": 768, "hidden_size": 1024, "heads": 16, "layers": 12, "head_size": 64,
+      "mean": [0.485, 0.456, 0.406], "deviation": [0.229, 0.224, 0.225]
+    },
+    "tasks": [
+      {"id": "caption", "label": "Caption", "prompt": "Describe in detail what is shown in the image.", "maximum_new_tokens": 256},
+      {"id": "ocr", "label": "OCR", "prompt": "What is the text in the image?", "maximum_new_tokens": 512},
+      {"id": "objects", "label": "Object labels", "prompt": "Locate the objects with category name in the image.", "maximum_new_tokens": 768, "output_kind": "regions", "postprocessor": "florence-boxes-v1"},
+      {"id": "region-descriptions", "label": "Region descriptions", "prompt": "Locate the objects in the image, with their descriptions.", "maximum_new_tokens": 768, "output_kind": "regions", "postprocessor": "florence-boxes-v1"}
+    ],
+    "files": ["config.json", "generation_config.json", "tokenizer.json", "tokenizer_config.json", "vocab.json", "merges.txt", "preprocessor_config.json", "README.md", "onnx/vision_encoder.onnx", "onnx/embed_tokens.onnx", "onnx/encoder_model.onnx", "onnx/decoder_model_merged.onnx"],
+    "checksums": {
+      "onnx/vision_encoder.onnx": "cbe2b9e3bfd5f00f9c135c3c48e4e8a2ad2b35651309d213dbf0803cc862d491",
+      "onnx/embed_tokens.onnx": "8497716365d7636307b334a665b0fe3482c9dfc3cc3e31c1d110c25ec183e31d",
+      "onnx/encoder_model.onnx": "f4622b5203e353c0e660f8d2ccd50a1179a092cd2408b208bc9539f1572a321d",
+      "onnx/decoder_model_merged.onnx": "a35016ed99f4260f584bdef0602617cf344dafe8d72631d2a7e5933f105f4ea6"
+    }
+  },
+  {
+    "model_urls": ["https://huggingface.co/microsoft/Florence-2-large", "https://huggingface.co/onnx-community/Florence-2-large"],
+    "artifact_url": "https://huggingface.co/onnx-community/Florence-2-large",
+    "revision": "b7751295927207b2a8c2f354af8baadea5b0404b",
+    "source_revision": "21a599d414c4d928c9032694c424fb94458e3594",
+    "model_type": "florence2",
+    "memory_bytes": 6979321856,
+    "recipe": {
+      "id": "vision-text-seq2seq-bpe-v1",
+      "vision_graph": "onnx/vision_encoder.onnx",
+      "token_graph": "onnx/embed_tokens.onnx",
+      "encoder_graph": "onnx/encoder_model.onnx",
+      "decoder_graph": "onnx/decoder_model_merged.onnx",
+      "width": 768, "height": 768, "hidden_size": 1024, "heads": 16, "layers": 12, "head_size": 64,
+      "mean": [0.485, 0.456, 0.406], "deviation": [0.229, 0.224, 0.225]
+    },
+    "tasks": [
+      {"id": "caption", "label": "Caption", "prompt": "Describe in detail what is shown in the image.", "maximum_new_tokens": 256},
+      {"id": "ocr", "label": "OCR", "prompt": "What is the text in the image?", "maximum_new_tokens": 512},
+      {"id": "objects", "label": "Object labels", "prompt": "Locate the objects with category name in the image.", "maximum_new_tokens": 768, "output_kind": "regions", "postprocessor": "florence-boxes-v1"},
+      {"id": "region-descriptions", "label": "Region descriptions", "prompt": "Locate the objects in the image, with their descriptions.", "maximum_new_tokens": 768, "output_kind": "regions", "postprocessor": "florence-boxes-v1"}
+    ],
+    "files": ["config.json", "generation_config.json", "tokenizer.json", "tokenizer_config.json", "vocab.json", "merges.txt", "preprocessor_config.json", "README.md", "onnx/vision_encoder.onnx", "onnx/embed_tokens.onnx", "onnx/encoder_model.onnx", "onnx/decoder_model_merged.onnx"],
+    "checksums": {
+      "onnx/vision_encoder.onnx": "3579b2a9fe0e73d80a6e6152c610c80fed3739bc9e386145740ac41a0ac0dc05",
+      "onnx/embed_tokens.onnx": "af0a7ec8918e556c4f3b7931271b8cf882db2024e2b777955daa053ee6a881b3",
+      "onnx/encoder_model.onnx": "3046c1c8abee3c1d5ed667db738035a4abbe2793c5298683a8ccf1d6db5f4170",
+      "onnx/decoder_model_merged.onnx": "b8cc87fea29465237fc9980ee9cf4ef5c6a3e197d78ae6fd1e0b31c20bf7fd80"
     }
   }
 ]

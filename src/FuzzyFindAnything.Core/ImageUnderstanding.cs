@@ -3,9 +3,11 @@ using System.Text.RegularExpressions;
 
 namespace FuzzyFindAnything.Core;
 
-public sealed record ImageTaskProfile(string Id, string Label, string Prompt, int MaximumNewTokens)
+public sealed record ImageTaskProfile(string Id, string Label, string Prompt, int MaximumNewTokens,
+    string OutputKind = "text", string Postprocessor = "text-v1")
 {
-    public string Fingerprint => EmbeddingRecipe.Hash($"{Id}\n{Prompt}\n{MaximumNewTokens}");
+    public string Fingerprint => EmbeddingRecipe.Hash($"{Id}\n{Prompt}\n{MaximumNewTokens}" +
+        (OutputKind == "text" && Postprocessor == "text-v1" ? "" : $"\n{OutputKind}\n{Postprocessor}"));
 }
 
 public sealed record ImageGenerationRecipe(string Id, string VisionGraph, string TokenGraph, string EncoderGraph,
@@ -74,7 +76,7 @@ public static class ImageModelRecipes
         {
             _ = ModelSelection.Canonical(entry.ArtifactUrl);
             if (!Regex.IsMatch(entry.Revision, "^[0-9a-f]{40}$") || !Regex.IsMatch(entry.SourceRevision, "^[0-9a-f]{40}$") ||
-                entry.MemoryBytes <= 0 || entry.ModelUrls.Length == 0 || entry.Tasks.Length is < 1 or > 2 ||
+                entry.MemoryBytes <= 0 || entry.ModelUrls.Length == 0 || entry.Tasks.Length is < 1 or > 8 ||
                 entry.Tasks.Select(value => value.Id).Distinct().Count() != entry.Tasks.Length)
                 throw new InvalidDataException("Invalid image-understanding registry entry.");
             entry.Recipe.Validate();
@@ -82,8 +84,10 @@ public static class ImageModelRecipes
                 if (ModelSelection.Canonical(url) != url || !urls.Add(url))
                     throw new InvalidDataException("Duplicate or invalid image model URL.");
             foreach (var task in entry.Tasks)
-                if (task.Id is not ("caption" or "ocr") || task.Prompt.Length is < 1 or > 512 ||
-                    task.MaximumNewTokens is < 8 or > 768 || task.Label.Length is < 1 or > 80)
+                if (!Regex.IsMatch(task.Id, "^[a-z][a-z0-9-]{0,40}$") || task.Prompt.Length is < 1 or > 512 ||
+                    task.MaximumNewTokens is < 8 or > 768 || task.Label.Length is < 1 or > 80 ||
+                    task.OutputKind is not ("text" or "regions") ||
+                    task.Postprocessor != (task.OutputKind == "text" ? "text-v1" : "florence-boxes-v1"))
                     throw new InvalidDataException("Unsupported image task profile.");
             foreach (string file in entry.Files) _ = CachedModel.LocalName(file);
             foreach (var pair in entry.Checksums)
@@ -98,16 +102,18 @@ public static class ImageModelRecipes
 }
 
 public sealed record ImagePipelineOptions(bool Caption = true, bool Ocr = false, string? EmbeddingModel = null,
-    ModelOptions? EmbeddingOptions = null)
+    ModelOptions? EmbeddingOptions = null, string RegionTask = "")
 {
-    public string[] Tasks => new[] { Caption ? "caption" : null, Ocr ? "ocr" : null }.OfType<string>().ToArray();
+    public string[] Tasks => new[] { Caption ? "caption" : null, Ocr ? "ocr" : null, RegionTask.Length > 0 ? RegionTask : null }.OfType<string>().ToArray();
     public ImagePipelineOptions Normalize()
     {
-        if (!Caption && !Ocr) throw new ArgumentException("Select at least one supported image description task.");
-        string? url = string.IsNullOrWhiteSpace(EmbeddingModel) ? null : ModelSelection.Canonical(EmbeddingModel);
+        if (!Caption && !Ocr && RegionTask.Length == 0) throw new ArgumentException("Select at least one supported image task.");
+        if (RegionTask.Length > 0 && !Regex.IsMatch(RegionTask, "^[a-z][a-z0-9-]{0,40}$"))
+            throw new ArgumentException("Invalid image region task.");
+        string? url = string.IsNullOrWhiteSpace(EmbeddingModel) ? null : ModelReference.Parse(EmbeddingModel).Key;
         var options = EmbeddingOptions?.Normalize();
         if (options == ModelOptions.Default) options = null;
-        return new(Caption, Ocr, url, options);
+        return new(Caption, Ocr, url, options, RegionTask);
     }
 }
 
@@ -122,8 +128,15 @@ public sealed record ImagePipelineDescriptor(string ModelUrl, ImageModelDefiniti
 }
 
 public sealed record ImageTaskResult(string Task, string Text, string State, int GeneratedTokens = 0,
-    string? Warning = null, string? Error = null, string? ErrorCode = null, bool Retryable = false)
+    string? Warning = null, string? Error = null, string? ErrorCode = null, bool Retryable = false,
+    ImageRegion[]? Regions = null)
 {
+    public void Validate(ImageTaskProfile profile)
+    {
+        Validate(profile.Id);
+        if (State != "Failed" && (profile.OutputKind == "regions") != (Regions is not null))
+            throw new InvalidDataException("The image worker returned the wrong output kind for its reviewed task.");
+    }
     public void Validate(string task)
     {
         if (Task != task || State is not ("Completed" or "Partial" or "Empty" or "Failed") ||
@@ -131,6 +144,13 @@ public sealed record ImageTaskResult(string Task, string Text, string State, int
             State is "Completed" or "Partial" && string.IsNullOrWhiteSpace(Text) ||
             State == "Empty" && Text.Length != 0 || State == "Failed" && string.IsNullOrWhiteSpace(Error))
             throw new InvalidDataException("The image worker returned an invalid task outcome.");
+        if (Regions is not null)
+        {
+            if (Regions.Length > 64 || Regions.Select(region => region.Id).Distinct().Count() != Regions.Length ||
+                State == "Empty" && Regions.Length != 0 || State is "Completed" or "Partial" && Regions.Length == 0)
+                throw new InvalidDataException("The image worker returned invalid region coverage.");
+            foreach (var region in Regions) region.Validate();
+        }
     }
 }
 

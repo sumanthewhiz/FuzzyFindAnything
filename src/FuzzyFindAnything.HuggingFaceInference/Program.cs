@@ -121,7 +121,8 @@ internal static class Program
                         image_model = metadata.Model.Fingerprint,
                         tasks = metadata.Model.Tasks.Select(task => task.Id),
                         provider = model.Device.Provider,
-                        device = model.Device.Name
+                        device = model.Device.Name,
+                        peak_working_set_bytes = System.Diagnostics.Process.GetCurrentProcess().PeakWorkingSet64
                     },
                     "shutdown" => null,
                     _ => throw new NotSupportedException("This worker provides image-understanding tasks, not direct embeddings.")

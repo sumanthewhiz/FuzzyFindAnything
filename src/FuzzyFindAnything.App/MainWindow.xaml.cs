@@ -27,6 +27,7 @@ public partial class MainWindow : Window
     private CancellationTokenSource? modelInspection;
     private long inspectionGeneration;
     private bool modelInspectionStarted;
+    private readonly Dictionary<ModelSourceViewModel, CancellationTokenSource> providerQueries = [];
 
     public MainWindow(string dataDirectory, SettingsService settings)
     {
@@ -41,7 +42,7 @@ public partial class MainWindow : Window
         engine.StatusChanged += status => Dispatcher.InvokeAsync(() =>
         {
             viewModel.Apply(status);
-            if (!modelInspectionStarted) { modelInspectionStarted = true; _ = InspectModelsAsync(); }
+            if (!modelInspectionStarted) { modelInspectionStarted = true; _ = InitializeModelSourcesAsync(); }
         });
         engine.StartupChanged += status => Dispatcher.InvokeAsync(() => viewModel.ApplyStartup(status));
         engine.Warning += message => Dispatcher.InvokeAsync(() => viewModel.Error = message);
@@ -50,6 +51,13 @@ public partial class MainWindow : Window
         viewModel.ImageProcessing.OptionsChanged += () =>
         {
             if (engineStarted && !viewModel.ConfigurationBusy) _ = InspectModelsAsync();
+        };
+        viewModel.ModelSourceChanged += (source, reload) =>
+        {
+            if (!engineStarted || viewModel.ConfigurationBusy) return;
+            if (providerQueries.TryGetValue(source, out var pending)) pending.Cancel();
+            if (reload && source.IsMicrosoft) _ = RefreshProviderAsync(source, false);
+            else _ = InspectModelsAsync();
         };
         engine.Failed += message => Dispatcher.InvokeAsync(() =>
         {
@@ -175,6 +183,48 @@ public partial class MainWindow : Window
     {
         if (engineStarted && !viewModel.ConfigurationBusy) _ = InspectModelsAsync();
     }
+    private async Task InitializeModelSourcesAsync()
+    {
+        foreach (var source in viewModel.ModelSources.Where(source => source.IsMicrosoft))
+            await RefreshProviderAsync(source, false);
+        await InspectModelsAsync();
+    }
+    private async void RefreshProviderVersions_Click(object sender, RoutedEventArgs args)
+    {
+        if (sender is FrameworkElement { DataContext: ModelSourceViewModel source })
+            await RefreshProviderAsync(source, true);
+    }
+    private async Task RefreshProviderAsync(ModelSourceViewModel source, bool refresh)
+    {
+        if (providerQueries.TryGetValue(source, out var previous)) previous.Cancel();
+        using var request = new CancellationTokenSource();
+        providerQueries[source] = request; source.IsLoading = true;
+        source.Message = refresh ? "Querying available PSAPI drops and local device capabilities..." : "Loading this drop's available Microsoft models...";
+        try
+        {
+            var catalog = await engine.RequestAsync<ProviderCatalog>("provider_catalog",
+                new { provider = "microsoft", version = source.Version, refresh }, TimeSpan.FromMinutes(3), request.Token);
+            if (!request.IsCancellationRequested && source.IsMicrosoft)
+            {
+                source.Apply(catalog);
+                _ = InspectModelsAsync();
+            }
+        }
+        catch (OperationCanceledException) when (request.IsCancellationRequested) { }
+        catch (Exception error) when (error is IOException or TimeoutException or InvalidOperationException)
+        {
+            if (!request.IsCancellationRequested)
+            {
+                source.Message = error.Message;
+                viewModel.Error = error.Message;
+            }
+        }
+        finally
+        {
+            if (providerQueries.TryGetValue(source, out var active) && ReferenceEquals(active, request))
+            { providerQueries.Remove(source); source.IsLoading = false; }
+        }
+    }
     private async Task InspectModelsAsync()
     {
         modelInspection?.Cancel();
@@ -198,7 +248,8 @@ public partial class MainWindow : Window
                     ("Image", viewModel.ImageModelUrl, viewModel.ImageRequirements)
                 })
                 {
-                    try { _ = ModelSelection.Canonical(url); }
+                    var source = viewModel.ModelSources.Single(source => source.Kind == kind);
+                    try { _ = source.Reference(url); }
                     catch (ArgumentException) { target.Unavailable(kind, url, error.Message); }
                 }
                 return;
@@ -449,7 +500,7 @@ public partial class MainWindow : Window
         {
             try
             {
-                image.Thumbnail = await ThumbnailLoader.LoadAsync(image.Result.Path, cancellationToken);
+                image.Thumbnail = await ThumbnailLoader.LoadAsync(image.Result, cancellationToken);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {

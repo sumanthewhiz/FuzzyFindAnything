@@ -9,7 +9,7 @@ public sealed record CachedImageModel(ImageModelDefinition Model, ModelAssetFile
     {
         var approved = ImageModelRecipes.Find(Model.ModelUrls.FirstOrDefault() ?? "")
             ?? throw new InvalidDataException("The image-understanding model is not in the reviewed registry.");
-        if (Model.Fingerprint != approved.Fingerprint || !Model.Tasks.SequenceEqual(approved.Tasks) ||
+        if (Model.Fingerprint != approved.Fingerprint || Model.Tasks.Any(task => !approved.Tasks.Contains(task)) ||
             approved.Files.Any(name => Files.Count(file => file.Name == name) != 1) ||
             approved.Checksums.Any(pair => Files.SingleOrDefault(file => file.Name == pair.Key)?.Sha256 != pair.Value))
             throw new InvalidDataException("The image model manifest differs from its reviewed recipe.");
@@ -26,9 +26,16 @@ public sealed record CachedImageModel(ImageModelDefinition Model, ModelAssetFile
 public sealed class ImageModelAssets(string directory)
 {
     public string DirectoryFor(ImageModelDefinition model) => Path.Combine(directory, model.Key);
-    public static CachedImageModel Load(string path) =>
-        JsonSerializer.Deserialize<CachedImageModel>(File.ReadAllText(Path.Combine(path, CachedImageModel.ManifestName)), Protocol.Json)
-        ?? throw new InvalidDataException("Invalid image model manifest.");
+    public static CachedImageModel Load(string path)
+    {
+        var cached = JsonSerializer.Deserialize<CachedImageModel>(File.ReadAllText(Path.Combine(path, CachedImageModel.ManifestName)), Protocol.Json)
+            ?? throw new InvalidDataException("Invalid image model manifest.");
+        var approved = ImageModelRecipes.Find(cached.Model.ModelUrls.FirstOrDefault() ?? "")
+            ?? throw new InvalidDataException("The image model is not in the reviewed registry.");
+        if (cached.Model.Fingerprint != approved.Fingerprint || cached.Model.Tasks.Any(task => !approved.Tasks.Contains(task)))
+            throw new InvalidDataException("The cached image model differs from the reviewed contract.");
+        return cached with { Model = approved };
+    }
 
     public async Task<ImageModelDefinition> AcquireAsync(string url, Action<string> progress, CancellationToken cancellation)
     {
