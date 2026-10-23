@@ -195,6 +195,8 @@ function Select-ModelChoice([string]$id, [string]$value) {
     $choice = @($choices | Where-Object { $_.Current.ItemStatus -eq $value }) | Select-Object -First 1
     if (-not $choice) { throw "Missing model choice $value in $id" }
     ([System.Windows.Automation.SelectionItemPattern]$choice.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)).Select()
+    Wait-Check { (Find-Id $id).Current.IsEnabled } "model choice readiness for $id" 180
+    $control = Find-Id $id
     ([System.Windows.Automation.ExpandCollapsePattern]$control.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)).Collapse()
 }
 
@@ -344,7 +346,10 @@ try {
             Wait-Check { (Find-Id ($prefix+'PsapiRefresh')).Current.IsEnabled } 'live PSAPI version discovery' 180
             Select-ModelChoice ($prefix+'PsapiVersion') $parts[0]
             Wait-Check { (Find-Id ($prefix+'MicrosoftModel')).Current.IsEnabled } 'selected drop model catalog' 180
-            Select-ModelChoice ($prefix+'MicrosoftModel') $parts[1]
+            $role = if ($prefix -eq 'Text') { 'text' } else { $prefix.ToLowerInvariant() }
+            $options = $selection.($role + '_options')
+            $device = if ($options -and $options.device -and $options.device -ne 'Automatic') { $options.device } else { 'CPU' }
+            Select-ModelChoice ($prefix+'MicrosoftModel') ($parts[1] + '|' + $device)
         }
         if ((Find-Id 'CodeModelUrl') -or (Find-Id 'ImageModelUrl') -or (Find-Id 'ImagePipelineOptions')) {
             throw 'Microsoft direct models leaked Hugging Face or image-generation controls.'
@@ -361,6 +366,9 @@ try {
             if ($node.provider -ne 'microsoft' -or $node.version -ne $parts[0] -or $node.modelId -ne $parts[1] -or $node.modelUrl) {
                 throw 'The mixed provider/source/version selection was not persisted.'
             }
+            $options = $selection.($kind.ToLowerInvariant() + '_options')
+            $device = if ($options -and $options.device -and $options.device -ne 'Automatic') { $options.device } else { 'CPU' }
+            if ($node.devicePolicy -ne $device) { throw 'The selected model/device variant was not persisted.' }
         }
         Select-Tab 'SearchTab'
         foreach ($kind in @('Document','Code','Image')) { Set-SearchThreshold $kind 0 }

@@ -63,7 +63,7 @@
         <ComboBox ItemsSource="{Binding Sources}" DisplayMemberPath="Label" SelectedValuePath="Id" SelectedValue="{Binding Source}"
                   Style="{StaticResource ModelQuerySelector}" AutomationProperties.AutomationId="{Binding SourceControlId}" />
         <StackPanel Margin="0,10,0,0" Visibility="{Binding IsMicrosoft, Converter={StaticResource BoolToVisibility}}">
-          <ComboBox ItemsSource="{Binding Models}" DisplayMemberPath="Label" SelectedValuePath="Id" SelectedValue="{Binding Model}"
+          <ComboBox ItemsSource="{Binding Models}" DisplayMemberPath="Label" SelectedValuePath="Id" SelectedValue="{Binding SelectedVariant}"
                     Style="{StaticResource ModelQuerySelector}" IsEnabled="{Binding CanSelect}" AutomationProperties.AutomationId="{Binding ModelControlId}">
             <ComboBox.ItemContainerStyle>
               <Style TargetType="ComboBoxItem">
@@ -104,11 +104,6 @@
                   AutomationProperties.AutomationId="ModelDetailsExpander">
           <StackPanel Margin="0,8,0,0">
             <TextBlock Text="{Binding Details}" TextWrapping="Wrap" Foreground="{DynamicResource Muted}" FontSize="12" />
-            <StackPanel Margin="0,8,0,0" Visibility="{Binding HasDeviceOptions, Converter={StaticResource BoolToVisibility}}">
-              <TextBlock Text="Execution device" Foreground="{DynamicResource Muted}" FontSize="12" />
-              <ComboBox ItemsSource="{Binding Devices}" DisplayMemberPath="Label" SelectedValuePath="Id" SelectedValue="{Binding SelectedDevice}"
-                        Style="{StaticResource ModelQuerySelector}" AutomationProperties.AutomationId="ProviderDeviceChoice" />
-            </StackPanel>
             <StackPanel Margin="0,8,0,0" Visibility="{Binding HasQueryOptions, Converter={StaticResource BoolToVisibility}}">
               <TextBlock Text="Query purpose" Foreground="{DynamicResource Muted}" FontSize="12" />
               <ComboBox ItemsSource="{Binding QueryProfiles}" DisplayMemberPath="Label" SelectedValuePath="Id"
@@ -243,7 +238,7 @@
       </DockPanel>
     </Border>
 
-    <TabControl Grid.Row="2" Margin="32,22,32,22" Background="Transparent" BorderThickness="0" SelectedIndex="0" FocusVisualStyle="{x:Null}"
+    <TabControl x:Name="MainTabs" SelectionChanged="MainTabs_SelectionChanged" Grid.Row="2" Margin="32,22,32,22" Background="Transparent" BorderThickness="0" SelectedIndex="0" FocusVisualStyle="{x:Null}"
                 AutomationProperties.AutomationId="MainTabs">
       <TabControl.Template>
         <ControlTemplate TargetType="TabControl">
@@ -655,7 +650,7 @@
           </StackPanel>
         </ScrollViewer>
       </TabItem>
-      <TabItem AutomationProperties.AutomationId="ModelsTab" AutomationProperties.Name="Model configuration">
+      <TabItem x:Name="ModelsPage" AutomationProperties.AutomationId="ModelsTab" AutomationProperties.Name="Model configuration">
         <TabItem.Header>
           <StackPanel Orientation="Horizontal">
             <TextBlock Text="&#xE8F1;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=TabItem}}" Margin="0,2,9,0" />

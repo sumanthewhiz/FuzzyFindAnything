@@ -2,7 +2,7 @@
 
 **Find documents, source code and images by meaning, on your Windows PC.**
 
-This checkout is **1.5.0-dev.1**, adding region-based image retrieval, larger Florence-2 profiles and an opt-in internal Microsoft model-provider integration to the extensible native model pipelines. Earlier release packages do not contain these additions.
+This checkout is **1.5.0-dev.2**, including region-based image retrieval, larger Florence-2 profiles and an opt-in Microsoft model-provider integration with direct device choices and compatible SDK selection. Earlier release packages do not contain these additions.
 
 [![Build and release](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml/badge.svg?branch=dev)](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml)
 ![Windows 11](https://img.shields.io/badge/platform-Windows%2011-0078D4)
@@ -106,7 +106,7 @@ The image recipe resolves its tokenizer, processor, graph bindings and task prom
 
 The compatible-model host uses self-contained Windows ML to discover usable CPU, GPU and NPU execution providers. Acceptance depends on hardware, driver/provider, resource limits and real inference, not a blanket accelerator restriction. Query-only changes retain file embeddings; accepted document-model changes rebuild only affected file types. See [model configuration and device checks](docs/ARCHITECTURE.md#configurable-models-and-device-checks).
 
-For an authorized internal installation, each role can instead select **Microsoft (PSAPI)**. The provider supplies a fixed model list for the selected SDK drop; **PSAPI drop version / Refresh available versions** queries its approved feed. Hugging Face selections retain the model-card URL field. Native query/document purposes and matching tokenizers are automatic, and direct Microsoft image embeddings do not expose caption/region-generation controls. Model/package availability and detected hardware determine the offered choices; Apply still runs real native execution checks. An unavailable model is not silently replaced when the drop changes.
+For an authorized installation, each role can instead select **Microsoft (PSAPI)**. The model picker includes available CPU, NPU or GPU variants directly. **PSAPI drop version / Refresh available versions** queries the provider and offers compatible, usable drops rather than unsupported placeholders. Hugging Face selections retain the model-card URL field. Native query/document purposes and matching tokenizers are automatic, and direct Microsoft image embeddings do not expose caption/region-generation controls. Model/package availability and detected hardware determine the offered choices; Apply still runs real native execution checks. An unavailable model is not silently replaced when the drop changes.
 
 The internal provider is registered separately under `%LOCALAPPDATA%\FuzzyFindAnythingProviders`. It is not included in the public application, source checkout or release ZIPs. Without it, Hugging Face behavior and defaults remain unchanged, and selecting Microsoft gives an explicit installation diagnostic. Feed authentication uses the native .NET Azure Artifacts credential provider, not Azure CLI or Python. See the provider's internal installation instructions for the approved SDK/model channel.
 

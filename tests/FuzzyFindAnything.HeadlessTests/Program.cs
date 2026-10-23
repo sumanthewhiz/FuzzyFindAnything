@@ -31,6 +31,7 @@ internal static class Program
         Run("WPF query-purpose selection survives Apply refresh", QueryPurposeBinding);
         Run("Image pipeline requirements stay hidden for direct models", ImageRequirements);
         Run("Mixed provider choices, version persistence and unavailable-model guard", ProviderChoices);
+        Run("Caller-scoped catalogs and direct device variants", CallerCatalogs);
         Run("Search type guardrail and independent thresholds", SearchOptions);
         Run("Footer alignment and results layout", () => LayoutContracts(args[0]));
         Console.WriteLine("All headless checks passed. No application window or engine was started.");
@@ -199,13 +200,20 @@ internal static class Program
         model.ApplyModels(selection);
         ProviderDevice[] devices = [new("CPU", "CPU", true), new("QNNExecutionProvider:NPU", "NPU", true)];
         var catalog = new ProviderCatalog("microsoft", "1.2.3.4", [new("1.2.3.4", true)],
-            [new("code-text", "Code/text encoder", ["Document", "Code"], devices, "Available", ""),
-             new("image-text", "Paired image encoder", ["Image"], devices, "Available", "")]);
+            [new("code-text", "Code/text encoder", ["Document", "Code"], devices, "Available", "", PubliclyReleased: true),
+             new("image-text", "Paired image encoder", ["Image"], devices, "Available", "", PubliclyReleased: true)]);
         model.CodeSource.Apply(catalog); model.ImageSource.Apply(catalog);
         model.ApplyModels(selection);
         model.CodeSource.Apply(catalog);
         Require(model.DraftModels == selection && model.TextSource.IsHuggingFace && model.CodeSource.IsMicrosoft &&
             model.ImageSource.IsMicrosoft && !model.ImageProcessing.IsVisible, "Mixed sources, native device choices or simple image controls were lost.");
+        Require(model.CodeSource.SelectedVariant == "code-text|QNNExecutionProvider:NPU" &&
+            model.CodeSource.Models.Any(choice => choice.Device == "CPU") && model.CodeSource.Models.Any(choice => choice.Device == "QNNExecutionProvider:NPU"),
+            "The model picker did not expose the actual CPU/NPU execution variants.");
+        model.CodeSource.SelectedVariant = "code-text|CPU";
+        Require(model.DraftModels.CodeOptions?.Device == "CPU", "The selected CPU variant was not used by the draft binding.");
+        model.CodeSource.SelectedVariant = "code-text|QNNExecutionProvider:NPU";
+        Require(model.DraftModels == selection, "The selected NPU variant did not retain its model and execution policy.");
         var settings = new SettingsService(directory);
         settings.Save(settings.Current with { Models = selection });
         settings.Save(settings.Current with { Theme = "Dark", LoggingEnabled = false });
@@ -219,6 +227,34 @@ internal static class Program
         Require(model.ModelSources.All(source => source.IsHuggingFace) && model.DraftModels == ModelSelection.Default,
             "Returning to default models retained inactive provider controls/options.");
     });
+
+    private static void CallerCatalogs()
+    {
+        ProviderDevice[] devices = [new("CPU", "CPU", true), new("QNNExecutionProvider:NPU", "NPU", true)];
+        var internalCatalog = new ProviderCatalog("microsoft", "1.2.3.4",
+            [new("1.2.3.4", true), new("1.0.0.0", false, "Incompatible SDK")],
+            [new("released-model", "Released encoder", ["Code"], devices, "Available", "", PubliclyReleased: true),
+             new("restricted-model", "Restricted encoder", ["Code"], devices, "Available", "")],
+            InternalAccessVerified: true);
+        var source = new ModelSourceViewModel("Code");
+        source.Restore(new ProviderModelReference("microsoft", "1.2.3.4", "restricted-model"), new(Device: "CPU"));
+        Require(source.Models.Count == 0 && !source.IsReady, "A saved binding exposed an unverified model before catalog discovery.");
+        source.Apply(internalCatalog);
+        Require(source.Models.Count == 4 && source.IsReady && source.Versions.All(choice => choice.Id == "1.2.3.4"),
+            "Authorized variants were missing or an unusable SDK remained selectable.");
+        source.IsLoading = true;
+        Require(source.Models.Count == 0 && !source.IsReady, "A refresh left stale model names visible.");
+        var publicCatalog = internalCatalog with { InternalAccessVerified = false };
+        source.Apply(publicCatalog);
+        Require(source.Models.Count == 2 && source.Models.All(choice => choice.ModelId == "released-model") &&
+            source.Model == "restricted-model" && !source.IsReady && source.SelectedVariant.Length == 0,
+            "A public caller saw restricted entries or was silently switched to a replacement.");
+        Require(publicCatalog.ForCaller().Models.All(model => model.PubliclyReleased) &&
+            publicCatalog.ForCaller().Versions.All(version => version.Supported), "Catalog filtering trusted stale capabilities.");
+        var legacy = new ProviderCatalog("microsoft", "1.2.3.4", [new("1.2.3.4", true)],
+            [new("unclassified", "Unclassified", ["Code"], devices, "Available", "")]);
+        Require(legacy.ForCaller().Models.Length == 0, "Missing release/access metadata did not fail closed.");
+    }
 
     private static void LoadingState()
     {

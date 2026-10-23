@@ -26,8 +26,16 @@ public sealed record ExternalEmbeddingContract(string Provider, string VectorIde
 public sealed record ProviderDevice(string Id, string Label, bool Available, string Detail = "");
 public sealed record ProviderVersion(string Id, bool Supported, string Detail = "");
 public sealed record ProviderModel(string Id, string Label, string[] Kinds, ProviderDevice[] Devices,
-    string State, string Detail);
-public sealed record ProviderCatalog(string Provider, string Version, ProviderVersion[] Versions, ProviderModel[] Models);
+    string State, string Detail, bool PubliclyReleased = false);
+public sealed record ProviderCatalog(string Provider, string Version, ProviderVersion[] Versions, ProviderModel[] Models,
+    bool InternalAccessVerified = false, string AvailabilityNotice = "")
+{
+    public ProviderCatalog ForCaller() => this with
+    {
+        Versions = Versions.Where(version => version.Supported).ToArray(),
+        Models = Models.Where(model => model.PubliclyReleased || InternalAccessVerified).ToArray()
+    };
+}
 public sealed record ProviderRegistration(string Id, string Executable, string DefaultVersion, int ProtocolVersion = 1);
 public sealed record PreparedProviderModel(EmbeddingSpace Space, string Directory);
 
@@ -87,7 +95,7 @@ public sealed class ExternalModels(string cacheDirectory, Action<string> log, st
                 throw new InvalidDataException("The provider returned unsupported model roles/devices.");
             foreach (var device in model.Devices) _ = new ModelOptions(Device: device.Id).Normalize();
         }
-        return result;
+        return result.ForCaller();
     }
 
     public async Task<ModelRequirement> InspectAsync(string kind, ProviderModelReference reference, CancellationToken cancellation)

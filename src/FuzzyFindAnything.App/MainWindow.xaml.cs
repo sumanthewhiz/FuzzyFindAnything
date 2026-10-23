@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Net.NetworkInformation;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
@@ -59,6 +60,8 @@ public partial class MainWindow : Window
             if (reload && source.IsMicrosoft) _ = RefreshProviderAsync(source, false);
             else _ = InspectModelsAsync();
         };
+        NetworkChange.NetworkAddressChanged += ProviderNetworkChanged;
+        NetworkChange.NetworkAvailabilityChanged += ProviderNetworkChanged;
         engine.Failed += message => Dispatcher.InvokeAsync(() =>
         {
             viewModel.IsConnected = false;
@@ -188,6 +191,35 @@ public partial class MainWindow : Window
         foreach (var source in viewModel.ModelSources.Where(source => source.IsMicrosoft))
             await RefreshProviderAsync(source, false);
         await InspectModelsAsync();
+    }
+    private void MainTabs_SelectionChanged(object sender, SelectionChangedEventArgs args)
+    {
+        if (!ReferenceEquals(args.OriginalSource, MainTabs) || !engineStarted || !viewModel.IsConnected ||
+            viewModel.ConfigurationBusy || ModelsPage?.IsSelected != true) return;
+        foreach (var source in viewModel.ModelSources.Where(source => source.IsMicrosoft))
+            _ = RefreshProviderAsync(source, false);
+    }
+    private void ProviderNetworkChanged(object? sender, EventArgs args)
+    {
+        if (Dispatcher.HasShutdownStarted) return;
+        _ = Dispatcher.InvokeAsync(() =>
+        {
+            if (quitting) return;
+            foreach (var source in viewModel.ModelSources.Where(source => source.IsMicrosoft))
+            {
+                if (providerQueries.TryGetValue(source, out var request)) request.Cancel();
+                source.Invalidate("Model availability must be refreshed for the current connection.");
+                if (ModelsPage.IsSelected && viewModel.IsConnected && !viewModel.ConfigurationBusy)
+                    _ = RefreshProviderAsync(source, false);
+            }
+        });
+    }
+    protected override void OnClosed(EventArgs args)
+    {
+        NetworkChange.NetworkAddressChanged -= ProviderNetworkChanged;
+        NetworkChange.NetworkAvailabilityChanged -= ProviderNetworkChanged;
+        foreach (var request in providerQueries.Values) request.Cancel();
+        base.OnClosed(args);
     }
     private async void RefreshProviderVersions_Click(object sender, RoutedEventArgs args)
     {

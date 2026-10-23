@@ -138,8 +138,8 @@ public sealed class MainViewModel : ObservableObject
         }
     }
     public ModelSelection DraftModels => new ModelSelection(TextSource.Reference(TextModelUrl), CodeSource.Reference(CodeModelUrl), ImageSource.Reference(ImageModelUrl),
-        TextRequirements.Options, CodeRequirements.Options, ImageProcessing.IsVisible
-            ? ImageRequirements.Options is { } options ? options with { QueryProfile = "" } : null : ImageRequirements.Options,
+        TextSource.Options(TextRequirements.Options), CodeSource.Options(CodeRequirements.Options), ImageProcessing.IsVisible
+            ? ImageRequirements.Options is { } options ? options with { QueryProfile = "" } : null : ImageSource.Options(ImageRequirements.Options),
         ImageProcessing.Options(ImageRequirements.SelectedQueryProfile)).Normalize();
     public string ModelConfigurationMessage { get => modelConfigurationMessage; set => Set(ref modelConfigurationMessage, value); }
     public ObservableCollection<ModelIndexState> ModelIndexes { get; } = [];
@@ -348,7 +348,7 @@ public sealed class MainViewModel : ObservableObject
 
     public void ApplyModels(ModelSelection selection)
     {
-        foreach (var source in ModelSources) source.Restore(selection.ReferenceFor(source.Kind));
+        foreach (var source in ModelSources) source.Restore(selection.ReferenceFor(source.Kind), selection.OptionsFor(source.Kind));
         if (TextSource.IsHuggingFace) TextModelUrl = selection.Text;
         if (CodeSource.IsHuggingFace) CodeModelUrl = selection.Code;
         if (ImageSource.IsHuggingFace) ImageModelUrl = selection.Image;
