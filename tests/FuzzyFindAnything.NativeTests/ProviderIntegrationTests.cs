@@ -36,6 +36,11 @@ internal static class ProviderIntegrationTests
                 await engine.RequestAsync<JsonElement>("add_folder", new { path = corpus });
                 await engine.WaitAsync(state => state.FileCount == 4 && state.QueueCount == 0 && state.ReconcilingFolders == 0,
                     "The isolated HF baseline did not index.");
+                var catalogRequests = await Task.WhenAll(Enumerable.Range(0, 4).Select(_ =>
+                    engine.RequestAsync<ProviderCatalog>("provider_catalog", new { provider = "microsoft", version = "", refresh = false })));
+                Program.Require(catalogRequests.All(value => value.InternalAccessVerified && value.Models.Length > 0),
+                    "Concurrent source discovery was rejected as busy or lost verified catalog access.");
+                Console.WriteLine("PASS concurrent provider discovery queue without persistent busy errors");
                 var previous = baseline;
                 foreach (var selection in cases.Select(value => value.Normalize()))
                 {

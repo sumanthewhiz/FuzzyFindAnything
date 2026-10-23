@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
 using System.Numerics;
+using System.Text.Json;
 using System.Threading.Channels;
 using FuzzyFindAnything.Core;
 
@@ -18,6 +19,8 @@ internal static class SchedulingTests
         Program.Run("Monotonic startup checkpoints and terminal failures", Progress);
         await BatchingAsync();
         await PoolsAsync();
+        await MemoryAsync();
+        await ProviderMemoryAsync();
         await PipelinesAsync();
         await ResumeAsync();
         await StartupCancellationAsync();
@@ -185,6 +188,106 @@ internal static class SchedulingTests
         try { using var process = Process.GetProcessById(pid); return !process.HasExited; }
         catch (ArgumentException) { return false; }
     }
+    private static Task MemoryAsync() => Check.TemporaryAsync(async root =>
+    {
+        var active = new List<ModelPool>();
+        var messages = new ConcurrentQueue<string>();
+        long limit = 8 * Gib;
+        var memory = new ModelMemoryCoordinator(messages.Enqueue, () => limit - active.Sum(pool => pool.ReadyWorkers) * 3 * Gib);
+        ModelPool Create(object flags)
+        {
+            var pool = new ModelPool(Check.Executable, Check.Scenario(root, flags), Budget, messages.Enqueue,
+                workerLimit: 1, memoryCoordinator: memory);
+            active.Add(pool); return pool;
+        }
+        await using var first = Create(new { info = true });
+        await using var second = Create(new { });
+        await using var third = Create(new { });
+        foreach (var pool in new[] { first, second, third }) await pool.StartAsync((_, _) => { }, default);
+        Program.Require(active.Sum(pool => pool.ReadyWorkers) == 2 && first.ReadyWorkers == 0 &&
+            first.Warning.Length == 0 && messages.Contains("Native runtime thread-pool information."),
+            "Startup kept every model resident or promoted informational diagnostics to a warning.");
+        Program.Require((await first.QueryAsync("reactivate", default))[0] == 1 && first.ReadyWorkers == 1 &&
+            active.Sum(pool => pool.ReadyWorkers) == 2, "An evicted model could not resume without exceeding the memory allowance.");
+        await Check.ThrowsAsync<ModelMemoryException>(async () =>
+        {
+            using var lease = await memory.AcquireAsync(null, 7 * Gib, default);
+        });
+        Program.Require((await first.QueryAsync("recover after rejected change", default))[0] == 1,
+            "Rejecting a model made the previous selection unusable.");
+        await first.ReleaseIdleWorkerAsync();
+        using (await memory.AcquireAsync(null, 3 * Gib, default))
+        {
+            var pending = first.QueryAsync("waiting for admission", default);
+            await first.DisposeAsync();
+            await Check.ThrowsAsync<OperationCanceledException>(async () => await pending.WaitAsync(TimeSpan.FromSeconds(5)));
+        }
+        foreach (var pool in active) await pool.DisposeAsync();
+
+        active.Clear(); limit = 7 * Gib;
+        string scenario = Check.Scenario(root, new { block_first = true, block_second = true });
+        await using var busy = new ModelPool(Check.Executable, scenario, Budget, messages.Enqueue,
+            workerLimit: 1, memoryCoordinator: memory);
+        active.Add(busy);
+        await busy.StartAsync((_, _) => { }, default);
+        var batch = busy.DocumentsAsync("active", ["body"], default);
+        await Check.UntilAsync(() => File.Exists(Path.Combine(scenario, "entered")), "The busy memory fixture did not start.");
+        using var cancellation = new CancellationTokenSource();
+        await using var cancelled = Create(new { });
+        var starting = cancelled.StartAsync((_, _) => { }, cancellation.Token);
+        await Check.UntilAsync(() => messages.Any(value => value.StartsWith("Waiting for an active model")),
+            "Memory admission did not wait for the running inference.");
+        Program.Require(busy.ReadyWorkers == 1 && !starting.IsCompleted, "Memory reclamation interrupted an active native operation.");
+        cancellation.Cancel();
+        await Check.ThrowsAsync<OperationCanceledException>(async () => await starting);
+        await cancelled.DisposeAsync();
+        await using var replacement = Create(new { });
+        var replacementStarted = replacement.StartAsync((_, _) => { }, default);
+        await Check.UntilAsync(() => messages.Count(value => value.StartsWith("Waiting for an active model")) >= 2,
+            "The replacement did not drain the running worker.");
+        var queued = busy.DocumentsAsync("queued", ["another body"], default);
+        await File.WriteAllTextAsync(Path.Combine(scenario, "release"), "go");
+        await Task.WhenAll(batch, queued, replacementStarted).WaitAsync(TimeSpan.FromSeconds(10));
+        Program.Require(!File.Exists(Path.Combine(scenario, "entered-second")), "Queued work reacquired a worker already selected for memory reclamation.");
+        await File.WriteAllTextAsync(Path.Combine(scenario, "release-second"), "go");
+        Program.Require((await busy.QueryAsync("restore", default))[0] == 1,
+            "Continuous queued work starved admission, or cancelled admission prevented restoration of the previous model.");
+        Console.WriteLine("PASS pressure-aware startup, cold reactivation, busy-worker draining, admission cancellation and log-only information");
+    });
+
+    private static Task ProviderMemoryAsync() => Check.TemporaryAsync(async root =>
+    {
+        ModelPool? previous = null;
+        var memory = new ModelMemoryCoordinator(_ => { }, () => 7 * Gib - (previous?.ReadyWorkers ?? 0) * 3 * Gib);
+        await using var old = new ModelPool(Check.Executable, Check.Scenario(root, new { }), Budget, _ => { },
+            workerLimit: 1, memoryCoordinator: memory);
+        previous = old;
+        await old.StartAsync((_, _) => { }, default);
+        foreach (string outcome in new[] { "success", "failure", "cancel" })
+        {
+            string scenario = Check.Scenario(root, new { fail_provider = outcome == "failure", block_provider = outcome == "cancel" });
+            string registrations = Path.Combine(scenario, "providers"), registration = Path.Combine(registrations, "test-provider");
+            Directory.CreateDirectory(registration);
+            File.WriteAllText(Path.Combine(registration, "provider.json"), JsonSerializer.Serialize(
+                new ProviderRegistration("test-provider", Check.Executable, "1.2.3.4", 2), Protocol.Json));
+            var external = new ExternalModels(Path.Combine(scenario, "cache"), _ => { }, registrations);
+            using var cancellation = new CancellationTokenSource();
+            var prepare = external.ResolveAsync(new("test-provider", "1.2.3.4", "text"), new(Device: "CPU"),
+                _ => { }, cancellation.Token, memory);
+            if (outcome == "cancel")
+            {
+                await Check.UntilAsync(() => File.Exists(Path.Combine(scenario, "admitted")), "The provider did not request coordinated memory.");
+                cancellation.Cancel();
+                await Check.ThrowsAsync<OperationCanceledException>(async () => await prepare);
+            }
+            else if (outcome == "failure") await Check.ThrowsAsync<ContentException>(async () => await prepare);
+            else Program.Require((await prepare).External?.LogicalDimensions == 100, "The coordinated provider model was not prepared.");
+            Program.Require(old.ReadyWorkers == 0 && !Alive(int.Parse(File.ReadAllText(Path.Combine(scenario, "provider.pid")))) &&
+                (await old.QueryAsync("old model remains usable", default))[0] == 1,
+                "Provider qualification overlapped old workers, leaked a process/admission lease, or broke rollback.");
+        }
+        Console.WriteLine("PASS provider memory handoff, qualification failure, cancellation and previous-model recovery");
+    });
     private static IndexingEngine Engine(string root, IEmbeddings model, StartupProgress? startup = null, string? helper = null) =>
         new(Path.Combine(root, "index"), Path.Combine(root, "model"), helper ?? Path.Combine(root, "missing.exe"),
             Path.Combine(root, "app"), Budget, model, new EngineLog(Path.Combine(root, "index")), startup ?? new(), watch: false);

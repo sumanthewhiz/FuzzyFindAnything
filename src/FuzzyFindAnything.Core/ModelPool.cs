@@ -33,7 +33,7 @@ public sealed record EmbeddingSearchBinding(IEmbeddings Model, string Profile, s
 
 public sealed class ModelPool(string executable, string modelDirectory, CpuBudget budget, Action<string> log,
     Func<long>? memoryAvailable = null, EmbeddingSpace? space = null, int? workerLimit = null, int? threadLimit = null,
-    string? requiredProvider = null) : IEmbeddings
+    string? requiredProvider = null, ModelMemoryCoordinator? memoryCoordinator = null) : IEmbeddings, IModelResidency
 {
     public EmbeddingSpace Space { get; } = space ?? EmbeddingSpace.Default;
     public string Provider { get; private set; } = "CPUExecutionProvider";
@@ -42,11 +42,14 @@ public sealed class ModelPool(string executable, string modelDirectory, CpuBudge
     private readonly object gate = new();
     private readonly List<InferenceClient> clients = [];
     private readonly Queue<InferenceClient> available = new();
+    private readonly SemaphoreSlim eviction = new(1, 1);
+    private IDisposable? memoryRegistration;
+    private long lastUsed = Environment.TickCount64;
     private TaskCompletionSource changed = NewSignal();
     private CancellationTokenSource? lifetime;
     private InferenceBatcher? batches;
     private Task? warmup;
-    private bool closed;
+    private bool closed, draining;
     private int queryWaiters, desired;
     private static TaskCompletionSource NewSignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
     private void Wake() { TaskCompletionSource previous = changed; changed = NewSignal(); previous.TrySetResult(); }
@@ -55,6 +58,21 @@ public sealed class ModelPool(string executable, string modelDirectory, CpuBudge
     public int BatchConcurrency => Math.Min(budget.Processors, 2 * Math.Max(1, desired));
     public string Warning { get; private set; } = "";
     public BatchState Statistics => batches?.Statistics ?? new(0, 0, 0, 0, 0, 0);
+    bool IModelResidency.HasResidentWorker { get { lock (gate) return clients.Any(client => client.Alive); } }
+    bool IModelResidency.HasBusyWorker
+    {
+        get { lock (gate) return clients.Any(client => client.Alive && (closed || !available.Contains(client))); }
+    }
+    long IModelResidency.LastUsed => Interlocked.Read(ref lastUsed);
+    private async Task<IDisposable?> AdmitAsync(CancellationToken cancellation, bool reclaim = true)
+    {
+        if (memoryCoordinator is not null)
+            return await memoryCoordinator.AcquireAsync(this, Space.MemoryBytes, cancellation, reclaim);
+        long memory = memoryCoordinator?.AvailableBytes ?? (memoryAvailable ?? AvailableMemory)();
+        if (memory < Space.MemoryBytes + ModelMemoryCoordinator.SystemReserveBytes)
+            throw new ModelMemoryException(Space.MemoryBytes, memory);
+        return null;
+    }
 
     public async Task StartAsync(Action<int, string> progress, CancellationToken cancellation)
     {
@@ -63,11 +81,12 @@ public sealed class ModelPool(string executable, string modelDirectory, CpuBudge
             if (lifetime is not null || closed) throw new InvalidOperationException("The native model pool cannot be started twice.");
             lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
         }
-        long memory = (memoryAvailable ?? AvailableMemory)();
+        memoryRegistration = memoryCoordinator?.Register(this);
+        using var admission = await AdmitAsync(lifetime.Token);
+        long memory = memoryCoordinator?.AvailableBytes ?? (memoryAvailable ?? AvailableMemory)();
         if (Space == EmbeddingSpace.Default) (desired, Threads) = Plan(budget.Processors, memory);
         else
         {
-            if (memory < Space.MemoryBytes + (2L << 30)) throw new IOException("Insufficient available memory for this model and the system reserve.");
             desired = 1; Threads = budget.Processors;
         }
         if (workerLimit is { } maximum) desired = Math.Min(desired, maximum);
@@ -101,6 +120,8 @@ public sealed class ModelPool(string executable, string modelDirectory, CpuBudge
                 throw new InvalidDataException("The provider worker does not implement the required preparation and embedding contract.");
             if (capabilities.TryGetProperty("warning", out var warning) && warning.GetString() is { Length: > 0 } message)
             { Warning = message; log(message); }
+            if (capabilities.TryGetProperty("info", out var info) && info.GetString() is { Length: > 0 } detail)
+                log(detail);
             return client;
         }
         catch { await client.DisposeAsync(); throw; }
@@ -110,7 +131,7 @@ public sealed class ModelPool(string executable, string modelDirectory, CpuBudge
         if (processors < 1) throw new ArgumentOutOfRangeException(nameof(processors));
         const long gib = 1L << 30;
         int permitted = (int)Math.Max(0, (memory - 2 * gib) / (3 * gib));
-        if (permitted == 0) throw new IOException($"At least 5 GiB of available RAM is required for native inference; {memory / (double)gib:0.0} GiB is available.");
+        if (permitted == 0) throw new ModelMemoryException(3 * gib, memory);
         int workers = Math.Min(processors >= 4 ? 2 : 1, permitted);
         return (workers, Math.Max(1, processors / workers));
     }
@@ -118,7 +139,7 @@ public sealed class ModelPool(string executable, string modelDirectory, CpuBudge
     {
         try
         {
-            if ((memoryAvailable ?? AvailableMemory)() < 5L << 30) throw new IOException("Available memory became too low for an additional model.");
+            using var admission = await AdmitAsync(lifetime!.Token, reclaim: false);
             var client = await StartClientAsync(null, lifetime!.Token);
             lock (gate)
             {
@@ -128,14 +149,17 @@ public sealed class ModelPool(string executable, string modelDirectory, CpuBudge
             else { batches!.AddWorker(); log("Additional native model is ready."); }
         }
         catch (OperationCanceledException) when (lifetime!.IsCancellationRequested) { }
+        catch (ModelMemoryException error) { log("Optional model warmup skipped: " + error.Message); }
         catch (Exception error)
         {
             Warning = "Search remains available with one model. Additional startup failed: " + error.Message;
             log(Warning);
         }
     }
-    private async Task<T> WithClientAsync<T>(bool query, Func<InferenceClient, Task<T>> action, CancellationToken cancellation)
+    private async Task<T> WithClientAsync<T>(bool query, Func<InferenceClient, CancellationToken, Task<T>> action, CancellationToken cancellation)
     {
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellation, lifetime?.Token ?? default);
+        cancellation = linked.Token;
         InferenceClient? client = null;
         bool counted = query;
         if (query) lock (gate) { queryWaiters++; Wake(); }
@@ -147,9 +171,12 @@ public sealed class ModelPool(string executable, string modelDirectory, CpuBudge
                 lock (gate)
                 {
                     if (closed) throw new OperationCanceledException("Inference is stopping.");
-                    if (available.Count > 0 && (query || queryWaiters == 0))
+                    if (!draining && available.Count > 0 && (query || queryWaiters == 0))
                     {
-                        client = available.Dequeue();
+                        client = available.FirstOrDefault(value => value.Alive) ?? available.Peek();
+                        var retained = available.Where(value => !ReferenceEquals(value, client)).ToArray();
+                        available.Clear();
+                        foreach (var value in retained) available.Enqueue(value);
                         if (counted) { queryWaiters--; counted = false; }
                         break;
                     }
@@ -159,12 +186,26 @@ public sealed class ModelPool(string executable, string modelDirectory, CpuBudge
             }
             if (!client.Alive)
             {
+                using var admission = await AdmitAsync(cancellation);
                 await client.DisposeAsync();
                 var replacement = await StartClientAsync(null, cancellation);
-                lock (gate) clients[clients.IndexOf(client)] = replacement;
-                client = replacement;
+                bool adopted;
+                lock (gate)
+                {
+                    adopted = !closed;
+                    if (adopted)
+                    {
+                        clients[clients.IndexOf(client)] = replacement;
+                        client = replacement;
+                    }
+                }
+                if (!adopted)
+                {
+                    await replacement.DisposeAsync();
+                    throw new OperationCanceledException("Inference is stopping.", cancellation);
+                }
             }
-            return await action(client);
+            return await action(client, cancellation);
         }
         finally
         {
@@ -172,25 +213,26 @@ public sealed class ModelPool(string executable, string modelDirectory, CpuBudge
             {
                 if (counted) queryWaiters--;
                 if (client is not null && !closed) available.Enqueue(client);
+                Interlocked.Exchange(ref lastUsed, Environment.TickCount64);
                 Wake();
             }
         }
     }
     private async Task<float[][]> EncodeAsync(string operation, string[] values, CancellationToken cancellation) =>
-        await WithClientAsync(false, async client =>
+        await WithClientAsync(false, async (client, token) =>
         {
             object arguments = operation == "documents" ? new { texts = values } : new { paths = values };
-            var result = await client.RequestAsync(operation, arguments, cancellation);
+            var result = await client.RequestAsync(operation, arguments, token);
             var vectors = result.Deserialize<float[][]>() ?? throw new InvalidDataException("Empty inference output.");
             if (vectors.Length != values.Length) throw new InvalidDataException("Incomplete inference batch.");
             return vectors.Select(vector => Space.Normalize(vector)).ToArray();
         }, cancellation);
-    public Task<string[]> SplitAsync(string text, CancellationToken cancellation) => WithClientAsync(false, async client =>
-        (await client.RequestAsync("split", new { text }, cancellation)).Deserialize<string[]>()
+    public Task<string[]> SplitAsync(string text, CancellationToken cancellation) => WithClientAsync(false, async (client, token) =>
+        (await client.RequestAsync("split", new { text }, token)).Deserialize<string[]>()
             ?? throw new InvalidDataException("Empty passage preparation output."), cancellation);
     public Task<ChunkingResult> SplitContentAsync(string text, ChunkingContext context, CancellationToken cancellation) =>
-        WithClientAsync(false, async client =>
-            (await client.RequestAsync("split_content", new { text, context }, cancellation)).Deserialize<ChunkingResult>(Protocol.Json)
+        WithClientAsync(false, async (client, token) =>
+            (await client.RequestAsync("split_content", new { text, context }, token)).Deserialize<ChunkingResult>(Protocol.Json)
                 ?? throw new InvalidDataException("Empty structured passage response."), cancellation);
     public Task<float[][]> DocumentsAsync(string title, string[] passages, CancellationToken cancellation) =>
         batches!.SubmitAsync("documents", passages.Select(passage => Space == EmbeddingSpace.Default
@@ -198,9 +240,51 @@ public sealed class ModelPool(string executable, string modelDirectory, CpuBudge
     public async Task<float[]> ImageAsync(string path, CancellationToken cancellation) =>
         (await batches!.SubmitAsync("images", [path], cancellation))[0];
     public Task<float[]> QueryAsync(string text, CancellationToken cancellation) => QueryAsync(text, Space.Recipe?.TextQuery ?? "default", cancellation);
-    public Task<float[]> QueryAsync(string text, string profile, CancellationToken cancellation) => WithClientAsync(true, async client =>
-        Space.Normalize((await client.RequestAsync("query", Space.Recipe is null ? new { text } : (object)new { text, profile }, cancellation)).Deserialize<float[]>()
+    public Task<float[]> QueryAsync(string text, string profile, CancellationToken cancellation) => WithClientAsync(true, async (client, token) =>
+        Space.Normalize((await client.RequestAsync("query", Space.Recipe is null ? new { text } : (object)new { text, profile }, token)).Deserialize<float[]>()
             ?? throw new InvalidDataException("Empty query embedding.")), cancellation);
+
+    public Task<bool> ReleaseIdleWorkerAsync() => ReleaseWorkerAsync(false, default);
+    public async Task<bool> ReleaseWorkerAsync(bool wait, CancellationToken cancellation)
+    {
+        await eviction.WaitAsync(cancellation);
+        InferenceClient? client = null;
+        try
+        {
+            while (client is null)
+            {
+                Task pending;
+                lock (gate)
+                {
+                    if (closed) return false;
+                    if (wait) draining = true;
+                    client = available.LastOrDefault(value => value.Alive);
+                    if (client is not null)
+                    {
+                        var retained = available.Where(value => !ReferenceEquals(value, client)).ToArray();
+                        available.Clear();
+                        foreach (var value in retained) available.Enqueue(value);
+                        break;
+                    }
+                    if (!wait || !clients.Any(value => value.Alive)) return false;
+                    pending = changed.Task;
+                }
+                await pending.WaitAsync(cancellation);
+            }
+            await client.DisposeAsync();
+            return true;
+        }
+        finally
+        {
+            lock (gate)
+            {
+                draining = false;
+                if (client is not null && !closed) available.Enqueue(client);
+                Wake();
+            }
+            eviction.Release();
+        }
+    }
 
     public async ValueTask DisposeAsync()
     {
@@ -208,10 +292,14 @@ public sealed class ModelPool(string executable, string modelDirectory, CpuBudge
         lifetime?.Cancel();
         if (warmup is not null) await warmup;
         if (batches is not null) await batches.DisposeAsync();
-        InferenceClient[] snapshot;
-        lock (gate) snapshot = clients.ToArray();
-        foreach (var client in snapshot) await client.DisposeAsync();
-        lifetime?.Dispose();
+        await eviction.WaitAsync();
+        try
+        {
+            InferenceClient[] snapshot;
+            lock (gate) snapshot = clients.ToArray();
+            foreach (var client in snapshot) await client.DisposeAsync();
+        }
+        finally { eviction.Release(); memoryRegistration?.Dispose(); lifetime?.Dispose(); }
     }
     public static long AvailableMemory()
     {

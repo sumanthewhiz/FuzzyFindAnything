@@ -32,6 +32,7 @@ internal static class Program
         Run("Image pipeline requirements stay hidden for direct models", ImageRequirements);
         Run("Mixed provider choices, version persistence and unavailable-model guard", ProviderChoices);
         Run("Caller-scoped catalogs and direct device variants", CallerCatalogs);
+        Run("Discovery completion clears only owned errors", ProviderDiscoveryFeedback);
         Run("Search type guardrail and independent thresholds", SearchOptions);
         Run("Footer alignment and results layout", () => LayoutContracts(args[0]));
         Console.WriteLine("All headless checks passed. No application window or engine was started.");
@@ -201,7 +202,8 @@ internal static class Program
         ProviderDevice[] devices = [new("CPU", "CPU", true), new("QNNExecutionProvider:NPU", "NPU", true)];
         var catalog = new ProviderCatalog("microsoft", "1.2.3.4", [new("1.2.3.4", true)],
             [new("code-text", "Code/text encoder", ["Document", "Code"], devices, "Available", "", PubliclyReleased: true),
-             new("image-text", "Paired image encoder", ["Image"], devices, "Available", "", PubliclyReleased: true)]);
+             new("image-text", "Paired image encoder", ["Image"], devices, "Available", "", PubliclyReleased: true)],
+             InternalAccessVerified: true);
         model.CodeSource.Apply(catalog); model.ImageSource.Apply(catalog);
         model.ApplyModels(selection);
         model.CodeSource.Apply(catalog);
@@ -220,7 +222,7 @@ internal static class Program
         Require(new SettingsService(directory).Current.ModelSelection == selection &&
             (string?)XDocument.Load(settings.FilePath).Root!.Attribute("version") == "4", "Saving unrelated preferences lost provider bindings.");
         model.CodeSource.Version = "1.2.3.5";
-        model.CodeSource.Apply(new("microsoft", "1.2.3.5", [new("1.2.3.5", true)], []));
+        model.CodeSource.Apply(new("microsoft", "1.2.3.5", [new("1.2.3.5", true)], [], InternalAccessVerified: true));
         Require(model.CodeSource.Model == "code-text" && !model.CodeSource.IsReady,
             "An unavailable model silently changed to a fallback when the drop changed.");
         model.ApplyModels(ModelSelection.Default);
@@ -237,6 +239,7 @@ internal static class Program
              new("restricted-model", "Restricted encoder", ["Code"], devices, "Available", "")],
             InternalAccessVerified: true);
         var source = new ModelSourceViewModel("Code");
+        Require(source.Sources.Single().Id == "huggingface", "A new installation exposed an unverified model source.");
         source.Restore(new ProviderModelReference("microsoft", "1.2.3.4", "restricted-model"), new(Device: "CPU"));
         Require(source.Models.Count == 0 && !source.IsReady, "A saved binding exposed an unverified model before catalog discovery.");
         source.Apply(internalCatalog);
@@ -246,16 +249,38 @@ internal static class Program
         Require(source.Models.Count == 0 && !source.IsReady, "A refresh left stale model names visible.");
         var publicCatalog = internalCatalog with { InternalAccessVerified = false };
         source.Apply(publicCatalog);
-        Require(source.Models.Count == 2 && source.Models.All(choice => choice.ModelId == "released-model") &&
+        Require(source.Models.Count == 0 && source.Versions.Count == 0 && source.Sources.Single().Id == "huggingface" &&
             source.Model == "restricted-model" && !source.IsReady && source.SelectedVariant.Length == 0,
-            "A public caller saw restricted entries or was silently switched to a replacement.");
-        Require(publicCatalog.ForCaller().Models.All(model => model.PubliclyReleased) &&
-            publicCatalog.ForCaller().Versions.All(version => version.Supported), "Catalog filtering trusted stale capabilities.");
+            "Registry access loss retained a provider choice or silently changed the saved binding.");
+        Require(publicCatalog.ForCaller().Models.Length == 0 && publicCatalog.ForCaller().Versions.Length == 0,
+            "Catalog filtering trusted stale registry access.");
+        source.Apply(internalCatalog);
+        Require(source.Sources.Any(choice => choice.Id == "microsoft") && source.IsReady &&
+            source.SelectedVariant == "restricted-model|CPU", "Registry recovery lost the saved model/device choice.");
         var legacy = new ProviderCatalog("microsoft", "1.2.3.4", [new("1.2.3.4", true)],
             [new("unclassified", "Unclassified", ["Code"], devices, "Available", "")]);
         Require(legacy.ForCaller().Models.Length == 0, "Missing release/access metadata did not fail closed.");
+        var model = new MainViewModel();
+        var selected = ModelSelection.Default with
+        { Image = "https://huggingface.co/microsoft/Florence-2-base-ft", ImagePipeline = new(Ocr: true, RegionTask: "objects") };
+        model.ApplyModels(selected);
+        foreach (var role in model.ModelSources) role.Apply(internalCatalog);
+        Require(model.DraftModels == selected, "Optional provider discovery changed an applied Hugging Face image pipeline.");
     }
 
+    private static void ProviderDiscoveryFeedback()
+    {
+        var model = new MainViewModel();
+        const string busy = "Provider discovery is already in progress. Wait for the current checks.";
+        model.ProviderDiscoveryFailed(busy);
+        Require(model.Error == busy, "Discovery errors were hidden before recovery.");
+        model.ProviderDiscoveryCompleted();
+        Require(model.Error.Length == 0, "The discovery-in-progress notice remained after completion.");
+        model.ProviderDiscoveryFailed(busy);
+        model.Error = "An unrelated search request failed.";
+        model.ProviderDiscoveryCompleted();
+        Require(model.Error == "An unrelated search request failed.", "Discovery completion cleared an unrelated error.");
+    }
     private static void LoadingState()
     {
         var model = new MainViewModel();

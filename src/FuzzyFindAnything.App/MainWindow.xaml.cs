@@ -28,7 +28,8 @@ public partial class MainWindow : Window
     private CancellationTokenSource? modelInspection;
     private long inspectionGeneration;
     private bool modelInspectionStarted;
-    private readonly Dictionary<ModelSourceViewModel, CancellationTokenSource> providerQueries = [];
+    private readonly SemaphoreSlim providerGate = new(1, 1);
+    private CancellationTokenSource? providerDiscovery;
 
     public MainWindow(string dataDirectory, SettingsService settings)
     {
@@ -56,8 +57,7 @@ public partial class MainWindow : Window
         viewModel.ModelSourceChanged += (source, reload) =>
         {
             if (!engineStarted || viewModel.ConfigurationBusy) return;
-            if (providerQueries.TryGetValue(source, out var pending)) pending.Cancel();
-            if (reload && source.IsMicrosoft) _ = RefreshProviderAsync(source, false);
+            if (reload && source.IsMicrosoft) _ = RefreshProviderSourcesAsync(false);
             else _ = InspectModelsAsync();
         };
         NetworkChange.NetworkAddressChanged += ProviderNetworkChanged;
@@ -186,18 +186,12 @@ public partial class MainWindow : Window
     {
         if (engineStarted && !viewModel.ConfigurationBusy) _ = InspectModelsAsync();
     }
-    private async Task InitializeModelSourcesAsync()
-    {
-        foreach (var source in viewModel.ModelSources.Where(source => source.IsMicrosoft))
-            await RefreshProviderAsync(source, false);
-        await InspectModelsAsync();
-    }
+    private Task InitializeModelSourcesAsync() => RefreshProviderSourcesAsync(false);
     private void MainTabs_SelectionChanged(object sender, SelectionChangedEventArgs args)
     {
         if (!ReferenceEquals(args.OriginalSource, MainTabs) || !engineStarted || !viewModel.IsConnected ||
             viewModel.ConfigurationBusy || ModelsPage?.IsSelected != true) return;
-        foreach (var source in viewModel.ModelSources.Where(source => source.IsMicrosoft))
-            _ = RefreshProviderAsync(source, false);
+        if (providerDiscovery is null) _ = RefreshProviderSourcesAsync(false);
     }
     private void ProviderNetworkChanged(object? sender, EventArgs args)
     {
@@ -205,56 +199,90 @@ public partial class MainWindow : Window
         _ = Dispatcher.InvokeAsync(() =>
         {
             if (quitting) return;
-            foreach (var source in viewModel.ModelSources.Where(source => source.IsMicrosoft))
-            {
-                if (providerQueries.TryGetValue(source, out var request)) request.Cancel();
-                source.Invalidate("Model availability must be refreshed for the current connection.");
-                if (ModelsPage.IsSelected && viewModel.IsConnected && !viewModel.ConfigurationBusy)
-                    _ = RefreshProviderAsync(source, false);
-            }
+            providerDiscovery?.Cancel();
+            foreach (var source in viewModel.ModelSources)
+                source.SetAvailability(false, "Model availability must be verified for the current connection.");
+            if (viewModel.IsConnected && !viewModel.ConfigurationBusy) _ = RefreshProviderSourcesAsync(false);
         });
     }
     protected override void OnClosed(EventArgs args)
     {
         NetworkChange.NetworkAddressChanged -= ProviderNetworkChanged;
         NetworkChange.NetworkAvailabilityChanged -= ProviderNetworkChanged;
-        foreach (var request in providerQueries.Values) request.Cancel();
+        providerDiscovery?.Cancel();
         base.OnClosed(args);
     }
-    private async void RefreshProviderVersions_Click(object sender, RoutedEventArgs args)
+    private async void RefreshProviderVersions_Click(object sender, RoutedEventArgs args) => await RefreshProviderSourcesAsync(true);
+    private async Task RefreshProviderSourcesAsync(bool refresh)
     {
-        if (sender is FrameworkElement { DataContext: ModelSourceViewModel source })
-            await RefreshProviderAsync(source, true);
-    }
-    private async Task RefreshProviderAsync(ModelSourceViewModel source, bool refresh)
-    {
-        if (providerQueries.TryGetValue(source, out var previous)) previous.Cancel();
+        providerDiscovery?.Cancel();
         using var request = new CancellationTokenSource();
-        providerQueries[source] = request; source.IsLoading = true;
-        source.Message = refresh ? "Querying available PSAPI drops and local device capabilities..." : "Loading this drop's available Microsoft models...";
+        providerDiscovery = request;
+        foreach (var source in viewModel.ModelSources)
+        {
+            source.IsLoading = true;
+            source.SetAvailability(false, "Checking the current connection and available model sources...");
+        }
+        viewModel.SourceAvailabilityMessage = "Checking available local model sources...";
+        bool entered = false, registryVerified = false;
         try
         {
+            await providerGate.WaitAsync(request.Token);
+            entered = true;
+            // Keep the slot until the remote call finishes, even if a newer UI request supersedes this one.
             var catalog = await engine.RequestAsync<ProviderCatalog>("provider_catalog",
-                new { provider = "microsoft", version = source.Version, refresh }, TimeSpan.FromMinutes(3), request.Token);
-            if (!request.IsCancellationRequested && source.IsMicrosoft)
+                new { provider = "microsoft", version = "", refresh }, TimeSpan.FromMinutes(3));
+            request.Token.ThrowIfCancellationRequested();
+            registryVerified = catalog.InternalAccessVerified;
+            foreach (var source in viewModel.ModelSources) source.Discover(catalog);
+            if (registryVerified)
             {
-                source.Apply(catalog);
-                _ = InspectModelsAsync();
+                foreach (var source in viewModel.ModelSources.Where(source => !source.IsMicrosoft ||
+                    source.Version.Length == 0 || source.Version == catalog.Version))
+                    source.Apply(catalog, complete: false);
+                foreach (var group in viewModel.ModelSources.Where(source => source.IsMicrosoft && source.Version != catalog.Version)
+                    .GroupBy(source => source.Version).ToArray())
+                {
+                    var selected = await engine.RequestAsync<ProviderCatalog>("provider_catalog",
+                        new { provider = "microsoft", version = group.Key, refresh }, TimeSpan.FromMinutes(3));
+                    request.Token.ThrowIfCancellationRequested();
+                    if (!selected.InternalAccessVerified)
+                    {
+                        foreach (var source in viewModel.ModelSources) source.Discover(selected);
+                        registryVerified = false;
+                        break;
+                    }
+                    foreach (var source in group) source.Apply(selected, complete: false);
+                }
             }
+            viewModel.SourceAvailabilityMessage = registryVerified
+                ? "Available model sources and device choices are up to date."
+                : "Hugging Face is available. Optional local providers are unavailable for this connection.";
+            viewModel.ProviderDiscoveryCompleted();
         }
         catch (OperationCanceledException) when (request.IsCancellationRequested) { }
         catch (Exception error) when (error is IOException or TimeoutException or InvalidOperationException)
         {
             if (!request.IsCancellationRequested)
             {
-                source.Message = error.Message;
-                viewModel.Error = error.Message;
+                foreach (var source in viewModel.ModelSources)
+                {
+                    if (!registryVerified) source.SetAvailability(false, error.Message);
+                    else if (source.IsLoading) source.Invalidate(error.Message);
+                }
+                viewModel.SourceAvailabilityMessage = "Model source discovery did not finish. Refresh to retry.";
+                viewModel.ProviderDiscoveryFailed(error.Message);
             }
         }
         finally
         {
-            if (providerQueries.TryGetValue(source, out var active) && ReferenceEquals(active, request))
-            { providerQueries.Remove(source); source.IsLoading = false; }
+            if (entered) providerGate.Release();
+            if (ReferenceEquals(providerDiscovery, request))
+            {
+                providerDiscovery = null;
+                foreach (var source in viewModel.ModelSources) source.IsLoading = false;
+                if (!quitting) _ = InspectModelsAsync();
+            }
         }
     }
     private async Task InspectModelsAsync()
@@ -266,7 +294,7 @@ public partial class MainWindow : Window
         try
         {
             await Task.Delay(450, request.Token);
-            if (!viewModel.IsConnected || viewModel.ConfigurationBusy) return;
+            if (!viewModel.IsConnected || viewModel.ConfigurationBusy || providerDiscovery is not null) return;
             ModelSelection selection;
             try { selection = viewModel.DraftModels; }
             catch (ArgumentException error)

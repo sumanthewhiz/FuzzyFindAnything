@@ -35,14 +35,23 @@ internal static class VisualChecks
         foreach (var attribute in content.DescendantsAndSelf().Attributes().Where(attribute => events.Contains(attribute.Name.LocalName)).ToArray())
             attribute.Remove();
         var model = new MainViewModel { Query = "a red circle on a white background", DocumentThreshold = 0.35, CodeThreshold = 0.30, ImageThreshold = 0.15 };
-        model.Apply(new EngineStatus("Ready", "Search engine ready", "", [], 3, 3, "USN journal + directory notifications", "",
-            new IndexMetadata("DiskANN (0.7.0; abi=1)", @"C:\SearchData", 3, 1, 1, 1048576, DateTimeOffset.UtcNow.ToString("O"), 1),
+        model.Apply(new EngineStatus("Ready", "Search engine ready", "",
+            new[] { "Documents", "Code", "Images" }.Select((name, index) =>
+                new FolderStatus(index + 1, @"C:\Sample files\" + name, "Indexed", "", 1, 1, 0, 1, 0, 0, 0)).ToList(),
+            3, 3, "USN journal + directory notifications", "",
+            new IndexMetadata("DiskANN (0.7.0; abi=1)", @"C:\SearchData", 3, 1, 1, 1048576, "2026-10-23T16:30:00Z", 1),
             new CpuStatus(12, 6, 2, 3, 6, 8), 0, 0, [], new LoggingStatus(true, @"C:\SearchData\Logs", ""),
-            new StartupStatus(1, 100, 9, 9, "Search engine ready", "Ready", "")));
+            new StartupStatus(1, 100, 9, 9, "Search engine ready", "Ready", ""),
+            Models: new(ModelSelection.Default, [new(ModelSelection.DefaultUrl, ["Document", "Code", "Image"], 768, 3, 3,
+                @"C:\SearchData\diskann", "CPUExecutionProvider", "CPU")], "Models ready.")));
+        const string documentChunk = "A red circle is a round shape on a white background.";
+        const string codeChunk = "def draw_circle(canvas):\n    return canvas.create_oval(40, 40, 216, 216)";
         model.FinishSearch([
-            new(@"C:\Sample files\Shape guide.txt", "Shape guide.txt", "Document", 400, 0, "A red circle is a round shape on a white background.", 0.87),
-            new(@"C:\Sample files\Draw circle.py", "Draw circle.py", "Code", 200, 0, "def draw_circle(canvas):\n    return canvas.create_oval(40, 40, 216, 216)", 0.81),
-            new(@"C:\Sample files\Red circle.png", "Red circle.png", "Image", 1024, 0, "Red circle", 0.92, Evidence: "objects",
+            new(@"C:\Sample files\Documents\Shape guide.txt", "Shape guide.txt", "Document", 400, 0, documentChunk, 0.87,
+                MatchedChunk: documentChunk, Chunk: new(ChunkingProfiles.Documents, "text", 0, documentChunk.Length, 1, 1, "", "")),
+            new(@"C:\Sample files\Code\Draw circle.py", "Draw circle.py", "Code", 200, 0, codeChunk, 0.81,
+                MatchedChunk: codeChunk, Chunk: new(ChunkingProfiles.Code, "python", 0, codeChunk.Length, 1, 2, "draw_circle", "")),
+            new(@"C:\Sample files\Images\Red circle.png", "Red circle.png", "Image", 1024, 0, "Red circle", 0.92, Evidence: "objects",
                 Region: new("0", "Red circle", 0.15625, 0.15625, 0.84375, 0.84375, 256, 256))
         ], TimeSpan.FromMilliseconds(180));
         var picture = new DrawingVisual();
@@ -65,6 +74,11 @@ internal static class VisualChecks
             Save(grid, Path.Combine(output, $"search-{theme.ToLowerInvariant()}.png"));
 
             var tabs = grid.Children.OfType<TabControl>().Single();
+            foreach (var (id, name) in new[] { ("FoldersTab", "folders"), ("IndexInfoTab", "index"), ("ConfigurationTab", "configuration") })
+            {
+                tabs.SelectedItem = tabs.Items.OfType<TabItem>().Single(tab => AutomationProperties.GetAutomationId(tab) == id);
+                Save(grid, Path.Combine(output, $"{name}-{theme.ToLowerInvariant()}.png"));
+            }
             var models = tabs.Items.OfType<TabItem>().Single(tab => AutomationProperties.GetAutomationId(tab) == "ModelsTab");
             tabs.SelectedItem = models;
             Save(grid, Path.Combine(output, $"models-{theme.ToLowerInvariant()}.png"));
@@ -92,14 +106,16 @@ internal static class VisualChecks
             foreach (var expander in Descendants(grid).OfType<Expander>()) expander.IsExpanded = true;
             Save(grid, Path.Combine(output, $"models-recipes-expanded-{theme.ToLowerInvariant()}.png"));
             const string imageModel = "https://huggingface.co/microsoft/Florence-2-base-ft";
-            var described = ModelSelection.Default with { Image = imageModel, ImagePipeline = new(Ocr: true) };
+            var described = ModelSelection.Default with { Image = imageModel, ImagePipeline = new(Ocr: true, RegionTask: "objects") };
             model.ApplyModels(described);
             model.ApplyModelInspection(new(described, [new("Image", imageModel, "Available",
-                "Image descriptions (caption + OCR) -> Documents / text",
+                "Image descriptions (caption + OCR + object labels) -> Documents / text",
                 "Native image understanding. Task prompts, tokenizer and stages are automatic.",
                 [], "default", false, ImageModel: ImageModelRecipes.Find(imageModel), EmbeddingModel: ModelSelection.DefaultUrl)]));
             Save(grid, Path.Combine(output, $"models-images-{theme.ToLowerInvariant()}.png"));
             foreach (var expander in Descendants(grid).OfType<Expander>()) expander.IsExpanded = true;
+            grid.UpdateLayout();
+            ((ScrollViewer)models.Content).ScrollToVerticalOffset(380);
             Save(grid, Path.Combine(output, $"models-images-expanded-{theme.ToLowerInvariant()}.png"));
             model.ApplyModels(ModelSelection.Default);
         }

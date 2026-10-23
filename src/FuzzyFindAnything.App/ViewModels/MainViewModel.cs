@@ -58,7 +58,7 @@ public sealed class MainViewModel : ObservableObject
             requirement.PropertyChanged += (_, _) => Changed(nameof(CanApplyModels));
         foreach (var source in ModelSources)
         {
-            source.PropertyChanged += (_, _) => Changed(nameof(CanApplyModels));
+            source.PropertyChanged += (_, _) => { Changed(nameof(CanApplyModels)); Changed(nameof(ModelSourceGuidance)); };
             source.SelectionChanged += reload =>
             {
                 var requirements = source.Kind == "Document" ? TextRequirements : source.Kind == "Code" ? CodeRequirements : ImageRequirements;
@@ -67,6 +67,22 @@ public sealed class MainViewModel : ObservableObject
                 ModelSourceChanged?.Invoke(source, reload);
             };
         }
+    }
+    private string sourceAvailabilityMessage = "";
+    private string? providerDiscoveryError;
+    public string SourceAvailabilityMessage { get => sourceAvailabilityMessage; set => Set(ref sourceAvailabilityMessage, value); }
+    public string ModelSourceGuidance => ModelSources.Any(source => source.MicrosoftAvailable)
+        ? "Choose local Hugging Face or approved Microsoft models independently for documents, code and images."
+        : "Choose local Hugging Face models independently for documents, code and images.";
+    public void ProviderDiscoveryFailed(string message)
+    {
+        providerDiscoveryError = message;
+        Error = message;
+    }
+    public void ProviderDiscoveryCompleted()
+    {
+        if (Error == providerDiscoveryError) Error = "";
+        providerDiscoveryError = null;
     }
     private string query = "";
     private SearchPreferences searchOptions = new();

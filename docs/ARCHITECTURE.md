@@ -1,6 +1,6 @@
 # Architecture and operations
 
-See [content chunking](CHUNKING.md) for model-independent document/code boundaries, native syntax grammars, token budgets, provenance and schema-8 migration. and operations
+See [content chunking](CHUNKING.md) for model-independent document/code boundaries, native syntax grammars, token budgets, provenance and schema-8 migration.
 
 [Overview](../README.md) · [Quickstart](../QUICKSTART.md) · [Migration](MIGRATION.md) · [Validation](VALIDATION.md)
 
@@ -20,7 +20,7 @@ The active DiskANN graph resides in RAM. Persistence and recovery do not make it
 | Coordinator executable | `src\FuzzyFindAnything.Engine` | Exclusive data-directory lease, local JSON IPC, startup/status and shutdown |
 | Engine library | `src\FuzzyFindAnything.Core` | Catalog, durable queue, discovery, monitoring, concurrency, extraction client and logs |
 | Inference host | `src\FuzzyFindAnything.Inference` | Exact tokenization/decoding, image preprocessing and reusable ONNX sessions |
-| Compatible-model host | `src\FuzzyFindAnything.HuggingFaceInference` | Native BERT/CLIP adapters and Windows ML CPU/GPU/NPU execution validation |
+| Compatible-model host | `src\FuzzyFindAnything.HuggingFaceInference` | Reviewed embedding/image-understanding recipes, native BERT/CLIP adapters and Windows ML device validation |
 | IFilter helper | `src\FuzzyFindAnything.Extractor` | Isolated COM activation, content detection, bounded extraction and classified errors |
 | Native DiskANN bridge | `native` | Pinned C++ implementation, versioned C ABI, caller-owned buffers and packed snapshots |
 | Utilities | `src\FuzzyFindAnything.Tools` | Native model acquisition/verification, offline maintenance and package verification |
@@ -49,7 +49,7 @@ The WPF application owns a .NET Windows Forms `NotifyIcon` for the system tray. 
 | Representation | 768-dimensional, unit-normalized float32 |
 | Query format | `task: search result \| query: <text>` |
 | Document/code format | `title: <filename> \| text: <passage>` |
-| Passages | 512 tokens, stride 448; whitespace-canonical duplicate suppression |
+| Passages | App-owned document/code structure, model-measured 512-token budget and bounded splitting of oversized units |
 | Title / preview limits | 160 / 400 Unicode scalars |
 
 The managed SentencePiece encoder matches the reference token IDs. Passage decoding explicitly follows `tokenizer.json`'s replacement, byte-fallback and concatenation operations; the generic decoder would drop the model's ordinary newline token. Code previews preserve line breaks and indentation. Document previews collapse whitespace.
@@ -92,7 +92,7 @@ Two E5 checkpoints demonstrate the same extensible path with a different recipe:
 
 Artifact caching and model sessions are distinct from document-vector identity. Legacy fingerprints/cache layouts remain unchanged. New document-space fingerprints include tokenizer, output/pooling and document-format contracts; indexing fingerprints also include chunking. Query-purpose changes do not rewrite document vectors. The same physical model can serve different query roles; shared-space search filters allowed source kinds before consuming a binding's result limit. A bounded in-memory query cache keys by space, full recipe contract, device and query profile.
 
-Model inspection reads cached descriptors or bounded Hub metadata, without downloading weights or changing applied settings. The UI starts with three URL fields. Simple/default models have no additional setup; applicable details are collapsed, and genuine unresolved choices are exposed through built-in controls rather than arbitrary forms from remote metadata. The actual artifact source, revision and limits are disclosed.
+Model inspection reads cached descriptors or bounded Hub metadata, without downloading weights or changing applied settings. Each role has its own source/model binding; Hugging Face uses a model-card URL and an approved provider uses fixed catalog choices. Simple/default models have no additional setup; applicable details are collapsed, and genuine unresolved choices are exposed through built-in controls rather than arbitrary forms from remote metadata. The actual artifact source, revision and limits are disclosed.
 
 New assets are fetched from the selected Hugging Face repository at a resolved commit, with bounded downloads, LFS SHA-256 verification where supplied and a complete local checksum manifest. Previously cached assets can be reused offline. Active models hold read leases on their assets. Model payloads remain outside Git and application ZIPs.
 
@@ -105,6 +105,10 @@ Selection tries CPU first for continuity and then available local GPU/NPU device
 New recipe hosts also execute a representative near-maximum token workload on each candidate before reporting readiness. Qualification runs again on worker startup/replacement; no stale persisted device certificate bypasses these checks. Memory admission includes the model estimate plus a system reserve, and the recipe's token budget bounds batching. An explicit device policy is a strict request: it does not silently fall back to another provider.
 
 Model changes are prepared before mutating the catalog. Only after asset, modality, memory and execution checks succeed are file workers paused, affected jobs/vectors removed, XML and routing state published, and processing restarted. Unchanged file types retain their vector IDs and committed passage batches. A failed validation leaves the applied XML and indexes intact.
+
+`ModelMemoryCoordinator` serializes native model loads, including startup, replacement after worker failure, image generation and external-provider qualification. It admits the next model only when its allowance plus the 2 GiB system reserve fits available RAM. Under pressure it releases least-recently-used idle workers, waiting for busy operations rather than interrupting their batches. Cold pools retain their queues, vector identity and routing and recreate workers on demand; all selected models need not remain resident simultaneously. Optional warmup cannot evict another model to obtain memory.
+
+Provider acquisition happens before a protocol-version-2 memory handoff. The companion requests its validated allowance immediately before native qualification; the coordinator acknowledges only after admission and retains the loading lease until that process exits. Failure, timeout and cancellation release the lease and leave existing model pools recoverable. These changes do not modify vector fingerprints, folder scope, XML or SQLite schema. Resource estimates remain conservative: this is working-set management, not a guarantee that every model fits every device.
 
 Preparation runs outside the short configuration commit gate and on a separate request task, so existing-index queries can continue while assets/devices are checked. Model changes remain serialized; cancellation before publication preserves the applied settings. A failure after commit is reported as an applied configuration with stopped indexing, not as a successful rollback. Query/device-only changes persist settings without invalidating vectors.
 
@@ -132,9 +136,11 @@ Other checkpoints of a supported native task ABI require reviewed recipe data an
 
 ### Optional internal model providers
 
-`ModelReference` distinguishes Hugging Face cards from typed provider/model/version references. The coordinator resolves external models through `ExternalModels`, using a user-local `provider.json` registration and a supervised executable protocol. The registration and private companion live outside the public application package. Catalog/inspection/acquisition requests never contain user documents or queries; inference stays in separate local workers using the existing bounded JSON-line protocol, CPU-affinity policy and killable cancellation boundary.
+`ModelReference` distinguishes Hugging Face cards from typed provider/model/version references. The coordinator resolves external models through `ExternalModels`, using a user-local `provider.json` registration and a supervised executable protocol. The registration and private companion live outside the public application package. Optional bootstrap uses existing GitHub CLI authentication to access a pinned private repository, verifies its identity/non-public visibility and the complete architecture-specific release inventory, and atomically registers a versioned per-user installation. No authentication secret or private SDK/model payload is part of the public app. Catalog/inspection/acquisition requests never contain user documents or queries; inference stays in separate local workers using the existing bounded JSON-line protocol, CPU-affinity policy and killable cancellation boundary.
 
 The Microsoft source has a fixed per-role model picker rather than a free-form card URL. Version controls are disclosed only for that source, and the approved companion queries its authenticated release feed. No usable package/device combination produces an explicit unavailable state. Changing to a drop lacking the selected model retains an unavailable selection and requires an explicit choice; it does not silently switch models. Saved source, model, drop and execution choices survive Apply and unrelated appearance/search/logging updates.
+
+Source discovery starts without assuming a provider is installed or accessible. Startup, tab activation, explicit refresh and network changes recheck availability. Missing registry access removes the Microsoft option and catalog rows while retaining applied references. The UI coalesces superseded discovery work; the coordinator queues provider queries separately from model inspection instead of reporting a routine busy condition as an error. Successful discovery clears its own obsolete error, never a later unrelated error.
 
 `ExternalEmbeddingContract` identifies the actual native vector contract, tokenizer, logical/storage dimensions, roles and resolved execution profile. A 100-dimensional provider uses a versioned symmetric zero-padding transform to 104 dimensions; indexed and query vectors are normalized consistently, nonzero padding is rejected, and raw cosine scoring is unchanged. Provider identities do not impersonate HF URLs or Git revisions. Existing HF fingerprints remain unchanged.
 
@@ -158,15 +164,15 @@ Schema 9 adds optional `region_json` to task artifacts, prepared passages and ve
 
 Readiness follows nine checkpoints: catalog, scheduling background monitoring, six primary-model phases and service readiness. Startup events carry monotonic sequence numbers, completed/total steps, percentage, phase, state and error. The UI cannot regress from Ready to a stale Loading snapshot. Percentages describe checkpoints, not elapsed time or an ETA.
 
-The first complete text/vision model enables search. A second model, when resources permit, warms asynchronously and cannot block primary readiness. Its failure leaves the primary usable with a visible warning. Initialization has a five-minute deadline; progress messages do not extend it. Native operations have a three-minute deadline. Shutdown cancels and reaps partially initialized workers.
+Startup validates each distinct selected model before enabling search, but pressure-aware pools need not keep every validated worker resident. For the shared default text/vision model, an optional second copy warms asynchronously and cannot block primary readiness. A real warmup failure leaves the primary usable with a visible warning; insufficient optional headroom is logged without a warning. Each worker initialization has a five-minute deadline; progress messages do not extend it. Native operations have a three-minute deadline. Shutdown cancels admission waits and reaps partially initialized workers.
 
 The shared CPU set contains at most `floor(physical cores / 2)`, selecting one logical processor per chosen physical core and respecting inherited restrictions. Multi-group systems conservatively use the primary group. WPF, coordinator, model hosts, IFilters and native graph work inherit the same set.
 
 | Independent bound | Current value |
 |---|---|
 | File pipelines | `min(8, eligible processors)` |
-| Model processes | Up to 2 when at least 4 eligible processors and memory permit |
-| Planning memory | 3 GiB per model plus 2 GiB reserve; not a hard quota |
+| Model processes | One per distinct selected binding; the shared default can add a second copy when CPU/memory permit; idle copies may be evicted |
+| Planning memory | Per-model allowance plus a shared 2 GiB system reserve at each load; the default model allowance is 3 GiB |
 | Text inference batch | Up to 8 passages |
 | Image request | Up to 2 images |
 | Pending inference requests | 64, with producer backpressure |
@@ -267,14 +273,18 @@ Scanned PDFs need an OCR-capable filter. Some Excel IFilters omit inline-string 
 Default data: `%LOCALAPPDATA%\FuzzyFindAnything`. Override it with `--data-dir <absolute-directory>`.
 
 ```xml
-<FuzzyFindAnythingConfiguration version="1">
+<FuzzyFindAnythingConfiguration version="3">
   <Appearance theme="Light" />
-  <Search minimumSimilarity="0.6" />
+  <Search>
+    <Documents enabled="true" minimumSimilarity="0.6" />
+    <Code enabled="true" minimumSimilarity="0.6" />
+    <Images enabled="true" minimumSimilarity="0.6" />
+  </Search>
   <Logging enabled="true" directory="C:\Users\USER\AppData\Local\FuzzyFindAnything\Logs" />
 </FuzzyFindAnythingConfiguration>
 ```
 
-XML is bounded, DTDs/external entities are prohibited, values are validated and writes are atomic. Similarity defaults to 0.60, accepts finite values from 0.00 to 0.90 and uses culture-independent serialization. Clearing a search or changing theme/logging does not reset it. Failed preference saves restore the saved UI value.
+XML is bounded, DTDs/external entities are prohibited, values are validated and writes are atomic. Each search type defaults to enabled with a 0.60 threshold, accepts finite values from 0.00 to 0.90 and uses culture-independent serialization. At least one type must remain selected. Reading an older global threshold applies it to all three types without rewriting the file. Provider bindings use XML version 4. Clearing a search or changing theme/logging preserves all search and model choices; failed preference saves restore the saved UI value.
 
 Logging starts enabled. Changing its directory affects new records; old logs are not moved. Disabled logging stops normal file writes while indexing and pipe draining continue. Owned log filenames are excluded without excluding unrelated documents in the same directory.
 

@@ -32,8 +32,8 @@ public sealed record ProviderCatalog(string Provider, string Version, ProviderVe
 {
     public ProviderCatalog ForCaller() => this with
     {
-        Versions = Versions.Where(version => version.Supported).ToArray(),
-        Models = Models.Where(model => model.PubliclyReleased || InternalAccessVerified).ToArray()
+        Versions = InternalAccessVerified ? Versions.Where(version => version.Supported).ToArray() : [],
+        Models = InternalAccessVerified ? Models : []
     };
 }
 public sealed record ProviderRegistration(string Id, string Executable, string DefaultVersion, int ProtocolVersion = 1);
@@ -55,7 +55,7 @@ public sealed class ExternalModels(string cacheDirectory, Action<string> log, st
         if (new FileInfo(path).Length > 65536) throw new InvalidDataException("The provider registration is too large.");
         var value = JsonSerializer.Deserialize<ProviderRegistration>(File.ReadAllText(path), Protocol.Json)
             ?? throw new InvalidDataException("The provider registration is empty.");
-        if (value.Id != provider || value.ProtocolVersion != 1 || !Path.IsPathFullyQualified(value.Executable) ||
+        if (value.Id != provider || value.ProtocolVersion is not (1 or 2) || !Path.IsPathFullyQualified(value.Executable) ||
             !File.Exists(value.Executable))
             throw new InvalidDataException("The local provider registration or executable is invalid.");
         _ = ModelReference.Parse($"provider://{provider}/{value.DefaultVersion}/model");
@@ -80,7 +80,19 @@ public sealed class ExternalModels(string cacheDirectory, Action<string> log, st
 
     public async Task<ProviderCatalog> CatalogAsync(string provider, string? version, bool refresh, CancellationToken cancellation)
     {
-        var registration = Registration(provider);
+        ProviderRegistration registration;
+        try { registration = Registration(provider); }
+        catch (FileNotFoundException)
+        {
+            if (provider == "microsoft" && registrationDirectory is null &&
+                await ProviderBootstrap.InstallAsync(DefaultRegistrationDirectory, log, cancellation))
+                registration = Registration(provider);
+            else
+            {
+                log("Optional local model provider is not installed; Hugging Face remains available.");
+                return new(provider, version ?? "", [], [], AvailabilityNotice: "The approved local provider is not installed.");
+            }
+        }
         string selected = string.IsNullOrEmpty(version) ? registration.DefaultVersion : version;
         _ = ModelReference.Parse($"provider://{provider}/{selected}/model");
         var result = await RequestAsync<ProviderCatalog>(registration, "catalog", new { version = selected, refresh },
@@ -109,11 +121,15 @@ public sealed class ExternalModels(string cacheDirectory, Action<string> log, st
     }
 
     public async Task<EmbeddingSpace> ResolveAsync(ProviderModelReference reference, ModelOptions options,
-        Action<string> progress, CancellationToken cancellation)
+        Action<string> progress, CancellationToken cancellation, ModelMemoryCoordinator? memory = null)
     {
         string directory = DirectoryFor(reference, options.Device);
-        var result = await RequestAsync<PreparedProviderModel>(Registration(reference.Provider), "prepare",
-            new { reference, directory, device = options.Device }, progress, cancellation, TimeSpan.FromMinutes(30));
+        var registration = Registration(reference.Provider);
+        if (memory is not null && registration.ProtocolVersion < 2)
+            throw new NotSupportedException("Update the approved local model provider to support coordinated model memory before applying this selection.");
+        var result = await RequestAsync<PreparedProviderModel>(registration, "prepare",
+            new { reference, directory, device = options.Device, coordinate_memory = memory is not null },
+            progress, cancellation, TimeSpan.FromMinutes(30), memory);
         result.Space.Validate();
         if (result.Space.ModelUrl != reference.Key ||
             !Path.GetFullPath(result.Directory).Equals(Path.GetFullPath(directory), StringComparison.OrdinalIgnoreCase))
@@ -127,7 +143,7 @@ public sealed class ExternalModels(string cacheDirectory, Action<string> log, st
     }
 
     private async Task<T> RequestAsync<T>(ProviderRegistration registration, string operation, object arguments,
-        Action<string>? progress, CancellationToken cancellation, TimeSpan? timeout = null)
+        Action<string>? progress, CancellationToken cancellation, TimeSpan? timeout = null, ModelMemoryCoordinator? memory = null)
     {
         var start = new ProcessStartInfo(registration.Executable)
         {
@@ -150,15 +166,29 @@ public sealed class ExternalModels(string cacheDirectory, Action<string> log, st
             while (await process.StandardError.ReadLineAsync() is { } line)
                 log("provider: " + FilePaths.ScalarPrefix(line, 4096));
         });
+        IDisposable? admission = null;
         try
         {
             await process.StandardInput.WriteLineAsync(JsonSerializer.Serialize(new { operation, args = arguments }, Protocol.Json));
-            process.StandardInput.Close();
+            await process.StandardInput.FlushAsync();
+            if (memory is null) process.StandardInput.Close();
             while (await process.StandardOutput.ReadLineAsync(deadline.Token) is { } line)
             {
                 if (line.Length > 4_194_304) throw new InvalidDataException("The provider response exceeds its size bound.");
                 using var document = JsonDocument.Parse(line);
                 var message = document.RootElement;
+                if (message.TryGetProperty("event", out var memoryEvent) && memoryEvent.GetString() == "memory_request")
+                {
+                    if (operation != "prepare" || memory is null || admission is not null)
+                        throw new InvalidDataException("Unexpected provider memory admission request.");
+                    long bytes = message.GetProperty("model_bytes").GetInt64();
+                    if (bytes < 1 || bytes > (64L << 30)) throw new InvalidDataException("The provider memory allowance is out of bounds.");
+                    progress?.Invoke("Making room for native model validation without changing the current index");
+                    admission = await memory.AcquireAsync(null, bytes, deadline.Token);
+                    await process.StandardInput.WriteLineAsync("{\"operation\":\"memory_ready\"}");
+                    process.StandardInput.Close();
+                    continue;
+                }
                 if (message.TryGetProperty("event", out var type) && type.GetString() == "progress")
                 {
                     progress?.Invoke(message.GetProperty("message").GetString() ?? "Preparing local model");
@@ -169,6 +199,8 @@ public sealed class ExternalModels(string cacheDirectory, Action<string> log, st
                         message.TryGetProperty("code", out var code) ? code.GetString() ?? "provider" : "provider");
                 var result = message.GetProperty("result").Deserialize<T>(Protocol.Json)
                     ?? throw new InvalidDataException("The provider returned no result.");
+                if (memory is not null && admission is null)
+                    throw new InvalidDataException("The provider skipped required memory admission.");
                 await process.WaitForExitAsync(deadline.Token);
                 if (process.ExitCode != 0) throw new IOException("The model provider exited unsuccessfully.");
                 return result;
@@ -179,8 +211,12 @@ public sealed class ExternalModels(string cacheDirectory, Action<string> log, st
         { throw new TimeoutException("The internal model provider request timed out.", error); }
         finally
         {
-            if (!process.HasExited) { process.Kill(entireProcessTree: true); await process.WaitForExitAsync(); }
-            await errors;
+            try
+            {
+                if (!process.HasExited) { process.Kill(entireProcessTree: true); await process.WaitForExitAsync(); }
+                await errors;
+            }
+            finally { admission?.Dispose(); }
         }
     }
 }

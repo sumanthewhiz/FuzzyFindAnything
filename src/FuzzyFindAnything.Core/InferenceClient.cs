@@ -12,9 +12,10 @@ public sealed class InferenceClient : IAsyncDisposable
         new UnboundedChannelOptions { SingleReader = true, SingleWriter = true });
     private readonly SemaphoreSlim requests = new(1, 1);
     private readonly Task outputReader, errorReader;
+    private readonly object state = new();
     private bool disposed, aborted;
     private string lastStage = "Starting native inference";
-    public bool Alive => !disposed && !aborted && !process.HasExited;
+    public bool Alive { get { lock (state) return !disposed && !aborted && !process.HasExited; } }
 
     private InferenceClient(Process process, Action<string> log)
     {
@@ -124,9 +125,12 @@ public sealed class InferenceClient : IAsyncDisposable
     }
     private void Abort()
     {
-        if (aborted) return;
-        aborted = true;
-        if (!process.HasExited) process.Kill(entireProcessTree: true);
+        lock (state)
+        {
+            if (aborted || disposed) return;
+            aborted = true;
+            if (!process.HasExited) process.Kill(entireProcessTree: true);
+        }
     }
     public async ValueTask DisposeAsync()
     {
@@ -144,8 +148,8 @@ public sealed class InferenceClient : IAsyncDisposable
         { Abort(); }
         finally
         {
-            disposed = true;
             if (!process.HasExited) { Abort(); await process.WaitForExitAsync(); }
+            lock (state) disposed = true;
             await Task.WhenAll(outputReader, errorReader);
             process.Dispose();
             requests.Dispose();

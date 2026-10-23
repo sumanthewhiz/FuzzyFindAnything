@@ -11,6 +11,7 @@ internal static class Program
     private static int Main(string[] args)
     {
         if (args.Length > 0 && args[0] == "--model") return TestWorker.Run(args);
+        if (args.SequenceEqual(["--provider-request"])) return TestWorker.Provider();
         if (args.Length == 1 && Path.GetExtension(args[0]) == ".pdf") return TestWorker.Filter(args[0]);
         if (args.Length > 0 && args[0] == "crash-fixture") return StorageTests.CrashFixture(args[1], args[2]);
         CpuBudget.Apply();
@@ -18,12 +19,20 @@ internal static class Program
         if (args.Length > 0 && args[0] == "parity") return Parity.Run(args[1], args[2], args[3]);
         if (args.Length > 0 && args[0] == "product-parity") return ProductParity.Run(args[1], args[2], args[3]);
         if (args.Length > 0 && args[0] == "monitoring") { MonitoringTests.RunAsync().GetAwaiter().GetResult(); return 0; }
+        if (args.SequenceEqual(["scheduling"])) { SchedulingTests.RunAsync().GetAwaiter().GetResult(); return 0; }
         if (args.Length > 0 && args[0] == "assets") { AssetTests.RunAsync().GetAwaiter().GetResult(); return 0; }
         if (args.Length > 0 && args[0] == "model-config") { ModelConfigurationTests.Run(); return 0; }
         if (args.Length > 0 && args[0] == "embedding-recipes") { EmbeddingRecipeTests.Run(); return 0; }
         if (args.Length > 0 && args[0] == "image-pipeline") { ImagePipelineTests.Run(); return 0; }
         if (args.Length > 0 && args[0] == "regions") { RegionTests.Run(); return 0; }
         if (args.Length > 0 && args[0] == "providers") { ProviderTests.Run(); return 0; }
+        if (args.Length == 2 && args[0] == "provider-bootstrap") { ProviderBootstrapTests.InstallAsync(args[1]).GetAwaiter().GetResult(); return 0; }
+        if (args.Length == 3 && args[0] == "provider-package")
+        {
+            Temporary(root => ProviderBootstrap.Extract(args[1], Path.Combine(root, "package"), args[2]));
+            Console.WriteLine("PASS complete private provider package integrity and architecture");
+            return 0;
+        }
         if (args.Length > 0 && args[0] == "provider-integration") { ProviderIntegrationTests.RunAsync(args[1], args[2], args[3], args[4], args[5], args.Length > 6 ? args[6] : null).GetAwaiter().GetResult(); return 0; }
         if (args.Length > 0 && args[0] == "region-models") { RegionModelTests.RunAsync(args[1], args[2], args[3], args[4]).GetAwaiter().GetResult(); return 0; }
         if (args.Length > 0 && args[0] == "region-integration") { RegionModelTests.IntegrationAsync(args[1], args[2], args[3], args[4], args[5], args[6]).GetAwaiter().GetResult(); return 0; }

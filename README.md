@@ -2,7 +2,7 @@
 
 **Find documents, source code and images by meaning, on your Windows PC.**
 
-This checkout is **1.5.0-dev.2**, including region-based image retrieval, larger Florence-2 profiles and an opt-in Microsoft model-provider integration with direct device choices and compatible SDK selection. Earlier release packages do not contain these additions.
+This checkout is **1.5.0-dev.3**, including region-based image retrieval, larger Florence-2 profiles, independent model/device choices and coordinated native-worker memory management. Earlier release packages do not contain these additions.
 
 [![Build and release](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml/badge.svg?branch=dev)](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml)
 ![Windows 11](https://img.shields.io/badge/platform-Windows%2011-0078D4)
@@ -34,7 +34,8 @@ The application uses .NET and native Windows libraries, with ONNX Runtime for lo
 | Parallel indexing | Independent file pipelines and bounded cross-file inference batches |
 | Enforced CPU ceiling | The entire process tree shares at most half the physical cores, even when other cores are idle |
 | Durable progress | Completed files and committed passage batches survive crashes and normal exits |
-| Startup visibility | Sequenced percentage/phase checkpoints; the first ready model enables search |
+| Startup visibility | Sequenced percentage/phase checkpoints; optional extra-worker warmup does not delay search |
+| Memory-aware workers | Idle model processes can be unloaded and reloaded on demand, without removing indexes or weakening the system reserve |
 | Live index information | Backend/version, location, size, file/document/code/image counts and refresh time |
 | Model configuration | Independent Hugging Face or approved Microsoft sources per file type; automatic model-specific preparation and conditional controls |
 | Internal Microsoft models | A separately installed provider supplies version-aware fixed model choices, native tokenization and actual local device qualification; private payloads are not bundled |
@@ -71,6 +72,16 @@ The [quickstart](QUICKSTART.md) includes exact download, verification, model and
 
 *The actual application layout, rendered with synthetic demonstration data.*
 
+<details>
+<summary>Model configuration and image-region controls</summary>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/models-images-expanded-dark.png">
+  <img alt="Current model configuration with independent models, caption and OCR tasks, and object-region labels" src="docs/images/models-images-expanded-light.png">
+</picture>
+
+</details>
+
 | Tab | Purpose |
 |---|---|
 | **Search** | Enter a phrase; inspect document, code and image matches; adjust saved similarity; clear results |
@@ -87,7 +98,10 @@ The window opens maximized. Minimizing or closing it hides it in the **system tr
 flowchart LR
     UI["WPF / .NET desktop"] <-->|Local JSON pipes| Engine[".NET indexing coordinator"]
     Changes["USN + directory notifications"] --> Engine
-    Engine <-->|Bounded requests| Inference[".NET + ONNX Runtime"]
+    Engine --> Memory["Shared model-memory admission"]
+    Memory <-->|Bounded requests| Inference["Embedding workers / ONNX Runtime"]
+    Memory <-->|Image tasks| Vision["Image-understanding worker"]
+    Memory <-->|Approved local IPC| Provider["Optional local model provider"]
     Engine --> Filters["Isolated x64 IFilter helper"]
     Engine <--> Catalog[("SQLite catalog + durable queue")]
     Engine <--> ANN["Native Microsoft DiskANN"]
@@ -106,13 +120,15 @@ The image recipe resolves its tokenizer, processor, graph bindings and task prom
 
 The compatible-model host uses self-contained Windows ML to discover usable CPU, GPU and NPU execution providers. Acceptance depends on hardware, driver/provider, resource limits and real inference, not a blanket accelerator restriction. Query-only changes retain file embeddings; accepted document-model changes rebuild only affected file types. See [model configuration and device checks](docs/ARCHITECTURE.md#configurable-models-and-device-checks).
 
-For an authorized installation, each role can instead select **Microsoft (PSAPI)**. The model picker includes available CPU, NPU or GPU variants directly. **PSAPI drop version / Refresh available versions** queries the provider and offers compatible, usable drops rather than unsupported placeholders. Hugging Face selections retain the model-card URL field. Native query/document purposes and matching tokenizers are automatic, and direct Microsoft image embeddings do not expose caption/region-generation controls. Model/package availability and detected hardware determine the offered choices; Apply still runs real native execution checks. An unavailable model is not silently replaced when the drop changes.
+When live authenticated registry access succeeds, each role can instead select **Microsoft**. The model picker includes available CPU, NPU or GPU variants directly; version controls offer compatible drops rather than unsupported placeholders. Without verified access, only Hugging Face is offered. Saved provider bindings are retained, not silently changed when connectivity is lost. Native query/document purposes and matching tokenizers are automatic, and direct image embeddings do not expose caption/region-generation controls. Apply still runs real native execution checks.
 
-The internal provider is registered separately under `%LOCALAPPDATA%\FuzzyFindAnythingProviders`. It is not included in the public application, source checkout or release ZIPs. Without it, Hugging Face behavior and defaults remain unchanged, and selecting Microsoft gives an explicit installation diagnostic. Feed authentication uses the native .NET Azure Artifacts credential provider, not Azure CLI or Python. See the provider's internal installation instructions for the approved SDK/model channel.
+The optional companion is maintained in the [private companion repository](https://github.com/sumghosh_microsoft/FuzzyFindAnything-MicrosoftProvider), not in the public source or application ZIPs. **Refresh model sources** can acquire its approved architecture-specific release using an installed GitHub CLI already signed in with repository access. The app verifies repository identity/non-public visibility, archive checksums, file inventory and binary architecture before registering it under `%LOCALAPPDATA%\FuzzyFindAnythingProviders`. Credentials are not bundled. Repository access is required to acquire the companion; live registry access determines whether its source is offered. An installed companion does not require GitHub sign-in for routine local inference. The private personal-account repository requires explicit collaborator access, not merely a Microsoft account.
 
 The active mutable DiskANN graph resides in memory and is checkpointed to disk. SQLite retains vectors, folder ownership, source revisions and passage progress so a damaged or stale graph can recover without repeating committed inference. It is not an out-of-core index.
 
 On a 12-core PC, six file pipelines can overlap reading, extraction and preparation even when only one model fits in memory. Text requests coalesce into batches of up to eight passages; up to two images are scheduled together using separate, valid single-image vision calls. The status display distinguishes file workers, model processes, compute threads and batch size. Eligible cores are a ceiling, not a promise of constant CPU utilization.
+
+Model loading is coordinated across embedding workers, image generation and provider validation. When memory is tight, the engine drains active operations and releases idle workers before loading another model; an evicted worker reloads when needed. Indexes and cached image descriptions remain intact. A failed or cancelled model change leaves the previous configuration usable. Genuine insufficient-memory errors still report the model allowance, available RAM and unchanged 2 GiB system reserve.
 
 ## Privacy and operational safety
 
@@ -159,7 +175,7 @@ Packages are unsigned. Checksums detect altered downloads but do not replace cod
 
 - Windows 11, at least two physical cores, and an AVX2-capable x64 CPU or Windows ARM64 with compatible x64 emulation.
 - At least **5 GiB available RAM** for one model; approximately **8 GiB available** permits two. These are planning estimates, not quotas. Large indexes need additional memory; 16 GB system RAM or more is recommended.
-- Florence-2 Large profiles require approximately **3.07 GiB of downloaded graph assets** and a **6.5 GiB generator memory allowance plus 2 GiB system reserve**, in addition to the selected text embedder and other application memory. Admission is checked before loading; download size is not peak RAM.
+- Florence-2 Large profiles require approximately **3.07 GiB of downloaded graph assets** and a **6.5 GiB generator memory allowance plus 2 GiB system reserve**. Idle embedders can be unloaded to make room; keeping both resident requires additional memory. Admission is checked before loading; download size is not peak RAM.
 - Scanned PDFs need an OCR-capable installed IFilter. Protected documents are not decrypted.
 - Online-only files must be available locally. Junctions and symbolic links are not traversed.
 - Installed filters determine document coverage. Some Excel filters omit inline-string cells in otherwise valid workbooks.

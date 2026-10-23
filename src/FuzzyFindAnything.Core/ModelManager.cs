@@ -6,6 +6,7 @@ public sealed class ModelManager : IEmbeddings
     private readonly HuggingFaceModels cache;
     private readonly ImageModelAssets imageAssets;
     private readonly ExternalModels external;
+    private readonly ModelMemoryCoordinator memory;
     private readonly string legacyHost, compatibleHost, dataDirectory;
     private readonly CpuBudget budget;
     private readonly Action<string> log;
@@ -25,6 +26,7 @@ public sealed class ModelManager : IEmbeddings
     {
         this.dataDirectory = dataDirectory; this.legacyHost = legacyHost; this.compatibleHost = compatibleHost;
         this.budget = budget; this.log = log;
+        memory = new(log);
         cache = new(Path.Combine(dataDirectory, "models"), modelDirectory);
         imageAssets = new(Path.Combine(dataDirectory, "models", "image-understanding"));
         external = new(Path.Combine(dataDirectory, "models", "external"), log, providerDirectory);
@@ -116,7 +118,7 @@ public sealed class ModelManager : IEmbeddings
         budget, log,
         space: space, workerLimit: count > 1 || space != EmbeddingSpace.Default ? 1 : null,
         threadLimit: count > 1 ? Math.Max(1, budget.Processors / count) : null,
-        requiredProvider: space == EmbeddingSpace.Default ? null : options.ProviderSelector);
+        requiredProvider: space == EmbeddingSpace.Default ? null : options.ProviderSelector, memoryCoordinator: memory);
 
     internal static ModelSelection NormalizeSelection(ModelSelection selection, IReadOnlyDictionary<string, EmbeddingSpace> spaces)
     {
@@ -194,7 +196,7 @@ public sealed class ModelManager : IEmbeddings
     }
     private ImageUnderstandingPool CreateImagePool(ImagePipelineDescriptor descriptor, CancellationToken cancellation) =>
         new(descriptor, compatibleHost, imageAssets.DirectoryFor(descriptor.Model), Math.Max(1, Math.Min(2, budget.Processors)),
-            log, cancellation);
+            log, cancellation, memory);
     public async Task<PreparedModels?> PrepareAsync(ModelSelection selection, Action<string> progress, CancellationToken cancellation)
     {
         selection = selection.Normalize();
@@ -214,7 +216,7 @@ public sealed class ModelManager : IEmbeddings
                 .Select(pair => pair.Value).FirstOrDefault();
             if (ModelReference.Parse(url) is ProviderModelReference reference)
             {
-                spaces[key] = existing ?? await external.ResolveAsync(reference, encoded.OptionsFor(kind), progress, linked.Token);
+                spaces[key] = existing ?? await external.ResolveAsync(reference, encoded.OptionsFor(kind), progress, linked.Token, memory);
             }
             else spaces[key] = existing ?? cache.FindVerified(url, progress) ?? await cache.ResolveAsync(url, progress, linked.Token);
         }
@@ -237,7 +239,7 @@ public sealed class ModelManager : IEmbeddings
                 if (next.TryGetValue(key, out var shared)) { byKind[kind] = shared; continue; }
                 ModelPool? existing;
                 lock (gate) existing = pools.GetValueOrDefault(key);
-                if (existing is not null && existing.ReadyWorkers > 0) { next[key] = existing; byKind[kind] = existing; continue; }
+                if (existing is not null) { next[key] = existing; byKind[kind] = existing; continue; }
                 progress($"Checking local hardware and inference for {space.ModelUrl}");
                 var pool = CreatePool(space, count, encoded.OptionsFor(kind));
                 created.Add(pool);

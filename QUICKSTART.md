@@ -4,13 +4,7 @@
 
 Release packages include the .NET and native runtimes. No separate Python, .NET, compiler or package manager is required.
 
-Model configuration and system-tray behavior described below require **1.2.0-dev.1 or later**. Use the matching development build or build this checkout; the earlier 1.1.0 package does not include these controls.
-
-The extensible Qwen/E5 recipes and adaptive model controls require **1.2.0-dev.2 or later**.
-
-Image-understanding pipelines require **1.3.0-dev.1 or later**.
-
-Content-aware chunking and per-type search preferences require **1.4.0-dev.1 or later**. Read the [chunking guide](docs/CHUNKING.md) for how app-owned boundaries differ from model tokenization, including EmbeddingGemma2.
+These instructions describe **1.5.0-dev.3**, including per-type search, content-aware chunking, regional image search, independent model sources and memory-aware native workers. Use a matching development build or build this checkout; earlier packages may lack these controls. Read the [chunking guide](docs/CHUNKING.md) for how app-owned boundaries differ from model tokenization, including EmbeddingGemma2.
 
 [Project](README.md) · [Architecture](docs/ARCHITECTURE.md) · [Existing-user migration](docs/MIGRATION.md)
 
@@ -20,7 +14,7 @@ Content-aware chunking and per-type search preferences require **1.4.0-dev.1 or 
 |---|---|
 | Windows | Windows 11 x64, or ARM64 with AVX2-capable x64 emulation |
 | CPU | At least two physical cores; all app processes share at most half |
-| Memory | At least 5 GiB **available** for one model; 8 GiB permits an optional second model |
+| Memory | At least 5 GiB **available** for the default model; other profiles have their own allowance plus a 2 GiB reserve |
 | Storage | Allow 5 GB for application/model extraction and downloads, plus space for your index |
 | Documents | Compatible x64 Office/PDF IFilters must already be installed |
 | Network | Needed for downloads, not normal indexing or search |
@@ -29,7 +23,7 @@ The ARM64 package runs the UI and model inference natively. Its DiskANN coordina
 
 ## 1. Download the right package
 
-Open **[Build and release](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml?query=branch%3Adev)**, select a successful **dev** run for version **1.2.0-dev.1 or later**, and download the appropriate artifact. Actions downloads require GitHub sign-in and expire.
+Open **[Build and release](https://github.com/sumanthewhiz/FuzzyFindAnything/actions/workflows/build.yml?query=branch%3Adev)**, select a successful **dev** run matching this checkout, and download the appropriate artifact. Actions downloads require GitHub sign-in and expire.
 
 Published versioned downloads are also listed on the [Releases page](https://github.com/sumanthewhiz/FuzzyFindAnything/releases). Use the application ZIP and quickstart belonging to the same version.
 
@@ -105,7 +99,7 @@ For a separate trial without using an existing index:
 & .\FuzzyFindAnything.exe --data-dir "$env:LOCALAPPDATA\FuzzyFindAnything-NativeTrial"
 ```
 
-Wait for **Ready**. The progress bar shows completed startup checkpoints and the current phase, not a time-based estimate. Search becomes usable after the first complete model; optional additional capacity loads in the background.
+Wait for **Ready**. The progress bar shows completed startup checkpoints and the current phase, not a time-based estimate. Startup validates the selected models; optional extra capacity for the shared default model loads in the background.
 
 After an exit, the app also checks configured folders and subfolders for added, deleted or timestamp-changed files. This runs in the background and retains unchanged embeddings and saved passage progress. You can search the existing index while the status says **Checking indexed folders for changes...** or while incremental updates are queued.
 
@@ -147,6 +141,8 @@ If the tray icon is not immediately visible, open Windows' notification-area ove
 
 Open **Model configuration** and enter HTTPS model-card URLs for **Documents / text**, **Source code** and **Images**. All three initially contain `https://huggingface.co/google/embeddinggemma-2`.
 
+**Refresh model sources** checks optional local providers without changing your applied models. Authorized users can retrieve the separate [private companion](https://github.com/sumghosh_microsoft/FuzzyFindAnything-MicrosoftProvider) using an installed, authenticated GitHub CLI. Explicit repository access is required. The Microsoft source appears only after live registry access is also verified; other installations retain Hugging Face alone. A discovery notice clears when discovery completes, without dismissing unrelated errors.
+
 Select **Apply model changes** once. The app validates the URL, required native assets, modality, available memory and local execution before replacing any embeddings. Downloads and device checks are shown in the tab. If the selections are unchanged, Apply does nothing.
 
 | Example model URL | Compatible assignments |
@@ -161,21 +157,23 @@ Select **Apply model changes** once. The app validates the URL, required native 
 
 These are examples, not a guarantee that every Hugging Face repository is compatible. The app supports reviewed native recipes and compatible BERT mean/CLS/already-pooled export contracts; additional projections, unreviewed instructions, tokenizers or scoring metrics require another reviewed recipe/adapter. CLIP retains its supported direct image/text interface. Qwen Coder generators are not substitutes for embedding models.
 
-EmbeddingGemma2 needs no extra setup. The three URL boxes remain the main configuration. Requirements are resolved automatically without downloading weights; **Model details** appears only where applicable, and approved query-purpose choices remain inside it unless a recipe genuinely requires a choice. Tokenizer, pooling, graph and image-pipeline setup are not user configuration fields. Switching back to a simple model discards inactive query choices.
+EmbeddingGemma2 needs no extra setup. Hugging Face selections use a model-card URL independently for each role. Requirements are resolved automatically without downloading weights; **Model details** appears only where applicable, and approved query-purpose choices remain inside it unless a recipe genuinely requires a choice. Tokenizer, pooling, graph and image-pipeline setup are not user configuration fields. Switching back to a simple model discards inactive query choices.
 
-Compatible document encodings share a DiskANN index; query roles can remain different for text and code. Unrelated vector spaces do not share an index merely because dimensions match. A document-model change rebuilds only affected types; a query-only setting change retains existing vectors. The same XML file stores preferences, with pinned artifact manifests in the local model cache. New bindings use XML version 2 and catalog schema 6; see the [rollback policy](docs/MIGRATION.md).
+Compatible document encodings share a DiskANN index; query roles can remain different for text and code. Unrelated vector spaces do not share an index merely because dimensions match. A document-model change rebuilds only affected types; a query-only setting change retains existing vectors. The same XML file stores preferences, with pinned artifact manifests in the local model cache. Feature-specific schema versions are retained rather than downgraded; see the [rollback policy](docs/MIGRATION.md).
 
 CPU, GPU and NPU eligibility is evaluated against actual local execution providers and an inference probe. Windows ML can activate compatible providers already installed on the device. A missing provider/driver can make an otherwise suitable model unavailable; this is not a ban on GPU/NPU-only models. CPU is tried first, followed by available local accelerators when needed. The tab displays the execution provider actually selected.
 
-Search can continue against the applied configuration during downloading and device validation, with a short serialized commit boundary. **Cancel model validation** leaves the active assignment intact if it has not committed. After acceptance, affected results can be incomplete during background reindexing; the tab reports completion or failures. It does not retain a separate serving copy of the old affected index.
+Search can continue against the applied configuration during downloading and device validation, with a short serialized commit boundary. Under memory pressure, a query may wait for native validation to release its memory lease or for an idle worker to reload. **Cancel model validation** leaves the active assignment intact if it has not committed. After acceptance, affected results can be incomplete during background reindexing; the tab reports completion or failures. It does not retain a separate serving copy of the old affected index.
 
-Similarity scores differ between models; a threshold useful for EmbeddingGemma2 may be too high for CLIP. The application does not silently change your saved threshold. Qwen's reviewed fp32 artifact adds approximately 2.4 GB of model assets; allow space and memory for every selected model and for validation while the old models remain active.
+Similarity scores differ between models; a threshold useful for EmbeddingGemma2 may be too high for CLIP. The application does not silently change your saved threshold. Qwen's reviewed fp32 artifact adds approximately 2.4 GB of model assets. Allow disk space for every selected model. Idle workers can be unloaded and later reloaded to avoid requiring old and replacement models to fit in RAM together; the reserve is never disabled.
 
-### Image descriptions and OCR
+### Image descriptions, OCR and regions
 
-Set the **Images** URL to `https://huggingface.co/microsoft/Florence-2-base-ft` or `https://huggingface.co/microsoft/Florence-2-base`. The app resolves a pinned ONNX export and automatically configures an image-understanding stage followed by the Documents/text embedder. Each generator adds approximately 1.1 GB of model assets. It requires enough available memory for its qualified profile and a system reserve; a running older deployment or other large models can reduce that headroom.
+Set the **Images** URL to `https://huggingface.co/microsoft/Florence-2-base-ft`, `microsoft/Florence-2-base`, `microsoft/Florence-2-large-ft` or `microsoft/Florence-2-large` using its full Hugging Face URL. The app resolves a pinned ONNX export and automatically configures an image-understanding stage followed by the Documents/text embedder. Base generators add approximately 1.1 GB of assets; large generators add about 3.07 GiB and require a 6.5 GiB allowance plus the 2 GiB reserve. Download size is not peak RAM.
 
 No manual pipeline or tokenizer setup is required. **Image description options** appears only for a compatible understanding model. Caption is the default task; enable OCR there if needed. **Use the Documents / text model** is an explicit dependency: changing Text will also re-embed image descriptions, without regenerating still-valid captions/OCR. Uncheck it to choose a separate compatible text model.
+
+Qualifying image models also offer **Object labels** or **Region descriptions**. Select one regional task, optionally alongside caption/OCR, or use regions alone. The engine embeds each labeled region's text. Search returns the original image once, highlights its best matching region and exposes that region's text on hover; these are not separate cropped-image embeddings.
 
 Select **Apply model changes** and watch the stage/count feedback. Images may have complete, partial, failed or empty/skipped task outcomes. Valid partial results remain searchable with warnings; **Retry incomplete image tasks** retries failed/truncated stages without discarding successful sibling tasks. OCR finding no text is a skipped/no-searchable-text result, not a fabricated embedding.
 

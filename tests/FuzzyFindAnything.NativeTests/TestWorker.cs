@@ -55,7 +55,17 @@ internal static class TestWorker
             var values = request.RootElement.GetProperty("args");
             if (operation == "capabilities")
             {
-                Send(new { ok = true, result = new { space = EmbeddingSpace.Default, provider = "CPUExecutionProvider", device = "Test CPU" } });
+                Send(new
+                {
+                    ok = true,
+                    result = new
+                    {
+                        space = EmbeddingSpace.Default,
+                        provider = "CPUExecutionProvider",
+                        device = "Test CPU",
+                        info = Flag("info") ? "Native runtime thread-pool information." : ""
+                    }
+                });
                 continue;
             }
             File.AppendAllText(Path.Combine(root, $"operations-{ordinal}.txt"), operation + "\n");
@@ -66,6 +76,12 @@ internal static class TestWorker
                 File.WriteAllText(Path.Combine(root, "entered"), operation);
                 var timer = Stopwatch.StartNew();
                 while (!File.Exists(Path.Combine(root, "release")) && timer.Elapsed < TimeSpan.FromSeconds(30)) Thread.Sleep(10);
+            }
+            if (operations == 2 && Flag("block_second"))
+            {
+                File.WriteAllText(Path.Combine(root, "entered-second"), operation);
+                var timer = Stopwatch.StartNew();
+                while (!File.Exists(Path.Combine(root, "release-second")) && timer.Elapsed < TimeSpan.FromSeconds(30)) Thread.Sleep(10);
             }
             if (Flag("malformed")) { Console.WriteLine("not-json"); continue; }
             object result = operation switch
@@ -81,6 +97,37 @@ internal static class TestWorker
         return 0;
     }
     private static void Send(object value) => Console.WriteLine(JsonSerializer.Serialize(value, Protocol.Json));
+
+    public static int Provider()
+    {
+        Console.InputEncoding = new UTF8Encoding(false);
+        Console.OutputEncoding = new UTF8Encoding(false);
+        using var request = JsonDocument.Parse(Console.ReadLine()!);
+        var args = request.RootElement.GetProperty("args");
+        string directory = args.GetProperty("directory").GetString()!;
+        string root = Path.GetDirectoryName(Path.GetDirectoryName(directory))!;
+        using var settings = JsonDocument.Parse(File.ReadAllText(Path.Combine(root, "scenario.json")));
+        bool Flag(string name) => settings.RootElement.TryGetProperty(name, out var value) && value.GetBoolean();
+        var reference = args.GetProperty("reference").Deserialize<ProviderModelReference>(Protocol.Json)!;
+        File.WriteAllText(Path.Combine(root, "provider.pid"), Environment.ProcessId.ToString());
+        Send(new { @event = "memory_request", model_bytes = 3L << 30 });
+        using var admission = JsonDocument.Parse(Console.ReadLine()!);
+        if (admission.RootElement.GetProperty("operation").GetString() != "memory_ready")
+            throw new InvalidDataException("Missing memory admission.");
+        File.WriteAllText(Path.Combine(root, "admitted"), "ready");
+        if (Flag("block_provider")) Thread.Sleep(TimeSpan.FromSeconds(30));
+        if (Flag("fail_provider"))
+        {
+            Send(new { ok = false, error = "Synthetic native qualification failure.", code = "provider_compatibility" });
+            return 1;
+        }
+        var space = new EmbeddingSpace(reference.Key, new string('a', 64), "external-v1", 104, 512, false, 3L << 30,
+            External: new(reference.Provider, new string('a', 64), new string('b', 64), 100, 512, 512, ["Document", "Code"], "CPU"));
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "provider-model.json"), JsonSerializer.Serialize(new { space }, Protocol.Json));
+        Send(new { ok = true, result = new PreparedProviderModel(space, directory) });
+        return 0;
+    }
 
     public static int Filter(string path)
     {

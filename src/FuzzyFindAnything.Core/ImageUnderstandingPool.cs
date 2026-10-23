@@ -2,7 +2,7 @@ using System.Text.Json;
 
 namespace FuzzyFindAnything.Core;
 
-public sealed class ImageUnderstandingPool : IImageUnderstanding
+public sealed class ImageUnderstandingPool : IImageUnderstanding, IModelResidency
 {
     private readonly string executable, directory;
     private readonly int threads;
@@ -10,6 +10,8 @@ public sealed class ImageUnderstandingPool : IImageUnderstanding
     private readonly SemaphoreSlim work = new(1, 1);
     private readonly CancellationTokenSource lifetime;
     private readonly Task idle;
+    private readonly ModelMemoryCoordinator? memory;
+    private readonly IDisposable? memoryRegistration;
     private InferenceClient? client;
     private long lastUsed = Environment.TickCount64;
     private bool disposed;
@@ -17,12 +19,18 @@ public sealed class ImageUnderstandingPool : IImageUnderstanding
     public string Provider { get; private set; } = "";
     public string Device { get; private set; } = "";
     public bool IsLoaded => client is { Alive: true };
+    bool IModelResidency.HasResidentWorker => IsLoaded;
+    bool IModelResidency.HasBusyWorker => IsLoaded && (disposed || work.CurrentCount == 0);
+    long IModelResidency.LastUsed => Interlocked.Read(ref lastUsed);
+    Task<bool> IModelResidency.ReleaseWorkerAsync(bool wait, CancellationToken cancellation) => ReleaseIfIdleAsync(wait, cancellation);
 
     public ImageUnderstandingPool(ImagePipelineDescriptor descriptor, string executable, string directory,
-        int threads, Action<string> log, CancellationToken cancellation)
+        int threads, Action<string> log, CancellationToken cancellation, ModelMemoryCoordinator? memory = null)
     {
         Descriptor = descriptor; this.executable = executable; this.directory = directory;
         this.threads = threads; this.log = log;
+        this.memory = memory;
+        memoryRegistration = memory?.Register(this);
         lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
         idle = Task.Run(ReleaseIdleAsync);
     }
@@ -30,10 +38,10 @@ public sealed class ImageUnderstandingPool : IImageUnderstanding
     {
         if (client is { Alive: true }) return;
         if (client is not null) { await client.DisposeAsync(); client = null; }
-        long available = ModelPool.AvailableMemory(), required = Descriptor.Model.MemoryBytes + (2L << 30);
-        if (available < required)
-            throw new ContentException($"Image understanding needs {required / (double)(1L << 30):0.0} GiB available including the system reserve; " +
-                $"{available / (double)(1L << 30):0.0} GiB is available. Close unused applications and retry.", "image_memory", true);
+        using var admission = memory is null ? null : await memory.AcquireAsync(this, Descriptor.Model.MemoryBytes, cancellation);
+        long available = ModelPool.AvailableMemory();
+        if (memory is null && available < Descriptor.Model.MemoryBytes + ModelMemoryCoordinator.SystemReserveBytes)
+            throw new ModelMemoryException(Descriptor.Model.MemoryBytes, available);
         string? provider = new ModelOptions(Device: Descriptor.GenerationDevice).Normalize().ProviderSelector;
         var started = await InferenceClient.StartAsync(executable, directory, threads, progress, log, cancellation,
             requiredProvider: provider, imageUnderstanding: true);
@@ -62,16 +70,20 @@ public sealed class ImageUnderstandingPool : IImageUnderstanding
             throw new InvalidOperationException("An image worker cannot be rebound to a different native artifact/device.");
         Descriptor = descriptor;
     }
-    public async Task ReleaseIfIdleAsync()
+    public async Task<bool> ReleaseIfIdleAsync(bool wait = false, CancellationToken cancellation = default)
     {
-        if (!await work.WaitAsync(0)) return;
+        if (disposed) return false;
+        if (wait) await work.WaitAsync(cancellation);
+        else if (!await work.WaitAsync(0, cancellation)) return false;
         try
         {
             if (client is not null)
             {
                 await client.DisposeAsync(); client = null;
                 log("Released an idle image worker before qualifying another model.");
+                return true;
             }
+            return false;
         }
         finally { work.Release(); }
     }
@@ -120,6 +132,6 @@ public sealed class ImageUnderstandingPool : IImageUnderstanding
         await idle;
         await work.WaitAsync();
         try { if (client is not null) await client.DisposeAsync(); }
-        finally { work.Dispose(); lifetime.Dispose(); }
+        finally { memoryRegistration?.Dispose(); work.Release(); lifetime.Dispose(); }
     }
 }

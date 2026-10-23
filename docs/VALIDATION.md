@@ -2,6 +2,14 @@
 
 [Overview](../README.md) · [Architecture](ARCHITECTURE.md) · [Migration](MIGRATION.md)
 
+## Current development acceptance
+
+The **1.5.0-dev.3** checks cover pressure-aware model loading and restoration, active-batch draining without starvation, provider memory handoff, registry-gated source choices, discovery-error cleanup and authenticated private companion installation. Full native/headless regressions passed. Four real mixed CPU/NPU configurations exercised retrieval, selective reindexing, rejected-device preservation, no-op Apply and restart without re-embedding, including current-drop NPU document/code and image execution.
+
+Four concurrent catalog requests completed through the serialized discovery queue without a busy error. A disconnected child-process proxy returned no selectable provider models or versions without changing the parent environment. Both private companion packages passed complete inventory/checksum/PE checks; a clean authenticated download, relocated installation and live registry discovery also passed. These runs used isolated test data rather than clearing the production index.
+
+Current documentation images are synthetic-data renders of the actual XAML in both themes, including per-type thresholds, matched chunks, region overlays and themed region options. The original 1.1.0 evidence below is historical, not a claim that those earlier binaries include today's controls.
+
 ## Release 1.1.0 acceptance
 
 Version **1.1.0** was rebuilt from `main` after consolidating the application changes. The runtime, native bridge, model contract and build implementation match the validated native baseline at `33c3635`; this promotion changes release metadata and documentation, not indexing behavior.
@@ -17,6 +25,12 @@ Fresh acceptance covered:
 These runs used isolated data directories and did not reset or launch against the existing production index. Detailed machine-readable results are retained in the release workspace's ignored `.test-data` directory. The sections below describe the acceptance contract and prior migration evidence.
 
 ## Acceptance layers
+
+### Model-memory lifecycle
+
+The native `scheduling` mode uses real supervised fixture processes with an injected available-memory budget; it does not allocate gigabytes or pressure other applications. Cases cover multiple selected models at startup, idle-worker eviction and cold reactivation, waiting for active inference, rejected oversized models, cancellation during admission, shutdown of a cold waiting query, and recovery of the previous model. An external-provider fixture exercises the real memory-request/acknowledgement protocol through successful preparation, failed qualification and cancellation, checking process and lease cleanup.
+
+Informational native-runtime capability messages must reach diagnostic logs without setting the pool's warning. Actual startup and worker failures remain visible. The reserve and model estimates are not reduced to make these tests pass.
 
 ### Internal provider acceptance
 

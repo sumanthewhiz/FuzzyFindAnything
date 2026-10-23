@@ -14,6 +14,7 @@ internal static class ProviderTests
     {
         Program.Run("Typed provider references, mixed XML and execution identities", References);
         Program.Run("Provider padding, native retrieval and schema preservation", Storage);
+        ProviderBootstrapTests.Run();
     }
     private static void References()
     {

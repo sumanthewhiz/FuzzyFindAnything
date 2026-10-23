@@ -195,6 +195,9 @@ function Select-ModelChoice([string]$id, [string]$value) {
     $choice = @($choices | Where-Object { $_.Current.ItemStatus -eq $value }) | Select-Object -First 1
     if (-not $choice) { throw "Missing model choice $value in $id" }
     ([System.Windows.Automation.SelectionItemPattern]$choice.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)).Select()
+    if ($id -like '*ModelSource') {
+        Wait-Check { (Find-Id 'ModelSourceAvailability').Current.Name -eq 'Available model sources and device choices are up to date.' } 'source discovery completion' 180
+    }
     Wait-Check { (Find-Id $id).Current.IsEnabled } "model choice readiness for $id" 180
     $control = Find-Id $id
     ([System.Windows.Automation.ExpandCollapsePattern]$control.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)).Collapse()
@@ -333,6 +336,7 @@ try {
         Select-Tab 'FoldersTab'
         Wait-Check { (Find-Id 'IndexCounts').Current.Name -like '3 files |*' } 'provider baseline indexing' 180
         Select-Tab 'ModelsTab'
+        Wait-Check { (Find-Id 'ModelSourceAvailability').Current.Name -eq 'Available model sources and device choices are up to date.' } 'authorized source availability' 180
         foreach ($binding in @(@{Prefix='Text';Reference=$selection.text},@{Prefix='Code';Reference=$selection.code},@{Prefix='Image';Reference=$selection.image})) {
             $reference = [Uri]$binding.Reference
             if ($reference.Scheme -ne 'provider') { continue }

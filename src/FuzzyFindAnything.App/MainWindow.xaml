@@ -62,6 +62,9 @@
       <StackPanel Margin="0,8,0,8">
         <ComboBox ItemsSource="{Binding Sources}" DisplayMemberPath="Label" SelectedValuePath="Id" SelectedValue="{Binding Source}"
                   Style="{StaticResource ModelQuerySelector}" AutomationProperties.AutomationId="{Binding SourceControlId}" />
+        <TextBlock Text="The saved source is unavailable for this connection. Its applied settings are retained; choose Hugging Face explicitly to replace it."
+                   Visibility="{Binding AppliedSourceUnavailable, Converter={StaticResource BoolToVisibility}}"
+                   TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource Muted}" Margin="0,6,0,0" />
         <StackPanel Margin="0,10,0,0" Visibility="{Binding IsMicrosoft, Converter={StaticResource BoolToVisibility}}">
           <ComboBox ItemsSource="{Binding Models}" DisplayMemberPath="Label" SelectedValuePath="Id" SelectedValue="{Binding SelectedVariant}"
                     Style="{StaticResource ModelQuerySelector}" IsEnabled="{Binding CanSelect}" AutomationProperties.AutomationId="{Binding ModelControlId}">
@@ -660,7 +663,13 @@
         <ScrollViewer VerticalScrollBarVisibility="Auto" Foreground="{DynamicResource Ink}">
           <StackPanel>
             <TextBlock Text="Model configuration" FontSize="28" FontWeight="SemiBold" />
-            <TextBlock Text="Choose local Hugging Face or approved Microsoft models independently for documents, code and images." Foreground="{DynamicResource Muted}" Margin="0,6,0,0" />
+            <TextBlock Text="{Binding ModelSourceGuidance}" Foreground="{DynamicResource Muted}" Margin="0,6,0,0" />
+            <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+              <Button Content="Refresh model sources" Click="RefreshProviderVersions_Click" IsEnabled="{Binding IsConfigurationIdle}"
+                      AutomationProperties.AutomationId="RefreshModelSources" />
+              <TextBlock Text="{Binding SourceAvailabilityMessage}" Foreground="{DynamicResource Muted}" FontSize="12"
+                         VerticalAlignment="Center" Margin="12,0,0,0" AutomationProperties.AutomationId="ModelSourceAvailability" />
+            </StackPanel>
             <Border Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Line}" BorderThickness="1"
                     CornerRadius="12" Padding="28" Margin="0,22,0,0">
               <StackPanel>
@@ -703,11 +712,7 @@
                       <TextBlock Text="Region search (optional)" Foreground="{DynamicResource Muted}" FontSize="12" />
                       <ComboBox ItemsSource="{Binding ImageProcessing.RegionChoices}" DisplayMemberPath="Label" SelectedValuePath="Id"
                                 SelectedValue="{Binding ImageProcessing.RegionTask, Mode=TwoWay}" Margin="0,6,0,0"
-                                AutomationProperties.AutomationId="ImageRegionTask">
-                        <ComboBox.ItemContainerStyle>
-                          <Style TargetType="ComboBoxItem"><Setter Property="AutomationProperties.Name" Value="{Binding Label}" /></Style>
-                        </ComboBox.ItemContainerStyle>
-                      </ComboBox>
+                                Style="{StaticResource ModelQuerySelector}" AutomationProperties.AutomationId="ImageRegionTask" />
                       <TextBlock Text="Index detected labels or region descriptions. Turn off Caption to use regions instead of a whole-image caption."
                                  Foreground="{DynamicResource Muted}" FontSize="12" TextWrapping="Wrap" Margin="0,6,0,0" />
                     </StackPanel>
@@ -724,7 +729,7 @@
                 </Expander>
                 <TextBlock Text="Compatible embeddings share an index. Only affected representations are replaced when you apply a change."
                            TextWrapping="Wrap" Foreground="{DynamicResource Muted}" />
-                <TextBlock Text="A model must have a supported native adapter and pass local execution checks. Microsoft models require the separately installed internal provider. No hosted inference or remote model code is used."
+                <TextBlock Text="A model must have a supported native adapter and pass local execution checks. Optional sources require their approved local provider and verified registry access. No hosted inference or remote model code is used."
                            TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,10,0,0" />
                 <TextBlock Text="{Binding ModelConfigurationMessage}" TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,10,0,0"
                            AutomationProperties.AutomationId="ModelConfigurationStatus" />

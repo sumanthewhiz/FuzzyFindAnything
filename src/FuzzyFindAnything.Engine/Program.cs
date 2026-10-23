@@ -19,6 +19,8 @@ internal static class Program
         Task? reporter = null;
         Task? applying = null;
         var inspections = new List<Task>();
+        var providerQueries = new List<Task>();
+        using var providerDiscovery = new SemaphoreSlim(1, 1);
         try
         {
             var options = new Dictionary<string, string>();
@@ -65,20 +67,27 @@ internal static class Program
                     var arguments = request.TryGetProperty("args", out var value) ? value : default;
                     if (command == "provider_catalog")
                     {
-                        inspections.RemoveAll(task => task.IsCompleted);
-                        if (inspections.Count >= 3) throw new InvalidOperationException("Provider discovery is already in progress. Wait for the current checks.");
+                        providerQueries.RemoveAll(task => task.IsCompleted);
+                        if (providerQueries.Count >= 16) throw new InvalidOperationException("Too many model-source requests are queued. Allow discovery to finish before retrying.");
                         string provider = arguments.GetProperty("provider").GetString() ?? throw new ArgumentException("A model provider is required.");
                         string? version = arguments.TryGetProperty("version", out var requestedVersion) ? requestedVersion.GetString() : null;
                         bool refresh = arguments.TryGetProperty("refresh", out var requestedRefresh) && requestedRefresh.GetBoolean();
                         string? requestId = id;
-                        inspections.Add(Task.Run(async () =>
+                        providerQueries.Add(Task.Run(async () =>
                         {
-                            try { Send(new { id = requestId, ok = true, result = await engine.ProviderCatalogAsync(provider, version, refresh) }); }
+                            bool entered = false;
+                            try
+                            {
+                                await providerDiscovery.WaitAsync(reporting.Token);
+                                entered = true;
+                                Send(new { id = requestId, ok = true, result = await engine.ProviderCatalogAsync(provider, version, refresh) });
+                            }
                             catch (Exception error)
                             {
                                 log.Write("provider", error.ToString());
                                 Send(new { id = requestId, ok = false, error = error.Message });
                             }
+                            finally { if (entered) providerDiscovery.Release(); }
                         }));
                         continue;
                     }
@@ -165,6 +174,7 @@ internal static class Program
                 if (engine is not null) await engine.DisposeAsync();
                 if (applying is not null) await applying;
                 await Task.WhenAll(inspections);
+                await Task.WhenAll(providerQueries);
             }
             finally { lease?.Dispose(); }
         }
