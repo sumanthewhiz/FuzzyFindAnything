@@ -84,7 +84,7 @@ public sealed class ModelPool(string executable, string modelDirectory, CpuBudge
         memoryRegistration = memoryCoordinator?.Register(this);
         using var admission = await AdmitAsync(lifetime.Token);
         long memory = memoryCoordinator?.AvailableBytes ?? (memoryAvailable ?? AvailableMemory)();
-        if (Space == EmbeddingSpace.Default) (desired, Threads) = Plan(budget.Processors, memory);
+        if (Space.UsesLegacyHost) (desired, Threads) = Plan(budget.Processors, memory);
         else
         {
             desired = 1; Threads = budget.Processors;
@@ -235,10 +235,16 @@ public sealed class ModelPool(string executable, string modelDirectory, CpuBudge
             (await client.RequestAsync("split_content", new { text, context }, token)).Deserialize<ChunkingResult>(Protocol.Json)
                 ?? throw new InvalidDataException("Empty structured passage response."), cancellation);
     public Task<float[][]> DocumentsAsync(string title, string[] passages, CancellationToken cancellation) =>
-        batches!.SubmitAsync("documents", passages.Select(passage => Space == EmbeddingSpace.Default
-            ? $"title: {FilePaths.ScalarPrefix(title, 160)} | text: {passage}" : passage).ToArray(), cancellation);
+        batches!.SubmitAsync("documents", passages.Select(passage => Space.FormatDocument(title, passage)).ToArray(), cancellation);
     public async Task<float[]> ImageAsync(string path, CancellationToken cancellation) =>
         (await batches!.SubmitAsync("images", [path], cancellation))[0];
+    internal Task ValidateImageAsync(string path, CancellationToken cancellation) => WithClientAsync(false, async (client, token) =>
+    {
+        var values = (await client.RequestAsync("images", new { paths = new[] { path } }, token)).Deserialize<float[][]>()
+            ?? throw new InvalidDataException("Empty image qualification output.");
+        if (values.Length != 1) throw new InvalidDataException("Image qualification returned the wrong result count.");
+        return Space.Normalize(values[0]);
+    }, cancellation);
     public Task<float[]> QueryAsync(string text, CancellationToken cancellation) => QueryAsync(text, Space.Recipe?.TextQuery ?? "default", cancellation);
     public Task<float[]> QueryAsync(string text, string profile, CancellationToken cancellation) => WithClientAsync(true, async (client, token) =>
         Space.Normalize((await client.RequestAsync("query", Space.Recipe is null ? new { text } : (object)new { text, profile }, token)).Deserialize<float[]>()

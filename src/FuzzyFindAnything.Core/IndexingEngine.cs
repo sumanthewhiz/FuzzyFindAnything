@@ -201,9 +201,9 @@ public sealed class IndexingEngine : IAsyncDisposable
         bool locked = false;
         try
         {
-            if (selection == Store.Selection) return new(false, selection, []);
+            if (selection == Store.Selection && modelState == "Ready") return new(false, selection, []);
             if (modelState == "Loading") throw new InvalidOperationException("Wait for initial model loading to finish before changing models.");
-            await using var prepared = await manager.PrepareAsync(selection, progress, change.Token);
+            await using var prepared = await manager.PrepareAsync(selection, progress, change.Token, retry: modelState != "Ready");
             if (prepared is null) return new(false, Store.Selection, []);
             await configuration.WaitAsync(change.Token);
             locked = true;
@@ -218,10 +218,12 @@ public sealed class IndexingEngine : IAsyncDisposable
                 workers.Clear(); processing?.Dispose(); processing = null;
                 change.Token.ThrowIfCancellationRequested();
                 string[] changed = Store.ReconfigureModels(prepared.Routes, settings.Publish,
-                    () => { settings.Commit(); committed = true; }, selection, prepared.Pipeline);
+                    () => { settings.Commit(); committed = true; }, selection, prepared.Pipeline, commitUnchanged: true);
                 lock (gate) { modelChange = null; queryVectors.Clear(); }
                 await manager.CommitAsync(prepared);
+                ConfigureContentStorage();
                 modelState = "Ready"; error = "";
+                Startup.Recovered();
                 if (changed.Length > 0)
                     foreach (var folder in Store.Folders()) Schedule(folder.Id, immediate: true);
                 StartWorkers();
@@ -237,7 +239,7 @@ public sealed class IndexingEngine : IAsyncDisposable
                     StopAfterStorageFailure(exception);
                     throw new ModelConfigurationException("Configuration applied, but indexing stopped: " + exception.Message, exception);
                 }
-                else if (!lifetime.IsCancellationRequested && processing is null) StartWorkers();
+                else if (!lifetime.IsCancellationRequested && processing is null && modelState == "Ready") StartWorkers();
                 throw;
             }
         }
@@ -252,7 +254,7 @@ public sealed class IndexingEngine : IAsyncDisposable
     {
         lock (gate)
         {
-            if (modelChange is null) return false;
+            if (modelChange is null) return modelState == "Loading" && model is ModelManager manager && manager.CancelStartup();
             modelChange.Cancel();
             return true;
         }
@@ -272,12 +274,14 @@ public sealed class IndexingEngine : IAsyncDisposable
         try
         {
             await model.StartAsync(Startup.ModelProgress, lifetime.Token);
-            if (model is ModelManager manager && Store.ReconfigureModels(manager.Routes, () => { }, selection: manager.Selection,
-                pipeline: manager.ImageUnderstanding?.Descriptor).Length > 0)
-                foreach (var folder in Store.Folders()) Schedule(folder.Id, immediate: true);
-            if (model.SupportsStructuredChunking && Store.ConfigureChunkingProfiles(new Dictionary<string, string>
-            { ["Document"] = ChunkingProfiles.Documents, ["Code"] = ChunkingProfiles.Code }).Length > 0)
-                foreach (var folder in Store.Folders()) Schedule(folder.Id, immediate: true);
+            if (model is ModelManager manager)
+            {
+                using var settings = new ModelSettingsUpdate(Store.DirectoryPath, manager.Selection);
+                if (Store.ReconfigureModels(manager.Routes, settings.Publish, settings.Commit, manager.Selection,
+                    manager.ImageUnderstanding?.Descriptor, commitUnchanged: true).Length > 0)
+                    foreach (var folder in Store.Folders()) Schedule(folder.Id, immediate: true);
+            }
+            ConfigureContentStorage();
             int retries = Store.RetryClipResizeFailures();
             if (retries > 0)
             {
@@ -299,6 +303,12 @@ public sealed class IndexingEngine : IAsyncDisposable
             modelState = "Error"; error = exception.Message;
             log.Write("startup", exception.ToString()); Startup.Fail(exception);
         }
+    }
+    private void ConfigureContentStorage()
+    {
+        if (model.SupportsStructuredChunking && Store.ConfigureChunkingProfiles(new Dictionary<string, string>
+        { ["Document"] = ChunkingProfiles.Documents, ["Code"] = ChunkingProfiles.Code }).Length > 0)
+            foreach (var folder in Store.Folders()) Schedule(folder.Id, immediate: true);
     }
     private async Task DiscoverLoopAsync()
     {

@@ -7,16 +7,24 @@ namespace FuzzyFindAnything.Core;
 
 public sealed record QueryProfile(string Id, string Label, string Prefix);
 
+public sealed record MultimodalEmbeddingRecipe(
+    string VisionGraph = "onnx/vision_encoder.onnx", string VisionOutput = "image_features",
+    string ImageFeatures = "image_features", string VideoFeatures = "video_features", string AudioFeatures = "audio_features",
+    string PixelValues = "pixel_values", string PixelPositions = "pixel_position_ids",
+    string Processor = "processor_config.json", string DocumentFormat = "title-text-v1",
+    string Preprocessing = "rgb-bicubic-rescale255-patch16-pool3-soft280-positions-v1",
+    int FeatureDimensions = 512, int ImageToken = 258880, string Precision = "f32");
+
 public sealed record EmbeddingRecipe(
     string Id, string Tokenizer, string Pooling, string Output, int ChunkTokens,
     string DocumentPrefix = "", string Padding = "right", int? BeginningToken = null, int? EndToken = null,
     int PaddingToken = 0, int MaximumBatchTokens = 4096, string Graph = "onnx/model.onnx",
     string InputIds = "input_ids", string AttentionMask = "attention_mask", string TokenTypeIds = "token_type_ids",
     string PositionIds = "position_ids", string TextQuery = "default", string CodeQuery = "default",
-    QueryProfile[]? Queries = null)
+    QueryProfile[]? Queries = null, MultimodalEmbeddingRecipe? Multimodal = null)
 {
     public IReadOnlyList<QueryProfile> QueryProfiles => Queries ?? [new("default", "Model default", "")];
-    public string DocumentFingerprint => Hash(JsonSerializer.Serialize(new
+    private string OriginalDocumentFingerprint => Hash(JsonSerializer.Serialize(new
     {
         Tokenizer,
         Pooling,
@@ -33,6 +41,8 @@ public sealed record EmbeddingRecipe(
         PositionIds,
         Version = 1
     }, Protocol.Json));
+    public string DocumentFingerprint => Multimodal is null ? OriginalDocumentFingerprint :
+        Hash(OriginalDocumentFingerprint + ":" + JsonSerializer.Serialize(Multimodal, Protocol.Json));
     public string IndexingFingerprint => Hash($"{DocumentFingerprint}:{ChunkTokens}:overlap-128-chars-v1");
     public string ContractFingerprint => Hash(JsonSerializer.Serialize(new
     { Id, DocumentFingerprint, IndexingFingerprint, MaximumBatchTokens, TextQuery, CodeQuery, QueryProfiles }, Protocol.Json));
@@ -45,7 +55,7 @@ public sealed record EmbeddingRecipe(
     {
         _ = CachedModel.LocalName(Graph);
         if (!Regex.IsMatch(Id, "^[a-z0-9][a-z0-9.-]{0,99}$") ||
-            Tokenizer is not ("bert-wordpiece" or "byte-bpe-nfc") ||
+            Tokenizer is not ("bert-wordpiece" or "byte-bpe-nfc" or "gemma-sentencepiece") ||
             Pooling is not ("mean" or "cls" or "last-token" or "pooled") ||
             Padding is not ("left" or "right") || PaddingToken < 0 || BeginningToken < 0 || EndToken < 0 ||
             ChunkTokens < 16 || ChunkTokens > maximumTokens || MaximumBatchTokens < maximumTokens ||
@@ -59,12 +69,24 @@ public sealed record EmbeddingRecipe(
             throw new InvalidDataException("Unsupported native embedding recipe.");
         if (TextQuery != "choose") _ = Query(TextQuery);
         if (CodeQuery != "choose") _ = Query(CodeQuery);
+        if (Multimodal is not null && (Multimodal != new MultimodalEmbeddingRecipe() ||
+            Tokenizer != "gemma-sentencepiece" || Pooling != "pooled" || Output != "sentence_embedding" ||
+            Padding != "right" || BeginningToken != 2 || EndToken != 1 || PaddingToken != 0 ||
+            maximumTokens != 2048 || ChunkTokens != 512 || MaximumBatchTokens != 4096 ||
+            Graph != "onnx/model.onnx" || InputIds != "input_ids" || AttentionMask != "attention_mask"))
+            throw new NotSupportedException("The multimodal export differs from the qualified FP32 Gemma2 contract.");
+        if (Tokenizer == "gemma-sentencepiece" && Multimodal is null)
+            throw new NotSupportedException("Gemma tokenization requires its reviewed multimodal contract.");
     }
 }
 
 public sealed record RegisteredEmbedding(string[] ModelUrls, string ArtifactUrl, string Revision,
     string ModelType, int Dimensions, int MaximumTokens, long MemoryBytes, string[] Files,
-    Dictionary<string, string> Checksums, EmbeddingRecipe Recipe, string? SourceRevision = null);
+    Dictionary<string, string> Checksums, EmbeddingRecipe Recipe, string? SourceRevision = null,
+    string Adapter = "native-text", bool SupportsImages = false, string? SourceUrl = null,
+    Dictionary<string, long>? Sizes = null, SupplementalModelAsset[]? Supplemental = null);
+
+public sealed record SupplementalModelAsset(string Name, string SourceUrl, string Revision, long Bytes, string Sha256);
 
 public static class EmbeddingRecipes
 {
@@ -72,8 +94,13 @@ public static class EmbeddingRecipes
     {
         using var stream = typeof(EmbeddingRecipes).Assembly.GetManifestResourceStream("FuzzyFindAnything.EmbeddingRecipes.json")
             ?? throw new InvalidDataException("The native embedding registry is missing.");
-        var entries = JsonSerializer.Deserialize<RegisteredEmbedding[]>(stream, Protocol.Json)
+        var existing = JsonSerializer.Deserialize<RegisteredEmbedding[]>(stream, Protocol.Json)
             ?? throw new InvalidDataException("The native embedding registry is empty.");
+        using var publicStream = typeof(EmbeddingRecipes).Assembly.GetManifestResourceStream("FuzzyFindAnything.PublicModel.json")
+            ?? throw new InvalidDataException("The public model contract is missing.");
+        var publicModel = JsonSerializer.Deserialize<RegisteredEmbedding>(publicStream, Protocol.Json)
+            ?? throw new InvalidDataException("The public model contract is invalid.");
+        RegisteredEmbedding[] entries = [.. existing, publicModel];
         var urls = new HashSet<string>(StringComparer.Ordinal);
         foreach (var entry in entries)
         {
@@ -89,11 +116,17 @@ public static class EmbeddingRecipes
             foreach (var pair in entry.Checksums)
                 if (!entry.Files.Contains(pair.Key) || !Regex.IsMatch(pair.Value, "^[0-9a-f]{64}$"))
                     throw new InvalidDataException("Invalid registered asset checksum.");
+            foreach (var asset in entry.Supplemental ?? [])
+                if (!entry.Files.Contains(asset.Name) || ModelSelection.Canonical(asset.SourceUrl) != asset.SourceUrl ||
+                    !Regex.IsMatch(asset.Revision, "^[0-9a-f]{40}$") || entry.Checksums.GetValueOrDefault(asset.Name) != asset.Sha256 ||
+                    entry.Sizes?.GetValueOrDefault(asset.Name) != asset.Bytes)
+                    throw new InvalidDataException("Invalid supplemental asset provenance.");
             entry.Recipe.Validate(entry.MaximumTokens);
         }
         return entries;
     });
     public static IReadOnlyList<RegisteredEmbedding> Registered => registry.Value;
+    public static RegisteredEmbedding PublicDefault => Find(ModelSelection.DefaultUrl)!;
     public static RegisteredEmbedding? Find(string modelUrl) =>
         Registered.SingleOrDefault(entry => entry.ModelUrls.Contains(modelUrl, StringComparer.Ordinal));
     public static EmbeddingRecipe StandardBert(string pooling, string output, int maximumTokens)

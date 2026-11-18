@@ -1,0 +1,70 @@
+{
+  "model_urls": [
+    "https://huggingface.co/onnx-community/embeddinggemma-2-ONNX",
+    "https://huggingface.co/google/embeddinggemma-2"
+  ],
+  "artifact_url": "https://huggingface.co/onnx-community/embeddinggemma-2-ONNX",
+  "revision": "daa72c51243991dfcaf9f9137d2c573d8f7790c0",
+  "source_url": "https://huggingface.co/google/embeddinggemma-2",
+  "source_revision": "914f7f89142e33e77833254d9c9b90c3cef7303b",
+  "model_type": "embedding_gemma2",
+  "adapter": "gemma2-onnx",
+  "supports_images": true,
+  "dimensions": 768,
+  "maximum_tokens": 2048,
+  "memory_bytes": 3221225472,
+  "files": [
+    "config.json", "processor_config.json", "tokenizer.json", "tokenizer_config.json",
+    "onnx/model.onnx", "onnx/model.onnx_data", "onnx/vision_encoder.onnx",
+    "onnx/vision_encoder.onnx_data", "README.md", "tokenizer.model"
+  ],
+  "sizes": {
+    "config.json": 5031,
+    "processor_config.json": 1788,
+    "tokenizer.json": 32170510,
+    "tokenizer_config.json": 1599,
+    "onnx/model.onnx": 421421,
+    "onnx/model.onnx_data": 1084170240,
+    "onnx/vision_encoder.onnx": 121253,
+    "onnx/vision_encoder.onnx_data": 671026176,
+    "README.md": 28720,
+    "tokenizer.model": 4689013
+  },
+  "checksums": {
+    "config.json": "8d011bfe08b5e345bbe0b81e5c6fd02c381920b345b986047bc2a33ce7b90d1d",
+    "processor_config.json": "168f6a08522f3ce5dea596d94d003af2fd691742d4f41fe1f9d8cce76bfbf69c",
+    "tokenizer.json": "4d777ef5bdc1aa36227abdfb77c3e49e7b9c892d16e1b6bda41c393504828be4",
+    "tokenizer_config.json": "17bd5d6e9364ca49a534e1502076593317c298d4a663623091ed45388f004874",
+    "onnx/model.onnx": "bc47de15f81208a5c99e5ab10f746d5e33b51ea228b7dc0bef9c133a94f1c1c3",
+    "onnx/model.onnx_data": "9fd452bfc6916e5a92f080f8dada35598ca4512b21c65897d4c5974d5f9630a2",
+    "onnx/vision_encoder.onnx": "a3fb44f8b5b152cfee6afe16e2cd69e774b7e1d3b822d1db1190ddf7b08b575e",
+    "onnx/vision_encoder.onnx_data": "ca8d28c99feb8129618f141978a27adae25090e0dadb68a30c235e191c01e37e",
+    "README.md": "4fe21bf1b86938ac62c7cd2d1511822e4ea6e8654e015e00b06a72676b5420e6",
+    "tokenizer.model": "e594c8a90eb08d8bda498ff4747977dc827ae0c3c56b5c0d41a605a22d02ef03"
+  },
+  "supplemental": [
+    {
+      "name": "tokenizer.model",
+      "source_url": "https://huggingface.co/google/embeddinggemma-2",
+      "revision": "914f7f89142e33e77833254d9c9b90c3cef7303b",
+      "bytes": 4689013,
+      "sha256": "e594c8a90eb08d8bda498ff4747977dc827ae0c3c56b5c0d41a605a22d02ef03"
+    }
+  ],
+  "recipe": {
+    "id": "gemma2-public-f32-v1",
+    "tokenizer": "gemma-sentencepiece",
+    "pooling": "pooled",
+    "output": "sentence_embedding",
+    "chunk_tokens": 512,
+    "beginning_token": 2,
+    "end_token": 1,
+    "padding_token": 0,
+    "padding": "right",
+    "maximum_batch_tokens": 4096,
+    "queries": [
+      { "id": "default", "label": "Semantic search", "prefix": "task: search result | query: " }
+    ],
+    "multimodal": {}
+  }
+}

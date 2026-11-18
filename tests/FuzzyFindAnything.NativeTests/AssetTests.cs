@@ -111,13 +111,13 @@ internal static class AssetTests
         File.WriteAllText(Path.Combine(root, "settings.xml"), "<FuzzyFindAnythingConfiguration version='1'><Logging directory='relative'/></FuzzyFindAnythingConfiguration>");
         Check.Throws<InvalidDataException>(() => new EngineLog(root));
     });
-    private sealed class Server : IAsyncDisposable
+    internal sealed class Server : IAsyncDisposable
     {
         private readonly TcpListener listener = new(IPAddress.Loopback, 0);
         private readonly CancellationTokenSource lifetime = new(TimeSpan.FromSeconds(10));
         public Uri BaseUri { get; }
         public Task Completion { get; }
-        public Server(Func<string, (string Status, string Headers, byte[] Body)> response)
+        public Server(Func<string, (string Status, string Headers, byte[] Body)> response, int? declaredLength = null)
         {
             listener.Start();
             BaseUri = new($"http://127.0.0.1:{((IPEndPoint)listener.LocalEndpoint).Port}/");
@@ -130,7 +130,7 @@ internal static class AssetTests
                 string? line;
                 while (!string.IsNullOrEmpty(line = await reader.ReadLineAsync(lifetime.Token))) request.AppendLine(line);
                 var value = response(request.ToString());
-                byte[] header = Encoding.ASCII.GetBytes($"HTTP/1.1 {value.Status}\r\nContent-Length: {value.Body.Length}\r\n{value.Headers}Connection: close\r\n\r\n");
+                byte[] header = Encoding.ASCII.GetBytes($"HTTP/1.1 {value.Status}\r\nContent-Length: {declaredLength ?? value.Body.Length}\r\n{value.Headers}Connection: close\r\n\r\n");
                 await stream.WriteAsync(header, lifetime.Token); await stream.WriteAsync(value.Body, lifetime.Token);
             });
         }

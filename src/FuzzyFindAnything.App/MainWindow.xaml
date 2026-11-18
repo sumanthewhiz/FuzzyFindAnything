@@ -756,8 +756,8 @@
             <Button Content="Apply model changes" Click="ApplyModels_Click" IsEnabled="{Binding CanApplyModels}"
                     Style="{StaticResource PrimaryButton}" HorizontalAlignment="Left" Margin="0,16,0,24"
                     AutomationProperties.AutomationId="ApplyModelsButton" />
-            <Button Content="Cancel model validation" Click="CancelModelChange_Click" HorizontalAlignment="Left" Margin="0,0,0,20"
-                    Visibility="{Binding ConfigurationBusy, Converter={StaticResource BoolToVisibility}}"
+            <Button Content="Cancel model preparation" Click="CancelModelChange_Click" HorizontalAlignment="Left" Margin="0,0,0,20"
+                    Visibility="{Binding CanCancelModelPreparation, Converter={StaticResource BoolToVisibility}}"
                     AutomationProperties.AutomationId="CancelModelChangeButton" />
             <Button Content="Retry incomplete image tasks" Click="RetryImageTasks_Click" HorizontalAlignment="Left" Margin="0,0,0,20"
                     IsEnabled="{Binding CanRetryImages}" Visibility="{Binding HasImagePipeline, Converter={StaticResource BoolToVisibility}}"

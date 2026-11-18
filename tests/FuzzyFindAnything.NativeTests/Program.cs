@@ -24,6 +24,18 @@ internal static class Program
         if (args.Length > 0 && args[0] == "model-config") { ModelConfigurationTests.Run(); return 0; }
         if (args.Length == 3 && args[0] == "binary-quickstart") { ModelConfigurationTests.BinaryQuickstartAsync(args[1], args[2]).GetAwaiter().GetResult(); return 0; }
         if (args.Length > 0 && args[0] == "embedding-recipes") { EmbeddingRecipeTests.Run(); return 0; }
+        if (args.SequenceEqual(["public-model"])) { PublicModelTests.RunAsync().GetAwaiter().GetResult(); return 0; }
+        if (args.Length == 4 && args[0] == "public-parity")
+        {
+            Console.WriteLine(JsonSerializer.Serialize(FirstRunAcquisitionTests.ParityAsync(args[1], args[2],
+                HuggingFaceModels.Load(args[2]).Space, args[3]).GetAwaiter().GetResult()));
+            return 0;
+        }
+        if (args.Length is 3 or 4 && args[0] == "first-run-acquisition")
+        {
+            FirstRunAcquisitionTests.RunAsync(args[1], args[2], args.Length == 4 ? args[3] : null).GetAwaiter().GetResult();
+            return 0;
+        }
         if (args.Length > 0 && args[0] == "image-pipeline") { ImagePipelineTests.Run(); return 0; }
         if (args.Length > 0 && args[0] == "regions") { RegionTests.Run(); return 0; }
         if (args.Length > 0 && args[0] == "providers") { ProviderTests.Run(); return 0; }
@@ -81,6 +93,7 @@ internal static class Program
         SchedulingTests.RunAsync().GetAwaiter().GetResult();
         MonitoringTests.RunAsync().GetAwaiter().GetResult();
         AssetTests.RunAsync().GetAwaiter().GetResult();
+        PublicModelTests.RunAsync().GetAwaiter().GetResult();
         ReleaseTests.Run();
         Console.WriteLine("NATIVE CORE CHECKS PASSED");
         return 0;
@@ -95,7 +108,10 @@ internal static class Program
     {
         string root = Path.Combine(Path.GetTempPath(), "ffa-native-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
-        try { action(root); } finally { Directory.Delete(root, true); }
+        Exception? primary = null;
+        try { action(root); }
+        catch (Exception error) { primary = error; throw; }
+        finally { Check.DeleteTemporary(root, primary); }
     }
     private static void Graph()
     {

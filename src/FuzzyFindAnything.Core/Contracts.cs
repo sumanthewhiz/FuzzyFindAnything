@@ -121,5 +121,11 @@ public sealed class StartupProgress(Action<StartupState>? report = null)
 
     public void ModelProgress(int completed, string stage) => Update(2 + completed, stage);
     public void Ready() => Update(9, "Search engine ready", "Ready");
+    public void Recovered()
+    {
+        StartupState next;
+        lock (sync) next = value = new(value.Sequence + 1, 100, 9, 9, "Search engine ready", "Ready");
+        report?.Invoke(next);
+    }
     public void Fail(Exception error) => Update(Snapshot.CompletedSteps, "Search engine unavailable", "Error", error.Message);
 }

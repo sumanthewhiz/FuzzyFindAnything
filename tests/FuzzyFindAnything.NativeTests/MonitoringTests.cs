@@ -205,9 +205,21 @@ internal static class MonitoringTests
         try { await extractor.ExtractAsync(path, default); throw new InvalidOperationException("The hung helper completed."); }
         catch (ContentException error)
         { Program.Require(error.Code == "filter_timeout" && error.Retryable, "The helper timeout was not retryable."); }
-        using var cancellation = new CancellationTokenSource(400);
-        await Check.ThrowsAsync<OperationCanceledException>(async () => await extractor.ExtractAsync(path, cancellation.Token));
-        int pid = int.Parse(File.ReadAllText(Path.Combine(root, "blocked.entered")));
+        string marker = Path.Combine(root, "blocked.entered");
+        File.Delete(marker);
+        using var cancellation = new CancellationTokenSource();
+        var running = new TextExtractor(Check.Executable, TimeSpan.FromSeconds(15)).ExtractAsync(path, cancellation.Token);
+        int pid = 0;
+        try
+        {
+            await Check.UntilAsync(() =>
+            {
+                try { return File.Exists(marker) && int.TryParse(File.ReadAllText(marker), out pid); }
+                catch (IOException) { return false; }
+            }, "The extraction helper never published readiness.");
+        }
+        finally { cancellation.Cancel(); }
+        await Check.ThrowsAsync<OperationCanceledException>(async () => await running);
         try { using var process = System.Diagnostics.Process.GetProcessById(pid); Program.Require(process.HasExited, "A cancelled helper survived."); }
         catch (ArgumentException) { }
         Console.WriteLine("PASS IFilter timeout/cancellation and helper reaping");

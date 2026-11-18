@@ -99,7 +99,7 @@ internal sealed class ImageSequenceModel : IDisposable
         var probeTasks = model.Tasks.Where(task => task.OutputKind == "text").ToArray();
         if (probeTasks.Length == 0)
             throw new NotSupportedException("This native image adapter requires a reviewed text task for its startup execution probe.");
-        var devices = DeviceExecution.Candidates();
+        var devices = DeviceExecution.Candidates(requiredDevice, progress);
         if (requiredDevice is not null)
         {
             var selector = requiredDevice.Split(':', 2);

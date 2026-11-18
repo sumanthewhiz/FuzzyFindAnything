@@ -14,7 +14,7 @@ internal static class ModelConfigurationTests
     }
     private static void Urls()
     {
-        Program.Require(ModelSelection.Canonical("  https://HUGGINGFACE.CO/google/embeddinggemma-2/ ") == ModelSelection.DefaultUrl,
+        Program.Require(ModelSelection.Canonical("  https://HUGGINGFACE.CO/google/embeddinggemma-2/ ") == ModelSelection.LegacyDefaultUrl,
             "Equivalent model-card URLs were not normalized.");
         foreach (string value in new[] { "", "http://huggingface.co/a/b", "https://example.com/a/b",
             "https://huggingface.co.evil.test/a/b", "https://name@huggingface.co/a/b", "https://huggingface.co/a/b?token=secret",
@@ -52,14 +52,14 @@ internal static class ModelConfigurationTests
             string settingsPath = Path.Combine(data, "settings.xml");
             File.WriteAllText(settingsPath, "<FuzzyFindAnythingConfiguration version=\"1\"><Appearance theme=\"Dark\"/></FuzzyFindAnythingConfiguration>");
             byte[] originalSettings = File.ReadAllBytes(settingsPath);
-            using (var update = new ModelSettingsUpdate(data, new(ModelSelection.DefaultUrl, bert.ModelUrl, ModelSelection.DefaultUrl)))
+            using (var update = new ModelSettingsUpdate(data, new(ModelSelection.LegacyDefaultUrl, bert.ModelUrl, ModelSelection.LegacyDefaultUrl)))
                 Check.Throws<IOException>(() => catalog.ReconfigureModels(split, () =>
                 {
                     update.Publish();
                     throw new IOException("Simulated failure before the catalog transaction commits.");
                 }));
             Program.Require(originalSettings.SequenceEqual(File.ReadAllBytes(settingsPath)) && catalog.Counts() == (3, 3) &&
-                catalog.Selection == ModelSelection.Default, "An interrupted configuration publication failed to restore XML/catalog state.");
+                catalog.Selection == ModelSelection.LegacyDefault, "An interrupted configuration publication failed to restore XML/catalog state.");
             long documentVector = Check.Scalar(data, "SELECT v.id FROM vectors v JOIN files f ON f.id=v.file_id WHERE f.kind='Document'");
             int persisted = 0;
             Program.Require(catalog.ReconfigureModels(split, () => persisted++).SequenceEqual(["Code"]) && persisted == 1,

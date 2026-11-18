@@ -20,6 +20,7 @@ $runtime = if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 
 $platform = if ($runtime -eq 'win-arm64') { 'ARM64' } else { 'x64' }
 dotnet run --project $headless -c Release -r $runtime "-p:PlatformTarget=$platform" -p:SelfContained=true -- $root
 if ($LASTEXITCODE -ne 0) { throw 'Headless UI/settings checks failed.' }
+& (Join-Path $PSScriptRoot 'ReleaseInputs.ps1')
 if ($WithModel -or $Integration) {
     if (-not $ModelDirectory) { $ModelDirectory = Join-Path $root 'models\embeddinggemma-2-onnx' }
     $output = Join-Path $root ".test-data\acceptance-$runtime"

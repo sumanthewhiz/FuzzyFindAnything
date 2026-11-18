@@ -61,7 +61,7 @@ Text and code are read directly; source code is **never executed**. Other docume
 ## Get started
 
 1. Download a native package matching your PC, and extract the **complete** ZIP.
-2. Follow **[Prepare models](QUICKSTART.md#2-prepare-models)**: use the public MiniLM/CLIP starter configuration or provision the approved EmbeddingGemma2 native bundle.
+2. Open the extracted app. It automatically downloads and verifies the public EmbeddingGemma2 ONNX default for documents, code and images; see **[Prepare models](QUICKSTART.md#2-prepare-models)**.
 3. Open `FuzzyFindAnything.exe`, add a small folder, and try a natural-language search.
 
 A binary package includes .NET, ONNX Runtime, Windows ML, SQLite, DiskANN and architecture-matched app-local C++ runtimes. Ordinary Hugging Face users do not need an SDK, Python, pip, Git or Visual Studio. Models are intentionally separate; their size and memory needs depend on the selection. The default native EmbeddingGemma2 bundle is approximately **1.8 GB uncompressed**. Optional Microsoft models have additional authentication prerequisites described in the [employee quickstart](QUICKSTART.md#microsoft-employees-psapi-models).
@@ -134,7 +134,7 @@ Direct image embeddings do not use document/code chunks. Caption/OCR/region pipe
 
 ### Model choices
 
-EmbeddingGemma2 is the built-in default for every file type; the optional public starter configuration uses MiniLM/CLIP instead. Tokenizer and pipeline settings are resolved automatically. The **Model configuration** tab resolves reviewed native recipes for text/code embeddings and retains direct CLIP image support. Query instructions, tokenization, pooling, tensor interfaces and device qualification are part of the recipe, not arbitrary downloaded model code. Unsupported families, missing exports, text-only image assignments and unusable device profiles are rejected before an index is changed.
+The pinned public `onnx-community/embeddinggemma-2-ONNX` package is the actual default for every file type. Startup and Apply automatically prepare supported models in the writable application-data cache; completed caches work offline. No manual URL changes, SDK or conversion are needed. Tokenizer and pipeline settings are resolved automatically. The **Model configuration** tab retains reviewed text recipes, BERT and direct CLIP support. Query instructions, pooling, tensor interfaces and device qualification are part of the recipe, not arbitrary downloaded model code. Unsupported exports and unusable device profiles are rejected before an index is changed.
 
 Examples include `Qwen/Qwen3-Embedding-0.6B`, `intfloat/e5-base-v2`, `vectoriseai/e5-small-v2`, the existing MiniLM examples and `Xenova/clip-vit-base-patch32`. The Qwen card resolves to a pinned stateless Qdrant ONNX export; the UI discloses the actual artifact source. Qwen Coder generation models are not interchangeable with text embedding checkpoints.
 
@@ -189,14 +189,14 @@ Setup builds the pinned DiskANN source and native utilities; NuGet restores mana
 
 The [build workflow](.github/workflows/build.yml) produces self-contained architecture-specific ZIPs and SHA-256 sidecars. Release verification checks the complete file inventory, architecture boundaries, relative runtime paths, model/user-data exclusion, and absence of interpreter payloads. Relocated native smoke tests run with Python absent from `PATH`.
 
-Pull requests and branch builds produce downloadable Actions artifacts. Tagged releases additionally require the approved model-parity source configured by the maintainer. Model bundles are prepared separately and are **not automatically uploaded**. Download a package matching 2.0.0, not an older release or GitHub's source-code ZIP.
+Pull requests and branch builds produce downloadable Actions artifacts. Both x64 and ARM64 must pass extracted cold-start acquisition, independent native reference checks, offline reuse and failed-onboarding recovery before upload or tagged publication. No private model URL is required. Weights remain separate and are **not uploaded in application packages**. Download a package matching 2.0.0, not an older release or GitHub's source-code ZIP.
 
 Packages are unsigned. Checksums detect altered downloads but do not replace code signing or publisher verification.
 
 ## Requirements and limits
 
 - Windows 11, at least two physical cores, and an AVX2-capable x64 CPU or Windows ARM64 with compatible x64 emulation.
-- At least **5 GiB available RAM** for the default model; approximately **8 GiB available** permits its optional second copy. These are planning estimates, not quotas. Large indexes need additional memory; 16 GB system RAM or more is recommended.
+- At least **5 GiB available RAM** for the default model (3 GiB model allowance plus the unchanged 2 GiB system reserve). These are planning estimates, not quotas. Large indexes need additional memory; 16 GB system RAM or more is recommended.
 - Florence-2 Large profiles require approximately **3.07 GiB of downloaded graph assets** and a **6.5 GiB generator memory allowance plus 2 GiB system reserve**. Idle embedders can be unloaded to make room; keeping both resident requires additional memory. Admission is checked before loading; download size is not peak RAM.
 - Scanned PDFs need an OCR-capable installed IFilter. Protected documents are not decrypted.
 - Online-only files must be available locally. Junctions and symbolic links are not traversed.

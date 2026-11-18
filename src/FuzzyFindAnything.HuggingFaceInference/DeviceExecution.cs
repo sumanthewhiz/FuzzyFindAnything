@@ -8,7 +8,7 @@ internal sealed record ExecutionDevice(string Provider, string Name, string Type
 internal static class DeviceExecution
 {
     public static IReadOnlyList<string> Diagnostics { get; private set; } = [];
-    public static IReadOnlyList<ExecutionDevice> Candidates()
+    public static IReadOnlyList<ExecutionDevice> Candidates(string? prepareDevice = null, Action<string>? progress = null)
     {
         var diagnostics = new List<string>();
         void Report(string message) { diagnostics.Add(message); Console.Error.WriteLine(message); }
@@ -28,13 +28,20 @@ internal static class DeviceExecution
                     Report("The Windows execution-provider catalog returned an empty provider entry.");
                     continue;
                 }
-                if (provider.ReadyState == ExecutionProviderReadyState.NotPresent)
+                bool selected = prepareDevice?.Split(':')[0].Equals(provider.Name, StringComparison.OrdinalIgnoreCase) == true;
+                if (provider.ReadyState == ExecutionProviderReadyState.NotPresent && !selected)
                 {
                     Report($"Device execution provider {provider.Name} is compatible with this device but not installed.");
                     continue;
                 }
-                if (provider.ReadyState == ExecutionProviderReadyState.NotReady)
+                if (provider.ReadyState == ExecutionProviderReadyState.NotReady && !selected)
                 {
+                    Report($"Execution provider {provider.Name} needs preparation before it can be explicitly selected.");
+                    continue;
+                }
+                if (selected && provider.ReadyState != ExecutionProviderReadyState.Ready)
+                {
+                    progress?.Invoke($"Preparing Windows execution provider {provider.Name}");
                     var ready = provider.EnsureReadyAsync().AsTask().GetAwaiter().GetResult();
                     if (ready is null || ready.Status != ExecutionProviderReadyResultState.Success)
                     {

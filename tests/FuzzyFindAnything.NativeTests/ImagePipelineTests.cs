@@ -55,7 +55,7 @@ internal static class ImagePipelineTests
         string path = Path.Combine(nested, "picture.png");
         var text = new EmbeddingSpace("https://huggingface.co/test/text-encoder", new string('a', 40), "bert-mean", 384, 128, false, 1L << 30);
         var pipeline = Pipeline(text, "caption", "ocr");
-        var selection = new ModelSelection(text.ModelUrl, ModelSelection.DefaultUrl, ImageModel, ImagePipeline: new(Ocr: true));
+        var selection = new ModelSelection(text.ModelUrl, ModelSelection.LegacyDefaultUrl, ImageModel, ImagePipeline: new(Ocr: true));
         long imageId, captionId;
         int parent, child;
         using (var catalog = new Catalog(data, 1))
@@ -83,7 +83,7 @@ internal static class ImagePipelineTests
         {
             var next = Pipeline(EmbeddingSpace.Default, "caption", "ocr");
             var changed = catalog.ReconfigureModels(Routes(EmbeddingSpace.Default), () => { },
-                selection: ModelSelection.Default with { Image = ImageModel, ImagePipeline = new(Ocr: true) }, pipeline: next);
+                selection: ModelSelection.LegacyDefault with { Image = ImageModel, ImagePipeline = new(Ocr: true) }, pipeline: next);
             Program.Require(changed.Contains("Image") && catalog.FindFile(path)!.Id == imageId, "Changing the text embedder deleted stable image metadata.");
             Program.Require(catalog.Enqueue(parent, path, FilePaths.Inspect(path), "Image", "", false), "Image re-embedding was not queued.");
             var job = catalog.Claim()!;
@@ -113,7 +113,7 @@ internal static class ImagePipelineTests
         {
             engine.Store.AddFolder(source);
             engine.Store.ReconfigureModels(Routes(EmbeddingSpace.Default), () => { },
-                selection: ModelSelection.Default with { Image = ImageModel, ImagePipeline = new(Ocr: true) }, pipeline: descriptor);
+                selection: ModelSelection.LegacyDefault with { Image = ImageModel, ImagePipeline = new(Ocr: true) }, pipeline: descriptor);
             engine.Start();
             await Check.UntilAsync(() => engine.Store.Counts().Files == 1 && engine.Store.QueueCounts().Queued == 1 &&
                 engine.Store.FindFile(Path.Combine(source, "image.png"))?.Warning is not null, "Partial image output was not published.");
@@ -173,7 +173,7 @@ internal static class ImagePipelineTests
         int folder = catalog.AddFolder(source);
         var pipeline = Pipeline(EmbeddingSpace.Default, "ocr");
         catalog.ReconfigureModels(Routes(EmbeddingSpace.Default), () => { },
-            selection: ModelSelection.Default with { Image = ImageModel, ImagePipeline = new(false, true) }, pipeline: pipeline);
+            selection: ModelSelection.LegacyDefault with { Image = ImageModel, ImagePipeline = new(false, true) }, pipeline: pipeline);
         var job = Program.Enqueue(catalog, folder, Path.Combine(source, "empty.png"), "empty OCR fixture", "Image");
         StoredImageTask? failed = null;
         for (int attempt = 0; attempt < 3; attempt++)

@@ -28,6 +28,7 @@ internal sealed class CompatibleModel : IDisposable
             foreach (var file in HuggingFaceModels.Load(directory).Files)
                 assets.Add(new FileStream(Path.Combine(directory, CachedModel.LocalName(file.Name)), FileMode.Open, FileAccess.Read, FileShare.Read));
             using var options = DeviceExecution.Options(device, threads);
+            if (space.Recipe?.Multimodal is not null) Gemma2ModelContract.ValidateGraphs(directory, space.Recipe);
             text = new InferenceSession(Path.Combine(directory, space.Recipe is { } recipe ? CachedModel.LocalName(recipe.Graph) :
                 space.Adapter == "clip" ? @"onnx\text_model.onnx" : @"onnx\model.onnx"), options);
             ValidateTextGraph();
@@ -35,8 +36,10 @@ internal sealed class CompatibleModel : IDisposable
             {
                 if (device.NativeDevice is not null)
                     options.ProfileOutputPathPrefix = Path.Combine(Path.GetTempPath(), "ffa-device-" + Guid.NewGuid().ToString("N"));
-                vision = new InferenceSession(Path.Combine(directory, @"onnx\vision_model.onnx"), options);
-                processor = JsonDocument.Parse(File.ReadAllText(Path.Combine(directory, "preprocessor_config.json")));
+                vision = new InferenceSession(Path.Combine(directory,
+                    space.Recipe?.Multimodal is { } binding ? CachedModel.LocalName(binding.VisionGraph) : @"onnx\vision_model.onnx"), options);
+                processor = JsonDocument.Parse(File.ReadAllText(Path.Combine(directory,
+                    space.Recipe?.Multimodal?.Processor ?? "preprocessor_config.json")));
             }
         }
         catch
@@ -50,7 +53,7 @@ internal sealed class CompatibleModel : IDisposable
     public static CompatibleModel Create(string directory, EmbeddingSpace space, int threads, Action<string> progress, string? requiredDevice = null)
     {
         var failures = new List<string>();
-        var devices = DeviceExecution.Candidates();
+        var devices = DeviceExecution.Candidates(requiredDevice, progress);
         if (requiredDevice is not null)
         {
             string[] selector = requiredDevice.Split(':', 2);
@@ -174,7 +177,7 @@ internal sealed class CompatibleModel : IDisposable
     }
     public ChunkingResult SplitContent(string content, ChunkingContext context) =>
         ContentChunker.Split(content, context, space.Recipe?.ChunkTokens ?? space.MaximumTokens,
-            value => RawTokenIds((space.Recipe?.DocumentPrefix ?? "") + value).Length);
+            value => RawTokenIds((space.Recipe?.DocumentPrefix ?? "") + space.FormatDocument(context.Title, value)).Length);
 
     public float[] Query(string query, string? profile = null)
     {
@@ -203,12 +206,23 @@ internal sealed class CompatibleModel : IDisposable
         string output = recipe?.Output ?? (space.Adapter == "clip" ? "text_embeds" : "last_hidden_state");
         var allowed = new[] { ids, recipe?.AttentionMask ?? "attention_mask", recipe?.TokenTypeIds ?? "token_type_ids",
             recipe?.PositionIds ?? "position_ids" };
+        if (recipe?.Multimodal is { } multimodal)
+            allowed = [ids, recipe.AttentionMask, multimodal.ImageFeatures, multimodal.VideoFeatures, multimodal.AudioFeatures];
         if (!text.InputMetadata.ContainsKey(ids) || text.InputNames.Any(name => !allowed.Contains(name)))
             throw new NotSupportedException("The text graph input interface needs a different reviewed adapter.");
-        foreach (var input in text.InputMetadata.Values)
+        foreach (var pair in text.InputMetadata)
+        {
+            var input = pair.Value;
+            if (recipe?.Multimodal is { } contract && new[] { contract.ImageFeatures, contract.VideoFeatures, contract.AudioFeatures }.Contains(pair.Key))
+            {
+                if (input.ElementType != typeof(float) || input.Dimensions.Length != 2 || input.Dimensions[0] > 0 || input.Dimensions[1] != 512)
+                    throw new NotSupportedException("The Gemma2 feature interface is not FP32 [tokens, 512].");
+                continue;
+            }
             if (input.Dimensions.Length != 2 || input.ElementType != typeof(long) && input.ElementType != typeof(int) ||
                 input.Dimensions[0] > 1 || input.Dimensions[1] > space.MaximumTokens)
                 throw new NotSupportedException("Unsupported embedding input type or fixed batch/sequence shape.");
+        }
         if (!text.OutputMetadata.TryGetValue(output, out var tensor) ||
             tensor.Dimensions.Length != (recipe?.Pooling == "pooled" || space.Adapter == "clip" ? 2 : 3) ||
             tensor.Dimensions[^1] > 0 && tensor.Dimensions[^1] != space.Dimensions ||
@@ -245,6 +259,11 @@ internal sealed class CompatibleModel : IDisposable
         {
             foreach (string name in text.InputNames)
             {
+                if (recipe?.Multimodal is { } binding && new[] { binding.ImageFeatures, binding.VideoFeatures, binding.AudioFeatures }.Contains(name))
+                {
+                    values[name] = OrtValue.CreateTensorValueFromMemory(Array.Empty<float>(), [0, binding.FeatureDimensions]);
+                    continue;
+                }
                 long[] data = name == idsName ? ids : name == (recipe?.AttentionMask ?? "attention_mask") ? masks :
                     name == (recipe?.TokenTypeIds ?? "token_type_ids") ? segments :
                     name == (recipe?.PositionIds ?? "position_ids") ? positions :
@@ -270,6 +289,8 @@ internal sealed class CompatibleModel : IDisposable
     {
         if (vision is null || processor is null) throw new NotSupportedException("This model cannot embed images.");
         if (paths.Count is < 1 or > 2) throw new ArgumentException("An image batch must contain 1-2 inputs.");
+        if (space.Recipe?.Multimodal is { } binding)
+            return paths.Select(path => GemmaImage(path, binding)).ToArray();
         var config = processor.RootElement;
         int edge = config.GetProperty("size").GetProperty("shortest_edge").GetInt32();
         int width = config.GetProperty("crop_size").GetProperty("width").GetInt32();
@@ -303,6 +324,31 @@ internal sealed class CompatibleModel : IDisposable
             results.Add(space.Normalize(output[0].GetTensorDataAsSpan<float>()));
         }
         return results.ToArray();
+    }
+    private float[] GemmaImage(string path, MultimodalEmbeddingRecipe binding)
+    {
+        var image = ImagePipeline.Prepare(path);
+        using var pixels = OrtValue.CreateTensorValueFromMemory(image.Pixels, [1, 2520, 768]);
+        using var positions = OrtValue.CreateTensorValueFromMemory(image.Positions, [1, 2520, 2]);
+        using var run = new RunOptions();
+        using var features = vision!.Run(run, new Dictionary<string, OrtValue>
+        { [binding.PixelValues] = pixels, [binding.PixelPositions] = positions }, [binding.VisionOutput]);
+        var shape = features[0].GetTensorTypeAndShape();
+        long count = image.InputIds.LongCount(id => id == binding.ImageToken);
+        if (shape.Shape.Length != 2 || shape.Shape[0] != count || shape.Shape[1] != binding.FeatureDimensions)
+            throw new InvalidDataException("Vision features do not match the image placeholder tokens.");
+        using var ids = OrtValue.CreateTensorValueFromMemory(image.InputIds, [1, image.InputIds.Length]);
+        using var mask = OrtValue.CreateTensorValueFromMemory(Enumerable.Repeat(1L, image.InputIds.Length).ToArray(), [1, image.InputIds.Length]);
+        using var empty = OrtValue.CreateTensorValueFromMemory(Array.Empty<float>(), [0, binding.FeatureDimensions]);
+        using var encoded = text.Run(run, new Dictionary<string, OrtValue>
+        {
+            [space.Recipe!.InputIds] = ids,
+            [space.Recipe.AttentionMask] = mask,
+            [binding.ImageFeatures] = features[0],
+            [binding.VideoFeatures] = empty,
+            [binding.AudioFeatures] = empty
+        }, [space.Recipe.Output]);
+        return space.Normalize(encoded[0].GetTensorDataAsSpan<float>());
     }
     public void Dispose()
     {

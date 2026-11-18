@@ -24,6 +24,7 @@ internal static class Program
         Run("Three result groups and clearing", ResultGroups);
         Run("Region thumbnails preserve geometry and reject changed sources", RegionThumbnails);
         Run("Loading indicator state", LoadingState);
+        Run("Recovered readiness ignores stale failure snapshots and retains unrelated errors", RecoveredReadiness);
         Run("Startup reconciliation does not disable search", ReconciliationState);
         Run("Model defaults and XML round-trip", ModelsRoundTrip);
         Run("Model reindex completion, errors and validation feedback", ModelReindexFeedback);
@@ -345,6 +346,10 @@ internal static class Program
     {
         var settings = new SettingsService(directory);
         Require(settings.Current.ModelSelection == ModelSelection.Default, "All model defaults must be EmbeddingGemma2.");
+        var initial = new MainViewModel();
+        Require(ModelSelection.DefaultUrl == "https://huggingface.co/onnx-community/embeddinggemma-2-ONNX" &&
+            initial.DraftModels == ModelSelection.Default && ModelSelection.Load(directory) == ModelSelection.Default,
+            "Fresh settings and initial UI did not persist/show the real public ONNX URL.");
         var chosen = new ModelSelection("https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2",
             ModelSelection.DefaultUrl, "https://huggingface.co/Xenova/clip-vit-base-patch32");
         settings.Save(settings.Current with { Models = chosen, Search = new(DocumentThreshold: 0.75), Theme = "Dark" });
@@ -365,6 +370,26 @@ internal static class Program
             throw new InvalidOperationException("An unsupported model host was accepted.");
         }
     });
+
+    private static void RecoveredReadiness()
+    {
+        var model = new MainViewModel();
+        var failed = new StartupStatus(5, 33, 3, 9, "Download failed", "Error", "connection unavailable");
+        var recovered = new StartupStatus(6, 100, 9, 9, "Search engine ready", "Ready", "");
+        model.ApplyStartup(failed);
+        Require(model.Error == failed.Error && model.CanApplyModels, "Startup failure did not allow retry.");
+        model.ApplyStartup(recovered);
+        Require(model.ModelState == "Ready" && model.Error == "", "Recovery retained its owned startup error.");
+        model.Apply(new EngineStatus("Error", failed.Stage, failed.Error, [], 0, 0, "", "",
+            new IndexMetadata("DiskANN", @"C:\fixtures", 0, 0, 0, 0, null), new CpuStatus(12, 6, 1, 6, 6, 0),
+            0, 0, [], new LoggingStatus(false, "", ""), failed));
+        Require(model.ModelState == "Ready" && model.Error == "", "A stale complete status replaced recovered readiness.");
+        model = new MainViewModel();
+        model.ApplyStartup(failed);
+        model.Error = "unrelated search error";
+        model.ApplyStartup(recovered);
+        Require(model.Error == "unrelated search error", "Recovery erased an unrelated UI error.");
+    }
 
     private static void ModelReindexFeedback()
     {

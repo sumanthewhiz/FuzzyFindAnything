@@ -4,11 +4,17 @@ param(
     [Parameter(Mandatory)][ValidateSet('win-x64', 'win-arm64')][string]$RuntimeIdentifier,
     [ValidatePattern('^\d+\.\d+\.\d+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$')][string]$Version,
     [switch]$SkipSetup,
-    [string]$Destination
+    [string]$Destination,
+    [uri]$ModelBaseUri
 )
 
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
+if ($null -ne $ModelBaseUri -and [string]::IsNullOrWhiteSpace($ModelBaseUri.OriginalString)) { $ModelBaseUri = $null }
+if ($null -ne $ModelBaseUri -and (-not $ModelBaseUri.IsAbsoluteUri -or $ModelBaseUri.Scheme -ne 'https' -or
+    $ModelBaseUri.UserInfo -or $ModelBaseUri.Query -or $ModelBaseUri.Fragment)) {
+    throw 'An optional packaged model source must be HTTPS without credentials, query tokens or fragments.'
+}
 if (-not $Version) {
     [xml]$properties = Get-Content -LiteralPath (Join-Path $root 'Directory.Build.props') -Raw
     $Version = [string]$properties.Project.PropertyGroup.Version
@@ -22,6 +28,7 @@ if (-not $SkipSetup) { & (Join-Path $root 'Setup.ps1') -SkipModel }
 $working = Join-Path $Destination ('package-' + [Guid]::NewGuid().ToString('N'))
 $payload = Join-Path $working 'FuzzyFindAnything'
 $temporaryArchive = $archive + '.' + [Guid]::NewGuid().ToString('N') + '.tmp'
+$primaryFailure = $null
 try {
     & (Join-Path $root 'Build.ps1') -SkipSetup -RuntimeIdentifier $RuntimeIdentifier -Version $Version -OutputDirectory $payload
     foreach ($name in @('Get-Model.ps1', 'Reset-Index.ps1', 'QUICKSTART.md', 'README.md',
@@ -30,6 +37,11 @@ try {
     }
     Copy-Item -LiteralPath (Join-Path $root 'docs') -Destination (Join-Path $payload 'docs') -Recurse
     Copy-Item -LiteralPath (Join-Path $root 'model-assets\embeddinggemma-2.json') -Destination (Join-Path $payload 'model-manifest.json')
+    Copy-Item -LiteralPath (Join-Path $root 'model-assets\embeddinggemma-2-public.json') -Destination (Join-Path $payload 'public-model-manifest.json')
+    if ($null -ne $ModelBaseUri) {
+        @{ base_uri = $ModelBaseUri.AbsoluteUri } | ConvertTo-Json |
+            Set-Content -LiteralPath (Join-Path $payload 'legacy-model-source.json') -Encoding utf8
+    }
     foreach ($name in @('LICENSE', 'LICENSE.txt', 'LICENSE.md')) {
         if (Test-Path -LiteralPath (Join-Path $root $name)) {
             Copy-Item -LiteralPath (Join-Path $root $name) -Destination (Join-Path $payload ('APPLICATION-' + $name))
@@ -48,12 +60,22 @@ try {
     [IO.File]::WriteAllText($archive + '.sha256', "$hash  $([IO.Path]::GetFileName($archive))`n", [Text.Encoding]::ASCII)
     Write-Host "Release: $archive"
     Write-Host "SHA256:  $hash"
+} catch {
+    $primaryFailure = $_
+    throw
 } finally {
-    if (Test-Path -LiteralPath $temporaryArchive) { [IO.File]::Delete($temporaryArchive) }
+    try { if (Test-Path -LiteralPath $temporaryArchive) { [IO.File]::Delete($temporaryArchive) } }
+    catch {
+        if ($primaryFailure) { Write-Warning "Temporary archive cleanup also failed: $($_.Exception.Message)" }
+        else { throw }
+    }
     for ($attempt = 0; Test-Path -LiteralPath $working; $attempt++) {
         try { [IO.Directory]::Delete($working, $true) }
         catch [IO.IOException], [UnauthorizedAccessException] {
-            if ($attempt -ge 60) { throw "Release staging remains locked at $working. $($_.Exception.Message)" }
+            if ($attempt -ge 60) {
+                if ($primaryFailure) { Write-Warning "Release staging remains locked at $working. $($_.Exception.Message)"; break }
+                throw "Release staging remains locked at $working. $($_.Exception.Message)"
+            }
             Start-Sleep -Milliseconds 500
         }
     }

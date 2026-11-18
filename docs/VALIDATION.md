@@ -16,7 +16,7 @@ git diff --exit-code origin/main origin/dev
 git rev-parse origin/main origin/dev
 ```
 
-The branch heads should be the same verified commit. Branch artifacts are available without publishing model weights. A version tag additionally requires the maintainer's approved `NATIVE_MODEL_BASE_URI` parity source; do not weaken that gate or upload private model payloads just to publish a tag.
+The branch heads should be the same verified commit when the maintainer promotes a release; feature work targets `dev` through a PR. Branch artifacts are available without publishing model weights. Every architecture now requires real public-model cold-start acceptance, independent of `NATIVE_MODEL_BASE_URI`. That optional legacy parity source is not required for publication.
 
 ## Validation principles
 
@@ -27,6 +27,24 @@ Unit and orchestration tests do not replace real native execution checks. Packag
 Documentation images are renders of the current XAML with synthetic data. They show UI layout, not personal search results or evidence that a model executed on particular hardware.
 
 ## Acceptance layers
+
+### Public first-launch and recovery gate
+
+`public-model` (also in the core suite) covers the public/legacy identity boundary, supplemental tokenizer provenance, aliases, notice-independent vector identity, unfinished-onboarding eligibility, read-only catalog bindings and resumable transfer failures. Headless checks cover fresh public defaults, recovered readiness, stale snapshots and preservation of unrelated UI errors.
+
+After a solution build, explicitly rebuild the harness with its self-contained x64 runtime:
+
+```powershell
+dotnet run --project .\tests\FuzzyFindAnything.NativeTests\FuzzyFindAnything.NativeTests.csproj -c Release `
+  -r win-x64 -p:PlatformTarget=x64 -p:SelfContained=true -- `
+  first-run-acquisition .\artifacts\releases\FuzzyFindAnything-v2.0.0-win-arm64.zip .\tests\Fixtures
+```
+
+Use the corresponding archive on each architecture. ARM64 acceptance runs on executable ARM64 hardware, not merely an x64 cross-build. The harness extracts the release, starts with an empty model/data cache and a runtime-only PATH, automatically acquires the public default, indexes/retrieves synthetic text/code/images, checks offline restart without reindexing, retries an unchanged failed selection, and recovers legacy first-launch XML plus saved folder scope without Apply. It consumes the existing independent 250-tokenizer/40-embedding references, checks padded batches and separate image ownership, and retains the numerical gates below.
+
+The qualified public context is 2,048 tokens, with 512-token document/code chunks and a 4,096 padded-token batch limit. This is not full upstream context, quantized, audio/video or GPU/NPU certification. Qualification uses the application's permitted CPU budget and unchanged memory reserve/timeouts.
+
+`tests\ReleaseInputs.ps1` exercises absent, empty, whitespace, valid and unsafe optional model-source URIs through the real release entry point, proving existing archives are not overwritten. Release verification compares the public manifest byte-for-byte with the embedded runtime contract. Both CI architectures must pass all cold-start gates before package upload; the hosted-runner and artifact delivery strategy is unchanged.
 
 ### Model-memory lifecycle
 

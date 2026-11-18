@@ -1,6 +1,6 @@
 # FuzzyFindAnything 2.0: binary quickstart
 
-**Download the app, prepare local models, and search a small folder. No source build is required.**
+**Download the app, open it, and search a small folder after automatic model preparation. No source build is required.**
 
 Release packages include the .NET and native runtimes. No separate Python, .NET, compiler or package manager is required.
 
@@ -52,11 +52,17 @@ Use your architecture and compare with the matching `.sha256` file. Packages are
 
 ## 2. Prepare models
 
-Choose one setup path. **A: public starter models** does not require a private native bundle. **B: the default EmbeddingGemma2 bundle** retains the app's built-in default. Both run inference locally after preparation.
+**No manual setup is needed for a fresh installation.** Open `FuzzyFindAnything.exe`. Documents, code and images all default to `https://huggingface.co/onnx-community/embeddinggemma-2-ONNX`. First launch downloads the reviewed FP32 package (approximately 1.8 GB), verifies its hashes and qualifies native inference. Progress shows download bytes, verification and device checks. No Python, Node.js, SDK, model conversion, URL edit or Apply click is required.
+
+Assets are saved under `%LOCALAPPDATA%\FuzzyFindAnything\models`, or the `models` subdirectory of your `--data-dir`. The installation directory need not be writable. A complete verified cache works offline. If preparation fails, resolve the reported problem and retry the unchanged selection with **Apply model changes**; **Cancel model preparation** retains completed/partial downloads and existing settings. No model or device is silently substituted.
+
+The public recipe pins export revision `daa72c51243991dfcaf9f9137d2c573d8f7790c0` and separately obtains `tokenizer.model` from `google/embeddinggemma-2` revision `914f7f89142e33e77833254d9c9b90c3cef7303b`. Both model cards declare Apache-2.0. `public-model-manifest.json` records exact files, checksums and provenance. No folders are added automatically.
+
+The alternatives below are optional. Initialized installations retain their saved bindings. An untouched, empty, failed legacy onboarding is recovered automatically as described in [migration](docs/MIGRATION.md#automatic-recovery-of-unfinished-onboarding).
 
 Models are separate downloads governed by their creators' licenses and terms, not by the app's MIT license. Review the [model licensing guidance](THIRD-PARTY-NOTICES.md#hugging-face-and-other-models) first.
 
-### A. Public starter models: MiniLM for text/code, CLIP for images
+### A. Optional lighter models: MiniLM for text/code, CLIP for images
 
 Use this on a **new installation only**. Open PowerShell in the extracted application directory and run the block below. It uses the packaged native utility; no .NET SDK, Python, Git or compiler is needed.
 
@@ -93,11 +99,11 @@ Keep the same data directory on later launches. With the default path above, ope
 
 CLIP scores differ from text-model scores. If image results are too narrow, lower **Images > Minimum** explicitly (for example, to 0.20); the app does not change thresholds silently.
 
-### B. Default EmbeddingGemma2 native bundle
+### B. Retaining an initialized legacy EmbeddingGemma2 bundle
 
-The app's built-in default uses the separately packaged **`embeddinggemma-2-onnx-v1`** export of `google/embeddinggemma-2`. The original Hugging Face `model.safetensors` file is **not** a substitute.
+Older initialized installations use the separately packaged **`embeddinggemma-2-onnx-v1`** custom export of `google/embeddinggemma-2`. This is not the new public default. Its vector identity and manual provisioning remain supported. The original Hugging Face `model.safetensors` file is **not** a substitute.
 
-**A public ONNX hosting URL is not configured by default.** Obtain the approved native model bundle from the maintainer or your organization's artifact channel. The repository contains its immutable [file manifest](https://github.com/sumanthewhiz/FuzzyFindAnything/blob/main/model-assets/embeddinggemma-2.json), also included as `model-manifest.json` in application packages, not the approximately 1.8 GB of model payload. End users do not export or convert the model.
+For this **legacy custom export only**, obtain the approved bundle from the maintainer or your organization's artifact channel. The repository contains its immutable [file manifest](https://github.com/sumanthewhiz/FuzzyFindAnything/blob/main/model-assets/embeddinggemma-2.json), also included as `model-manifest.json` in application packages, not its model payload. End users do not export or convert the model. The public default never requires this legacy host or bundle.
 
 Extract the bundle into a separate directory containing these eight files:
 
@@ -147,7 +153,7 @@ For a separate trial without using an existing index:
 & .\FuzzyFindAnything.exe --data-dir "$env:LOCALAPPDATA\FuzzyFindAnything-NativeTrial"
 ```
 
-Wait for **Ready**. The progress bar shows completed startup checkpoints and the current phase, not a time-based estimate. Startup validates the selected models; optional extra capacity for the shared default model loads in the background.
+Wait for **Ready**. The progress bar shows completed startup checkpoints and the current phase, not a time-based estimate. Startup acquires any missing supported assets and validates the selected models before indexing.
 
 After an exit, the app also checks configured folders and subfolders for added, deleted or timestamp-changed files. This runs in the background and retains unchanged embeddings and saved passage progress. You can search the existing index while the status says **Checking indexed folders for changes...** or while incremental updates are queued.
 
@@ -187,15 +193,16 @@ If the tray icon is not immediately visible, open Windows' notification-area ove
 
 ## Change embedding models
 
-Open **Model configuration** and enter HTTPS model-card URLs independently for **Documents / text**, **Source code** and **Images**. The built-in default is `https://huggingface.co/google/embeddinggemma-2`; the public starter setup instead shows its prepared MiniLM/CLIP selections. Existing saved choices are retained.
+Open **Model configuration** and enter HTTPS model-card URLs independently for **Documents / text**, **Source code** and **Images**. The built-in default is `https://huggingface.co/onnx-community/embeddinggemma-2-ONNX`. Existing initialized bindings are retained. The public URL is also the explicit migration choice for an established legacy installation.
 
 **Refresh model sources** checks optional local providers without changing applied models. Microsoft employees should follow [the PSAPI setup](#microsoft-employees-psapi-models) below. Other users retain the Hugging Face workflow.
 
-Select **Apply model changes** once. The app validates the URL, required native assets, modality, available memory and local execution before replacing any embeddings. Downloads and device checks are shown in the tab. If the selections are unchanged, Apply does nothing.
+Select **Apply model changes** once. The app acquires missing supported assets and explicitly requested eligible execution-provider runtimes, then validates modality, available memory and actual local execution before replacing any embeddings. Downloads and device checks are shown in the tab. Healthy unchanged selections are a no-op; an unchanged selection after startup failure retries preparation.
 
 | Example model URL | Compatible assignments |
 |---|---|
-| `https://huggingface.co/google/embeddinggemma-2` | Text, code, images; uses the separately provisioned default bundle |
+| `https://huggingface.co/onnx-community/embeddinggemma-2-ONNX` | Text, code, direct images; automatically acquired public FP32 default |
+| `https://huggingface.co/google/embeddinggemma-2` | New bindings resolve the reviewed public export; persisted legacy routes keep their custom-export contract |
 | `https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2` | Text and code |
 | `https://huggingface.co/sentence-transformers/paraphrase-MiniLM-L3-v2` | Text and code |
 | `https://huggingface.co/Xenova/clip-vit-base-patch32` | Text, code and images |

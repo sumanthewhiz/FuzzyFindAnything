@@ -23,7 +23,7 @@ git switch -c feature-your-change
 .\Build.ps1 -SkipSetup
 ```
 
-Models are provisioned separately. Follow the [binary quickstart](QUICKSTART.md#2-prepare-models) for public model preparation or an approved default-model bundle.
+Weights stay separate from application packages. The public default is acquired automatically on first launch; follow the [binary quickstart](QUICKSTART.md#2-prepare-models) for other selections or legacy bundle repair.
 
 Normal setup, model acquisition, builds, tests and runtime are Python-free. Do not introduce a global interpreter dependency. Build different runtime identifiers sequentially: shared project asset files are restored for the active RID.
 
