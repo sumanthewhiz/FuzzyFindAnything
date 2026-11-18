@@ -28,7 +28,7 @@ internal sealed class CompatibleModel : IDisposable
             foreach (var file in HuggingFaceModels.Load(directory).Files)
                 assets.Add(new FileStream(Path.Combine(directory, CachedModel.LocalName(file.Name)), FileMode.Open, FileAccess.Read, FileShare.Read));
             using var options = DeviceExecution.Options(device, threads);
-            if (space.Recipe?.Multimodal is not null) Gemma2ModelContract.ValidateGraphs(directory, space.Recipe);
+            if (space.Recipe?.NativeMultimodal is not null) Gemma2ModelContract.ValidateGraphs(directory, space.Recipe);
             text = new InferenceSession(Path.Combine(directory, space.Recipe is { } recipe ? CachedModel.LocalName(recipe.Graph) :
                 space.Adapter == "clip" ? @"onnx\text_model.onnx" : @"onnx\model.onnx"), options);
             ValidateTextGraph();
@@ -37,9 +37,9 @@ internal sealed class CompatibleModel : IDisposable
                 if (device.NativeDevice is not null)
                     options.ProfileOutputPathPrefix = Path.Combine(Path.GetTempPath(), "ffa-device-" + Guid.NewGuid().ToString("N"));
                 vision = new InferenceSession(Path.Combine(directory,
-                    space.Recipe?.Multimodal is { } binding ? CachedModel.LocalName(binding.VisionGraph) : @"onnx\vision_model.onnx"), options);
+                    space.Recipe?.NativeMultimodal is { } binding ? CachedModel.LocalName(binding.VisionGraph) : @"onnx\vision_model.onnx"), options);
                 processor = JsonDocument.Parse(File.ReadAllText(Path.Combine(directory,
-                    space.Recipe?.Multimodal?.Processor ?? "preprocessor_config.json")));
+                    space.Recipe?.NativeMultimodal?.Processor ?? "preprocessor_config.json")));
             }
         }
         catch
@@ -206,14 +206,14 @@ internal sealed class CompatibleModel : IDisposable
         string output = recipe?.Output ?? (space.Adapter == "clip" ? "text_embeds" : "last_hidden_state");
         var allowed = new[] { ids, recipe?.AttentionMask ?? "attention_mask", recipe?.TokenTypeIds ?? "token_type_ids",
             recipe?.PositionIds ?? "position_ids" };
-        if (recipe?.Multimodal is { } multimodal)
+        if (recipe?.NativeMultimodal is { } multimodal)
             allowed = [ids, recipe.AttentionMask, multimodal.ImageFeatures, multimodal.VideoFeatures, multimodal.AudioFeatures];
         if (!text.InputMetadata.ContainsKey(ids) || text.InputNames.Any(name => !allowed.Contains(name)))
             throw new NotSupportedException("The text graph input interface needs a different reviewed adapter.");
         foreach (var pair in text.InputMetadata)
         {
             var input = pair.Value;
-            if (recipe?.Multimodal is { } contract && new[] { contract.ImageFeatures, contract.VideoFeatures, contract.AudioFeatures }.Contains(pair.Key))
+            if (recipe?.NativeMultimodal is { } contract && new[] { contract.ImageFeatures, contract.VideoFeatures, contract.AudioFeatures }.Contains(pair.Key))
             {
                 if (input.ElementType != typeof(float) || input.Dimensions.Length != 2 || input.Dimensions[0] > 0 || input.Dimensions[1] != 512)
                     throw new NotSupportedException("The Gemma2 feature interface is not FP32 [tokens, 512].");
@@ -259,7 +259,7 @@ internal sealed class CompatibleModel : IDisposable
         {
             foreach (string name in text.InputNames)
             {
-                if (recipe?.Multimodal is { } binding && new[] { binding.ImageFeatures, binding.VideoFeatures, binding.AudioFeatures }.Contains(name))
+                if (recipe?.NativeMultimodal is { } binding && new[] { binding.ImageFeatures, binding.VideoFeatures, binding.AudioFeatures }.Contains(name))
                 {
                     values[name] = OrtValue.CreateTensorValueFromMemory(Array.Empty<float>(), [0, binding.FeatureDimensions]);
                     continue;
@@ -289,7 +289,7 @@ internal sealed class CompatibleModel : IDisposable
     {
         if (vision is null || processor is null) throw new NotSupportedException("This model cannot embed images.");
         if (paths.Count is < 1 or > 2) throw new ArgumentException("An image batch must contain 1-2 inputs.");
-        if (space.Recipe?.Multimodal is { } binding)
+        if (space.Recipe?.NativeMultimodal is { } binding)
             return paths.Select(path => GemmaImage(path, binding)).ToArray();
         var config = processor.RootElement;
         int edge = config.GetProperty("size").GetProperty("shortest_edge").GetInt32();

@@ -8,7 +8,7 @@ public static class Gemma2ModelContract
         files.Where(file => !IsNotice(file.Name)).OrderBy(file => file.Name, StringComparer.Ordinal)
             .Select(file => new { file.Name, file.Bytes, file.Sha256, file.SourceUrl, file.Revision }), Protocol.Json));
 
-    private static bool IsNotice(string name) =>
+    internal static bool IsNotice(string name) =>
         Path.GetFileName(name).StartsWith("README", StringComparison.OrdinalIgnoreCase) ||
         Path.GetFileName(name).StartsWith("LICENSE", StringComparison.OrdinalIgnoreCase);
 
@@ -51,7 +51,7 @@ public static class Gemma2ModelContract
 
     public static void ValidateGraphs(string directory, EmbeddingRecipe recipe)
     {
-        var binding = recipe.Multimodal ?? throw new InvalidDataException("A multimodal binding is required.");
+        var binding = recipe.NativeMultimodal ?? throw new InvalidDataException("A multimodal binding is required.");
         var language = OnnxMetadata.Read(Path.Combine(directory, CachedModel.LocalName(recipe.Graph)));
         var vision = OnnxMetadata.Read(Path.Combine(directory, CachedModel.LocalName(binding.VisionGraph)));
         if (language.Inputs.Length != 5 || vision.Inputs.Length != 2)

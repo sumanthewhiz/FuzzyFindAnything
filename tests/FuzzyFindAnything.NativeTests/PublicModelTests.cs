@@ -14,6 +14,7 @@ internal static class PublicModelTests
     {
         Program.Run("Public package identity, aliases, legacy preservation and supplemental provenance", Contracts);
         Program.Run("Unfinished onboarding eligibility and read-only catalog bindings", Onboarding);
+        Program.Run("Original public Gemma layout retains durable identities and vectors", OriginalPublicLayout);
         await DownloadsAsync();
         await CachedRepairAsync();
     }
@@ -61,6 +62,89 @@ internal static class PublicModelTests
         Program.Require(startup.Snapshot.State == "Ready" && startup.Snapshot.Sequence > failed && startup.Snapshot.Error == "",
             "Recovery did not publish a newer Ready snapshot.");
     }
+
+    internal static JsonDocument OriginalPublicDescriptor() => JsonDocument.Parse(typeof(PublicModelTests).Assembly
+        .GetManifestResourceStream("FuzzyFindAnything.Tests.Embedding.gemma2-original-public.json")!);
+
+    internal static string OriginalPublicRoutes(JsonElement descriptor) => JsonSerializer.Serialize(
+        new Dictionary<string, JsonElement> { ["Document"] = descriptor, ["Code"] = descriptor, ["Image"] = descriptor }, Protocol.Json);
+
+    private static void OriginalPublicLayout() => Program.Temporary(root =>
+    {
+        using var fixture = OriginalPublicDescriptor();
+        var saved = fixture.RootElement;
+        var space = saved.Deserialize<EmbeddingSpace>(Protocol.Json)!;
+        space.Validate();
+        void Identity(EmbeddingSpace value)
+        {
+            Program.Require(value.Fingerprint == saved.GetProperty("fingerprint").GetString() &&
+                value.IndexingFingerprint == saved.GetProperty("indexing_fingerprint").GetString() &&
+                value.Key == saved.GetProperty("key").GetString() && value.CacheKey == saved.GetProperty("cache_key").GetString() &&
+                value.Recipe!.DocumentFingerprint == saved.GetProperty("recipe").GetProperty("document_fingerprint").GetString() &&
+                value.Recipe.ContractFingerprint == saved.GetProperty("recipe").GetProperty("contract_fingerprint").GetString(),
+                "Reading the original layout changed an existing vector/cache identity.");
+        }
+        Identity(space);
+        var roundTrip = JsonSerializer.Deserialize<EmbeddingSpace>(JsonSerializer.Serialize(space, Protocol.Json), Protocol.Json)!;
+        roundTrip.Validate(); Identity(roundTrip);
+        Program.Require(space.Recipe!.NativeMultimodal == EmbeddingRecipes.PublicDefault.Recipe.Multimodal &&
+            space.FormatDocument("file{text}", "{title}") == "title: file{text} | text: {title}",
+            "The original layout did not resolve the reviewed native contract or treated source braces as templates.");
+        foreach (var recipe in new[]
+        {
+            space.Recipe with { Image = null },
+            space.Recipe with { Multimodal = new() },
+            space.Recipe with { Image = space.Recipe.Image! with { Processor = "unknown" } },
+            space.Recipe with { Image = space.Recipe.Image! with { Positions = "wrong" } },
+            space.Recipe with { DocumentTemplate = "{text}" },
+            space.Recipe with { ChunkTokens = 256 },
+            space.Recipe with { Queries = [new("default", "Retrieval query", "different: ")] }
+        })
+            Check.Throws<NotSupportedException>(() => (space with { Recipe = recipe }).Validate());
+        Check.Throws<NotSupportedException>(() => (space with { AssetFingerprint = new string('0', 64) }).Validate());
+        Check.Throws<NotSupportedException>(() => (space with { Revision = new string('1', 40) }).Validate());
+        var package = EmbeddingRecipes.PublicDefault;
+        var files = package.Files.Select(name => new ModelAssetFile(name, package.Sizes![name], package.Checksums[name])).ToArray();
+        var manifest = new CachedModel(space, files, package.SourceUrl, package.SourceRevision);
+        manifest.Validate();
+        var tokenizer = manifest.ResolveSource(files.Single(file => file.Name == "tokenizer.model"));
+        Program.Require(tokenizer.SourceUrl == ModelSelection.LegacyDefaultUrl && tokenizer.Revision == package.SourceRevision,
+            "Repairing the original cache would request its tokenizer from the wrong repository.");
+        Check.Throws<InvalidDataException>(() => (manifest with { SourceRevision = new string('1', 40) }).Validate());
+        Check.Throws<InvalidDataException>(() => (manifest with
+        {
+            Files = files.Select(file => file.Name == "tokenizer.model" ? file with { SourceUrl = package.ArtifactUrl } : file).ToArray()
+        }).Validate());
+
+        string data = Path.Combine(root, "index"), corpus = Path.Combine(root, "files");
+        Directory.CreateDirectory(corpus);
+        string routes = OriginalPublicRoutes(saved);
+        int folder;
+        using (var catalog = new Catalog(data, 1))
+        {
+            folder = catalog.AddFolder(corpus);
+            Program.Complete(catalog, Program.Enqueue(catalog, folder, Path.Combine(corpus, "existing.txt"), "synthetic saved content"));
+            catalog.SetSetting("embedding_routes", routes);
+            catalog.SetSetting("model_selection", JsonSerializer.Serialize(ModelSelection.Default, Protocol.Json));
+            catalog.SetSetting("schema_version", "6");
+            catalog.SetSetting("generation:" + space.Key, catalog.Setting("generation")!);
+        }
+        long generation = Check.Scalar(data, "SELECT value FROM settings WHERE key='generation'");
+        using (var catalog = new Catalog(data, 1))
+        {
+            Identity(catalog.SpaceFor("Document"));
+            Program.Require(catalog.Counts() == (1, 1) && catalog.Folders().Single().Id == folder &&
+                catalog.Search(Program.Vector(0), 1, 0.9, space).Single().Name == "existing.txt",
+                "The original-layout catalog lost its source ownership or persisted vectors.");
+            Program.Require(catalog.ReconfigureModels(new Dictionary<string, EmbeddingSpace>
+            { ["Document"] = space, ["Code"] = space, ["Image"] = space }, () => throw new IOException("Unexpected rewrite"),
+                selection: ModelSelection.Default, commitUnchanged: true).Length == 0,
+                "Opening the original contract reindexed unchanged files.");
+            Program.Require(catalog.Setting("embedding_routes") == routes &&
+                Check.Scalar(data, "SELECT value FROM settings WHERE key='generation'") == generation,
+                "Compatibility reading rewrote the original routes or vector generation.");
+        }
+    });
 
     private static void Onboarding() => Program.Temporary(root =>
     {

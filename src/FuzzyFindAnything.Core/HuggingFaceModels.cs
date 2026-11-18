@@ -19,7 +19,8 @@ public sealed record CachedModel(EmbeddingSpace Space, ModelAssetFile[] Files, s
         {
             var registered = EmbeddingRecipes.Find(Space.ModelUrl);
             if (registered is not null && (Space.Revision != registered.Revision || Space.ArtifactUrl != registered.ArtifactUrl ||
-                Space.Recipe.ContractFingerprint != registered.Recipe.ContractFingerprint || Space.Dimensions != registered.Dimensions ||
+                !Space.IsOriginalPublicFormat && Space.Recipe.ContractFingerprint != registered.Recipe.ContractFingerprint ||
+                Space.Dimensions != registered.Dimensions ||
                 Space.MaximumTokens != registered.MaximumTokens || Space.MemoryBytes < registered.MemoryBytes))
                 throw new InvalidDataException("The cached model recipe differs from the reviewed registry. Reacquire this model before applying it.");
             if (registered is not null && (registered.Files.Any(name => Files.Count(file => file.Name == name) != 1) ||
@@ -40,7 +41,8 @@ public sealed record CachedModel(EmbeddingSpace Space, ModelAssetFile[] Files, s
                 throw new InvalidDataException("The cache manifest has an invalid asset identity.");
             if (file.SourceUrl is not null) _ = ModelSelection.Canonical(file.SourceUrl);
         }
-        if (Space.Adapter == "gemma2-onnx")
+        if (Space.IsOriginalPublicFormat) OriginalGemma2Contract.ValidateManifest(this);
+        else if (Space.Adapter == "gemma2-onnx")
         {
             var approved = EmbeddingRecipes.PublicDefault;
             if (Space.Dimensions != 768 || Space.MemoryBytes < 3L << 30 ||
@@ -56,6 +58,8 @@ public sealed record CachedModel(EmbeddingSpace Space, ModelAssetFile[] Files, s
                 throw new NotSupportedException("This Gemma2 export does not use the qualified pinned SentencePiece tokenizer.");
         }
     }
+    internal ModelAssetFile ResolveSource(ModelAssetFile file) => Space.IsOriginalPublicFormat
+        ? OriginalGemma2Contract.ResolveSource(Space, file) : file;
     public void Verify(string directory, CancellationToken cancellation = default)
     {
         Validate();
@@ -237,7 +241,12 @@ public sealed class HuggingFaceModels(string cacheDirectory, string defaultDirec
         }
         long payload = files.Sum(file => file.Bytes);
         space = space with { MemoryBytes = Math.Max(space.MemoryBytes, payload + (512L << 20)) };
-        if (space.Adapter == "gemma2-onnx") space = space with { AssetIdentity = Gemma2ModelContract.AssetIdentity(files) };
+        if (saved?.IsOriginalPublicFormat == true)
+        {
+            saved.Validate();
+            space = saved with { MemoryBytes = Math.Max(saved.MemoryBytes, space.MemoryBytes) };
+        }
+        else if (space.Adapter == "gemma2-onnx") space = space with { AssetIdentity = Gemma2ModelContract.AssetIdentity(files) };
         space.Validate();
         if (saved is not null && space.Fingerprint != saved.Fingerprint)
             throw new InvalidDataException("The repaired assets differ from the saved embedding space; no route was changed.");
@@ -278,8 +287,11 @@ public sealed class HuggingFaceModels(string cacheDirectory, string defaultDirec
                 File.Copy(existing, target, true);
             }
             else
-                await DownloadAsync(AssetUri(file.SourceUrl ?? manifest.Space.ArtifactUrl ?? manifest.Space.ModelUrl,
-                    file.Revision ?? manifest.Space.Revision, file.Name), staging, file.Name, file.Bytes, file.Sha256, report, cancellation);
+            {
+                var source = manifest.ResolveSource(file);
+                await DownloadAsync(AssetUri(source.SourceUrl ?? manifest.Space.ArtifactUrl ?? manifest.Space.ModelUrl,
+                    source.Revision ?? manifest.Space.Revision, file.Name), staging, file.Name, file.Bytes, file.Sha256, report, cancellation);
+            }
         }
         manifest.Verify(staging, cancellation);
         await PublishAsync(manifest, staging, cancellation);
@@ -415,7 +427,7 @@ public sealed class HuggingFaceModels(string cacheDirectory, string defaultDirec
                 var registered = EmbeddingRecipes.Find(url);
                 if (model.Space.ModelUrl == url || registered is not null &&
                     model.Space.ArtifactUrl == registered.ArtifactUrl && model.Space.Revision == registered.Revision &&
-                    model.Space.Recipe?.ContractFingerprint == registered.Recipe.ContractFingerprint)
+                    (model.Space.IsOriginalPublicFormat || model.Space.Recipe?.ContractFingerprint == registered.Recipe.ContractFingerprint))
                     return model.Space with { ModelUrl = url };
             }
         throw new FileNotFoundException($"The selected model is not cached: {url}. Apply the model configuration while connected to Hugging Face.");

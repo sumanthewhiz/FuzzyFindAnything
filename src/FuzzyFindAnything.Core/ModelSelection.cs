@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Xml;
 using System.Xml.Linq;
+using System.Text.Json.Serialization;
 
 namespace FuzzyFindAnything.Core;
 
@@ -177,20 +178,22 @@ public sealed record ModelSelection(string Text, string Code, string Image,
 
 public sealed record EmbeddingSpace(string ModelUrl, string Revision, string Adapter, int Dimensions,
     int MaximumTokens, bool SupportsImages, long MemoryBytes, EmbeddingRecipe? Recipe = null, string? ArtifactUrl = null,
-    ExternalEmbeddingContract? External = null, string? AssetIdentity = null)
+    ExternalEmbeddingContract? External = null, string? AssetIdentity = null, string? AssetFingerprint = null)
 {
     public static EmbeddingSpace Default { get; } = new(ModelSelection.LegacyDefaultUrl, ModelContract.Revision,
         "embeddinggemma2", ModelContract.Dimensions, 8192, true, 3L << 30);
     public static EmbeddingSpace LegacyDefault => Default;
     public bool UsesLegacyHost => Adapter == "embeddinggemma2";
+    [JsonIgnore]
+    public bool IsOriginalPublicFormat => Recipe?.IsOriginalPublicFormat == true;
     public string FormatDocument(string title, string passage) =>
-        UsesLegacyHost || Recipe?.Multimodal?.DocumentFormat == "title-text-v1"
+        UsesLegacyHost || Recipe?.NativeMultimodal?.DocumentFormat == "title-text-v1"
             ? $"title: {FilePaths.ScalarPrefix(title, 160)} | text: {passage}" : passage;
     public string Fingerprint => External is { } external
         ? $"{ModelUrl}:{external.VectorIdentity}:{external.Device}:{external.LogicalDimensions}:{Dimensions}:zero-pad8:f32:cosine:external-v1"
         : Recipe is not null
         ? $"{ArtifactUrl ?? ModelUrl}@{Revision}:{Dimensions}:f32:{Recipe.DocumentFingerprint}:native-v2" +
-            (AssetIdentity is null ? "" : ":assets-" + AssetIdentity)
+            (IsOriginalPublicFormat ? ":assets:" + AssetFingerprint : AssetIdentity is null ? "" : ":assets-" + AssetIdentity)
         : this == Default ? ModelContract.Fingerprint :
         $"{ModelUrl}@{Revision}:{Dimensions}:f32:{Adapter}:v1";
     public string IndexingFingerprint => External is { } external
@@ -227,12 +230,15 @@ public sealed record EmbeddingSpace(string ModelUrl, string Revision, string Ada
         _ = ModelSelection.Canonical(ModelUrl);
         if (ArtifactUrl is not null) _ = ModelSelection.Canonical(ArtifactUrl);
         Recipe?.Validate(MaximumTokens);
+        if (IsOriginalPublicFormat) OriginalGemma2Contract.ValidateSpace(this);
+        else if (AssetFingerprint is not null)
+            throw new InvalidDataException("An original asset fingerprint requires its reviewed original public recipe.");
         if (!Regex.IsMatch(Revision, "^[0-9a-f]{40}$") || Dimensions is < 8 or > 4096 || Dimensions % 8 != 0 ||
             MaximumTokens is < 16 or > 8192 || MemoryBytes <= 0 ||
             Adapter is not ("embeddinggemma2" or "bert-mean" or "clip" or "native-text" or "gemma2-onnx") ||
             (Adapter is "native-text" or "gemma2-onnx") != (Recipe is not null) ||
-            Recipe is not null && SupportsImages != (Recipe.Multimodal is not null) ||
-            (Adapter == "gemma2-onnx") != (Recipe?.Multimodal is not null) ||
+            Recipe is not null && SupportsImages != (Recipe.NativeMultimodal is not null) ||
+            (Adapter == "gemma2-onnx") != (Recipe?.NativeMultimodal is not null) ||
             AssetIdentity is not null && !Regex.IsMatch(AssetIdentity, "^[0-9a-f]{64}$"))
             throw new InvalidDataException("The native embedding model descriptor is not supported.");
     }

@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
 namespace FuzzyFindAnything.Core;
@@ -21,8 +22,14 @@ public sealed record EmbeddingRecipe(
     int PaddingToken = 0, int MaximumBatchTokens = 4096, string Graph = "onnx/model.onnx",
     string InputIds = "input_ids", string AttentionMask = "attention_mask", string TokenTypeIds = "token_type_ids",
     string PositionIds = "position_ids", string TextQuery = "default", string CodeQuery = "default",
-    QueryProfile[]? Queries = null, MultimodalEmbeddingRecipe? Multimodal = null)
+    QueryProfile[]? Queries = null, MultimodalEmbeddingRecipe? Multimodal = null,
+    string? DocumentTemplate = null, OriginalImageRecipe? Image = null)
 {
+    [JsonIgnore]
+    public bool IsOriginalPublicFormat => Image is not null;
+    [JsonIgnore]
+    public MultimodalEmbeddingRecipe? NativeMultimodal => Multimodal ??
+        (IsOriginalPublicFormat ? OriginalGemma2Contract.NativeInterface : null);
     public IReadOnlyList<QueryProfile> QueryProfiles => Queries ?? [new("default", "Model default", "")];
     private string OriginalDocumentFingerprint => Hash(JsonSerializer.Serialize(new
     {
@@ -41,7 +48,8 @@ public sealed record EmbeddingRecipe(
         PositionIds,
         Version = 1
     }, Protocol.Json));
-    public string DocumentFingerprint => Multimodal is null ? OriginalDocumentFingerprint :
+    public string DocumentFingerprint => IsOriginalPublicFormat ? OriginalGemma2Contract.DocumentFingerprint(this) :
+        Multimodal is null ? OriginalDocumentFingerprint :
         Hash(OriginalDocumentFingerprint + ":" + JsonSerializer.Serialize(Multimodal, Protocol.Json));
     public string IndexingFingerprint => Hash($"{DocumentFingerprint}:{ChunkTokens}:overlap-128-chars-v1");
     public string ContractFingerprint => Hash(JsonSerializer.Serialize(new
@@ -69,13 +77,16 @@ public sealed record EmbeddingRecipe(
             throw new InvalidDataException("Unsupported native embedding recipe.");
         if (TextQuery != "choose") _ = Query(TextQuery);
         if (CodeQuery != "choose") _ = Query(CodeQuery);
-        if (Multimodal is not null && (Multimodal != new MultimodalEmbeddingRecipe() ||
+        if (IsOriginalPublicFormat) OriginalGemma2Contract.ValidateRecipe(this);
+        else if (!string.IsNullOrEmpty(DocumentTemplate))
+            throw new NotSupportedException("A saved document template requires its reviewed original image recipe.");
+        if (NativeMultimodal is not null && (NativeMultimodal != new MultimodalEmbeddingRecipe() ||
             Tokenizer != "gemma-sentencepiece" || Pooling != "pooled" || Output != "sentence_embedding" ||
             Padding != "right" || BeginningToken != 2 || EndToken != 1 || PaddingToken != 0 ||
             maximumTokens != 2048 || ChunkTokens != 512 || MaximumBatchTokens != 4096 ||
             Graph != "onnx/model.onnx" || InputIds != "input_ids" || AttentionMask != "attention_mask"))
             throw new NotSupportedException("The multimodal export differs from the qualified FP32 Gemma2 contract.");
-        if (Tokenizer == "gemma-sentencepiece" && Multimodal is null)
+        if (Tokenizer == "gemma-sentencepiece" && NativeMultimodal is null)
             throw new NotSupportedException("Gemma tokenization requires its reviewed multimodal contract.");
     }
 }

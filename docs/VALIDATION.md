@@ -32,6 +32,8 @@ Documentation images are renders of the current XAML with synthetic data. They s
 
 `public-model` (also in the core suite) covers the public/legacy identity boundary, supplemental tokenizer provenance, aliases, notice-independent vector identity, unfinished-onboarding eligibility, read-only catalog bindings and resumable transfer failures. Headless checks cover fresh public defaults, recovered readiness, stale snapshots and preservation of unrelated UI errors.
 
+The original public-recipe JSON fixture covers the older `image`/`document_template`/`asset_fingerprint` layout separately from the legacy custom export. Checks preserve its exact vector/cache identities and published vectors, retain ordinary no-op behavior, and reject incompatible templates, tensor bindings, preprocessing or asset identities. Extracted acceptance also indexes with that older cache layout, repairs a saved tokenizer partial offline, and restarts without replacing settings/routes or reindexing committed files.
+
 After a solution build, explicitly rebuild the harness with its self-contained x64 runtime:
 
 ```powershell

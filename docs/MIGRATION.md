@@ -46,6 +46,12 @@ The new XML and catalog routes are committed only after verified acquisition and
 
 Customized selections, committed legacy routes, nonempty indexes, prepared passage progress and provisioned legacy installations are excluded. To migrate an initialized legacy installation deliberately, select the explicit community URL and Apply; only the affected representations are rebuilt. When XML is missing but a catalog exists, its saved binding is inspected read-only rather than replaced with a fresh default.
 
+### Earlier public-ONNX recipe layout
+
+Initialized public-model catalogs may use the earlier `image`, `document_template` and `asset_fingerprint` descriptor fields. The loader recognizes that reviewed pinned contract and maps its tensor bindings to the native adapter while retaining its original vector fingerprint, cache key and index directory. It does not replace these with the newer descriptor's identities or reindex unchanged files. Supplemental tokenizer repair still uses the pinned Google source even when the older manifest has no per-file source fields.
+
+Unknown or altered processing contracts remain rejected. Do not hand-edit a catalog or clear its database to resolve a descriptor-layout error; use a build containing this compatibility reader.
+
 Native graph loading is attempted only after checksums, model identity and generation agree. A missing, incompatible or damaged graph is reconstructed from SQLite vectors without re-embedding completed content. The native graph format is not a reason to clear the catalog or folder list.
 
 ## Trial without touching the original installation

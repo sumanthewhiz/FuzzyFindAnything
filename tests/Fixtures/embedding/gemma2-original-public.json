@@ -1,0 +1,53 @@
+{
+  "model_url": "https://huggingface.co/onnx-community/embeddinggemma-2-ONNX",
+  "revision": "daa72c51243991dfcaf9f9137d2c573d8f7790c0",
+  "adapter": "gemma2-onnx",
+  "dimensions": 768,
+  "maximum_tokens": 2048,
+  "supports_images": true,
+  "memory_bytes": 3221225472,
+  "recipe": {
+    "id": "gemma2-public-f32-v1",
+    "tokenizer": "gemma-sentencepiece",
+    "pooling": "pooled",
+    "output": "sentence_embedding",
+    "chunk_tokens": 512,
+    "document_prefix": "",
+    "padding": "right",
+    "beginning_token": 2,
+    "end_token": 1,
+    "padding_token": 0,
+    "maximum_batch_tokens": 4096,
+    "graph": "onnx/model.onnx",
+    "input_ids": "input_ids",
+    "attention_mask": "attention_mask",
+    "token_type_ids": "token_type_ids",
+    "position_ids": "position_ids",
+    "text_query": "default",
+    "code_query": "default",
+    "queries": [
+      { "id": "default", "label": "Retrieval query", "prefix": "task: search result | query: " }
+    ],
+    "document_template": "title: {title} | text: {text}",
+    "image": {
+      "graph": "onnx/vision_encoder.onnx",
+      "output": "image_features",
+      "processor": "gemma4-patches280-v1",
+      "pixels": "pixel_values",
+      "positions": "pixel_position_ids",
+      "features": "image_features",
+      "video_features": "video_features",
+      "audio_features": "audio_features"
+    },
+    "document_fingerprint": "faccfaabfea9329914c4dc4797313ca260dc483b0cf32ca880afa9b23b65ab9a",
+    "indexing_fingerprint": "66473ceb1a23f3061356f8b9b2d6a57b5ab2810357b60b2ab0eb50f483438379",
+    "contract_fingerprint": "f1656ba50b1558f2ddbc423694b633cbf7e6805403afa870214486ec19cc7f3b"
+  },
+  "artifact_url": "https://huggingface.co/onnx-community/embeddinggemma-2-ONNX",
+  "external": null,
+  "asset_fingerprint": "2afec8fb1d1d0f8833dcd8b64cbaed0bff15309d389cd0e83c36a520338dabd8",
+  "fingerprint": "https://huggingface.co/onnx-community/embeddinggemma-2-ONNX@daa72c51243991dfcaf9f9137d2c573d8f7790c0:768:f32:faccfaabfea9329914c4dc4797313ca260dc483b0cf32ca880afa9b23b65ab9a:native-v2:assets:2afec8fb1d1d0f8833dcd8b64cbaed0bff15309d389cd0e83c36a520338dabd8",
+  "indexing_fingerprint": "https://huggingface.co/onnx-community/embeddinggemma-2-ONNX@daa72c51243991dfcaf9f9137d2c573d8f7790c0:768:f32:faccfaabfea9329914c4dc4797313ca260dc483b0cf32ca880afa9b23b65ab9a:native-v2:assets:2afec8fb1d1d0f8833dcd8b64cbaed0bff15309d389cd0e83c36a520338dabd8:2048:66473ceb1a23f3061356f8b9b2d6a57b5ab2810357b60b2ab0eb50f483438379",
+  "cache_key": "405d07da6580eae34b5622f9",
+  "key": "53c8e15e407ff265deaf4905"
+}

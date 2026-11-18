@@ -66,6 +66,8 @@ internal static class FirstRunAcquisitionTests
             ModelSelection.LegacyDefaultUrl, "The acquired package lost supplemental-file provenance.");
         long generation = Check.Scalar(data, "SELECT value FROM settings WHERE key='generation'");
         await OfflineRestartAsync(package, missingLegacy, data, generation);
+        await OriginalPublicRestartAsync(package, missingLegacy, modelDirectory, corpus, Path.Combine(root, "original-public"));
+        Check.DeleteTemporary(Path.Combine(root, "original-public"));
         await RetryAsync(package, missingLegacy, modelCache, corpus, Path.Combine(root, "retry"));
         Check.DeleteTemporary(Path.Combine(root, "retry"));
         await StartupCommitRetryAsync(package, missingLegacy, modelCache, corpus, Path.Combine(root, "commit-retry"));
@@ -120,6 +122,54 @@ internal static class FirstRunAcquisitionTests
             !engine.Progress.Any(value => value.Stage.StartsWith("Downloading", StringComparison.Ordinal)),
             "An offline restart downloaded assets or reindexed committed files.");
         await RetrievalAsync(engine);
+    }
+
+    private static async Task OriginalPublicRestartAsync(string package, string legacy, string modelDirectory, string corpus, string data)
+    {
+        using var fixture = PublicModelTests.OriginalPublicDescriptor();
+        var space = fixture.RootElement.Deserialize<EmbeddingSpace>(Protocol.Json)!;
+        var definition = EmbeddingRecipes.PublicDefault;
+        string cache = Path.Combine(data, "models", space.CacheKey);
+        CopyCache(modelDirectory, cache);
+        File.WriteAllText(Path.Combine(cache, CachedModel.ManifestName), JsonSerializer.Serialize(new
+        {
+            Space = fixture.RootElement,
+            Files = definition.Files.Select(name => new { Name = name, Bytes = definition.Sizes![name], Sha256 = definition.Checksums[name] }),
+            SourceUrl = definition.SourceUrl,
+            SourceRevision = definition.SourceRevision
+        }, Protocol.Json));
+        using (var update = new ModelSettingsUpdate(data, ModelSelection.Default)) { update.Publish(); update.Commit(); }
+        string routes = PublicModelTests.OriginalPublicRoutes(fixture.RootElement);
+        int folder;
+        using (var catalog = new Catalog(data, 1))
+        {
+            folder = catalog.AddFolder(corpus);
+            catalog.SetSetting("embedding_routes", routes);
+            catalog.SetSetting("model_selection", JsonSerializer.Serialize(ModelSelection.Default, Protocol.Json));
+            catalog.SetSetting("schema_version", "6");
+            catalog.SetSetting("generation:" + space.Key, catalog.Setting("generation")!);
+        }
+        string xml = FilePaths.Hash(Path.Combine(data, "settings.xml"));
+        await using (var engine = new EngineProcess(package, legacy, data, offline: true, isolatedRuntime: true))
+        {
+            await engine.ReadyAsync();
+            await IndexedAsync(engine);
+            await RetrievalAsync(engine);
+            Program.Require(engine.Status!.Folders.Single().Id == folder, "Original public scope was replaced.");
+        }
+        long generation = Check.Scalar(data, "SELECT value FROM settings WHERE key='generation'");
+        string partial = Path.Combine(data, "models", ".acquiring-" + space.CacheKey, "tokenizer.model.partial");
+        Directory.CreateDirectory(Path.GetDirectoryName(partial)!);
+        File.Move(Path.Combine(cache, "tokenizer.model"), partial);
+        await OfflineRestartAsync(package, legacy, data, generation);
+        using var database = Check.Open(data, readOnly: true);
+        using var command = database.CreateCommand();
+        command.CommandText = "SELECT value FROM settings WHERE key='embedding_routes'";
+        Program.Require((string)command.ExecuteScalar()! == routes && FilePaths.Hash(Path.Combine(data, "settings.xml")) == xml &&
+            Directory.Exists(Path.Combine(data, "model-indexes", space.Key)) &&
+            File.Exists(Path.Combine(cache, "tokenizer.model")) && !File.Exists(partial),
+            "Original public startup/repair changed durable identities, settings or its existing index.");
+        Console.WriteLine("PASS original public recipe/cache startup, native retrieval, offline repair and restart without reindexing");
     }
 
     private static async Task RetryAsync(string package, string legacy, string cache, string corpus, string data)
@@ -219,6 +269,7 @@ internal static class FirstRunAcquisitionTests
 
     internal static async Task<object> ParityAsync(string package, string directory, EmbeddingSpace space, string fixtures)
     {
+        package = Path.GetFullPath(package); directory = Path.GetFullPath(directory); fixtures = Path.GetFullPath(fixtures);
         var memory = new ModelMemoryCoordinator(Console.WriteLine);
         using var admission = await memory.AcquireAsync(null, space.MemoryBytes, default);
         await using var client = await InferenceClient.StartAsync(
