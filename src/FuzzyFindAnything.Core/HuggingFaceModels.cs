@@ -494,7 +494,6 @@ public sealed class HuggingFaceModels(string cacheDirectory, string defaultDirec
         if (File.Exists(target) && expected > 0 && new FileInfo(target).Length == expected &&
             expectedHash is not null && ModelAssets.Hash(target, cancellation) == expectedHash)
             return new(name, expected, expectedHash);
-        report($"Downloading {name}");
         string partial = target + ".partial";
         long offset = File.Exists(partial) ? new FileInfo(partial).Length : 0;
         if (expected > 0 && offset == expected && expectedHash is not null && ModelAssets.Hash(partial, cancellation) == expectedHash)
@@ -510,6 +509,7 @@ public sealed class HuggingFaceModels(string cacheDirectory, string defaultDirec
         cancellation = deadline.Token;
         using var request = new HttpRequestMessage(HttpMethod.Get, uri);
         if (offset > 0) request.Headers.Range = new RangeHeaderValue(offset, null);
+        report($"Downloading {name}");
         using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellation);
         response.EnsureSuccessStatusCode();
         bool ranged = response.StatusCode == HttpStatusCode.PartialContent;

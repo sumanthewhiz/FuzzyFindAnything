@@ -117,10 +117,12 @@ internal static class FirstRunAcquisitionTests
         await using var engine = new EngineProcess(package, legacy, data, offline: true, isolatedRuntime: true);
         await engine.ReadyAsync();
         await IndexedAsync(engine);
-        Program.Require(engine.Status!.InferenceBatches.CompletedInputs == 0 &&
-            Check.Scalar(data, "SELECT value FROM settings WHERE key='generation'") == generation &&
-            !engine.Progress.Any(value => value.Stage.StartsWith("Downloading", StringComparison.Ordinal)),
-            "An offline restart downloaded assets or reindexed committed files.");
+        long inputs = engine.Status!.InferenceBatches.CompletedInputs;
+        long refreshed = Check.Scalar(data, "SELECT value FROM settings WHERE key='generation'");
+        string[] downloads = engine.Progress.Where(value => value.Stage.StartsWith("Downloading", StringComparison.Ordinal))
+            .Select(value => value.Stage).ToArray();
+        Program.Require(inputs == 0 && refreshed == generation && downloads.Length == 0,
+            $"Offline restart changed committed work or reported a download: inputs={inputs}, generation={generation}->{refreshed}, stages={string.Join("; ", downloads)}.");
         await RetrievalAsync(engine);
     }
 

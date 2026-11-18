@@ -219,13 +219,16 @@ internal static class PublicModelTests
         byte[] bytes = Encoding.UTF8.GetBytes("resumable public model test bytes");
         string hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
         string target = Path.Combine(root, "asset.bin"), partial = target + ".partial";
+        var stages = new List<string>();
         Task<ModelAssetFile> Download(Uri uri, CancellationToken token = default) =>
-            HuggingFaceModels.DownloadAsync(uri, root, "asset.bin", bytes.Length, hash, _ => { }, token);
+            HuggingFaceModels.DownloadAsync(uri, root, "asset.bin", bytes.Length, hash, stages.Add, token);
         var unavailable = new Uri("http://127.0.0.1:9/asset");
         await File.WriteAllBytesAsync(partial, bytes);
         await Download(unavailable);
         await Download(unavailable);
         Program.Require(File.ReadAllBytes(target).SequenceEqual(bytes), "Complete partial promotion/offline reuse failed.");
+        Program.Require(stages.All(stage => !stage.StartsWith("Downloading", StringComparison.Ordinal)),
+            "Verified offline partial promotion was reported as a network download.");
         File.Delete(target);
         await File.WriteAllBytesAsync(partial, bytes[..5]);
         await using (var server = new AssetTests.Server(request =>
