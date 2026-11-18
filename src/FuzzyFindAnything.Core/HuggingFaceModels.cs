@@ -97,19 +97,26 @@ public sealed class HuggingFaceModels(string cacheDirectory, string defaultDirec
 
     public string DirectoryFor(EmbeddingSpace space) => space.UsesLegacyHost ? defaultDirectory : Path.Combine(cacheDirectory, space.CacheKey);
 
-    public async Task<ModelRequirement> InspectAsync(string kind, string url, CancellationToken cancellation)
+    public async Task<ModelRequirement> InspectAsync(string kind, string url, CancellationToken cancellation,
+        EmbeddingSpace? saved = null)
     {
         url = ModelSelection.Canonical(url);
         try
         {
-            EmbeddingSpace? cached;
-            try { cached = FindCached(url); }
-            catch (FileNotFoundException) { cached = null; }
+            saved?.Validate();
+            if (saved is not null && saved.ModelUrl != url)
+                throw new InvalidDataException("The saved descriptor does not match the inspected model.");
+            EmbeddingSpace? cached = saved;
+            if (cached is null)
+            {
+                try { cached = FindCached(url); }
+                catch (FileNotFoundException) { }
+            }
             var space = cached ?? (await DiscoverAsync(url, _ => { }, cancellation)).Space;
             if (kind == "Image" && !space.SupportsImages)
                 throw new NotSupportedException("This model provides text embeddings, not direct image embeddings. The image-understanding pipeline requires a separate adapter.");
             var recipe = space.Recipe;
-            var entry = EmbeddingRecipes.Find(url);
+            var entry = space.UsesLegacyHost ? null : EmbeddingRecipes.Find(url);
             string details = recipe is null ? $"{space.Dimensions} dimensions. Existing native tokenizer and preprocessing are automatic." :
                 $"{recipe.Id}; {space.Dimensions} dimensions; {space.MaximumTokens} input tokens; {recipe.Pooling} pooling. " +
                 $"Native export: {space.ArtifactUrl ?? space.ModelUrl}@{space.Revision}. Tokenizer and query formatting are automatic. " +

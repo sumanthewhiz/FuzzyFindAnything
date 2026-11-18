@@ -109,6 +109,10 @@ internal static class PublicModelTests
             Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(), space.ModelUrl, space.Revision);
         var manifest = new CachedModel(space, [asset]);
         var cache = new HuggingFaceModels(Path.Combine(root, "models"), Path.Combine(root, "missing-legacy"));
+        var legacy = await cache.InspectAsync("Image", ModelSelection.LegacyDefaultUrl, default, EmbeddingSpace.LegacyDefault);
+        Program.Require(legacy.State == "Available" && legacy.IsSimple && legacy.Error is null &&
+            !legacy.Details.Contains(EmbeddingRecipes.PublicDefault.ArtifactUrl, StringComparison.Ordinal),
+            "Offline inspection replaced an initialized legacy descriptor with the public export.");
         string directory = cache.DirectoryFor(space);
         Directory.CreateDirectory(directory);
         string metadata = Path.Combine(directory, CachedModel.ManifestName);

@@ -151,9 +151,16 @@ public sealed class ModelManager : IEmbeddings
         }
         return new(selection, requirements.ToArray());
     }
-    private Task<ModelRequirement> InspectBindingAsync(string kind, string reference, CancellationToken cancellation) =>
-        ModelReference.Parse(reference) is ProviderModelReference provider
-            ? external.InspectAsync(kind, provider, cancellation) : cache.InspectAsync(kind, reference, cancellation);
+    private Task<ModelRequirement> InspectBindingAsync(string kind, string reference, CancellationToken cancellation)
+    {
+        if (ModelReference.Parse(reference) is ProviderModelReference provider)
+            return external.InspectAsync(kind, provider, cancellation);
+        EmbeddingSpace? saved;
+        lock (gate) saved = routes.Values.FirstOrDefault(space => space.ModelUrl == reference);
+        if (saved is null && catalog?.HasCommittedModels == true)
+            saved = catalog.Spaces.FirstOrDefault(space => space.ModelUrl == reference);
+        return cache.InspectAsync(kind, reference, cancellation, saved);
+    }
 
     public Task<ProviderCatalog> ProviderCatalogAsync(string provider, string? version, bool refresh, CancellationToken cancellation) =>
         external.CatalogAsync(provider, version, refresh, cancellation);
