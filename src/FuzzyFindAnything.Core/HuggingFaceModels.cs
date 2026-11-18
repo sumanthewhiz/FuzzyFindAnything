@@ -87,10 +87,11 @@ public sealed class HuggingFaceModels(string cacheDirectory, string defaultDirec
     private const long MaximumAssetBytes = 4L * 1024 * 1024 * 1024;
     private static readonly HttpClient client = new(new HttpClientHandler
     {
-        AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
+        AutomaticDecompression = DecompressionMethods.None,
         SslProtocols = System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13
     })
     { Timeout = TimeSpan.FromMinutes(20) };
+    static HuggingFaceModels() => client.DefaultRequestHeaders.AcceptEncoding.Add(new StringWithQualityHeaderValue("identity"));
 
     private sealed record Candidate(EmbeddingSpace Space, string ArtifactUrl, JsonElement[] Assets,
         List<string> Names, RegisteredEmbedding? Registered);

@@ -147,6 +147,9 @@ internal static class PublicModelTests
         await using (var server = new AssetTests.Server(request =>
         {
             Program.Require(request.Contains("Range: bytes=5-"), "The saved resume offset was ignored.");
+            Program.Require(request.Contains("Accept-Encoding: identity", StringComparison.OrdinalIgnoreCase) &&
+                !request.Contains("gzip", StringComparison.OrdinalIgnoreCase),
+                "Compressed transfer negotiation would make saved asset-byte offsets ambiguous.");
             return ("206 Partial Content", $"Content-Range: bytes 5-{bytes.Length - 1}/{bytes.Length}\r\n", bytes[5..]);
         })) await Download(server.BaseUri);
         File.Delete(target); await File.WriteAllBytesAsync(partial, bytes[..7]);
