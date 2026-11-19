@@ -12,6 +12,7 @@
 [**Quickstart**](QUICKSTART.md) ·
 [**Download binaries**](QUICKSTART.md#1-download-the-right-package) ·
 [Architecture](docs/ARCHITECTURE.md) ·
+[Model compatibility](docs/MODEL-COMPATIBILITY.md) ·
 [Chunking](docs/CHUNKING.md) ·
 [Upgrade and rollback](docs/MIGRATION.md) ·
 [Licenses and model terms](THIRD-PARTY-NOTICES.md) ·
@@ -209,6 +210,7 @@ Packages are unsigned. Checksums detect altered downloads but do not replace cod
 |---|---|
 | [Quickstart](QUICKSTART.md) | Packages, native model provisioning and a first search |
 | [Architecture and operations](docs/ARCHITECTURE.md) | Process boundaries, model contract, queue, monitoring, settings, logs and maintenance |
+| [Model compatibility](docs/MODEL-COMPATIBILITY.md) | November 2026 model catalogue, exact URLs, supported roles, limits and model terms |
 | [Migration and rollback](docs/MIGRATION.md) | Preserving existing scope, vectors, queued work and preferences |
 | [Validation](docs/VALIDATION.md) | Acceptance commands, evidence and reproducible test coverage |
 | [Licenses and model terms](THIRD-PARTY-NOTICES.md) | MIT application scope, dependency notices and upstream artifact terms |

@@ -6,7 +6,7 @@ Release packages include the .NET and native runtimes. No separate Python, .NET,
 
 FuzzyFindAnything 2.0 is authored by **Suman Ghosh**. Read the [chunking guide](docs/CHUNKING.md) for how app-owned boundaries differ from model tokenization, including EmbeddingGemma2.
 
-[Project](README.md) · [Architecture](docs/ARCHITECTURE.md) · [Existing-user migration](docs/MIGRATION.md)
+[Project](README.md) · [Architecture](docs/ARCHITECTURE.md) · [Model compatibility](docs/MODEL-COMPATIBILITY.md) · [Existing-user migration](docs/MIGRATION.md)
 
 **On this page:** [Download](#1-download-the-right-package) · [Prepare models](#2-prepare-models) · [First search](#3-launch-and-index-a-small-folder) · [Microsoft employees / PSAPI](#microsoft-employees-psapi-models) · [Troubleshooting](#troubleshooting)
 
@@ -192,6 +192,8 @@ The application does not register automatic startup at sign-in. Model-process co
 If the tray icon is not immediately visible, open Windows' notification-area overflow menu beside the clock.
 
 ## Change embedding models
+
+Use the [Model compatibility reference](docs/MODEL-COMPATIBILITY.md) for the November 2026 catalogue, exact model-card URLs, role assignments and qualification requirements.
 
 Open **Model configuration** and enter HTTPS model-card URLs independently for **Documents / text**, **Source code** and **Images**. The built-in default is `https://huggingface.co/onnx-community/embeddinggemma-2-ONNX`. Existing initialized bindings are retained. The public URL is also the explicit migration choice for an established legacy installation.
 
