@@ -124,7 +124,14 @@ public sealed class ExternalModels(string cacheDirectory, Action<string> log, st
         Action<string> progress, CancellationToken cancellation, ModelMemoryCoordinator? memory = null)
     {
         string directory = DirectoryFor(reference, options.Device);
-        var registration = Registration(reference.Provider);
+        ProviderRegistration registration;
+        try { registration = Registration(reference.Provider); }
+        catch (FileNotFoundException) when (reference.Provider == "microsoft" && registrationDirectory is null)
+        {
+            progress("Preparing the authorized optional local provider");
+            if (!await ProviderBootstrap.InstallAsync(DefaultRegistrationDirectory, log, cancellation)) throw;
+            registration = Registration(reference.Provider);
+        }
         if (memory is not null && registration.ProtocolVersion < 2)
             throw new NotSupportedException("Update the approved local model provider to support coordinated model memory before applying this selection.");
         var result = await RequestAsync<PreparedProviderModel>(registration, "prepare",

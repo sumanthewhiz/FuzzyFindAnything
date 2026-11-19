@@ -72,7 +72,7 @@ internal static class ProviderTests
         Directory.CreateDirectory(corpus);
         var routes = new Dictionary<string, EmbeddingSpace>
         { ["Document"] = space, ["Code"] = EmbeddingSpace.Default, ["Image"] = EmbeddingSpace.Default };
-        var selection = new ModelSelection(Reference.Key, ModelSelection.DefaultUrl, ModelSelection.DefaultUrl);
+        var selection = new ModelSelection(Reference.Key, ModelSelection.LegacyDefaultUrl, ModelSelection.LegacyDefaultUrl);
         long imageId;
         using (var catalog = new Catalog(data, 1))
         {
@@ -93,7 +93,7 @@ internal static class ProviderTests
             Program.Require(catalog.Spaces.Any(value => value.External is { LogicalDimensions: 100 } && value.Dimensions == 104) &&
                 catalog.Search(padded, 1, 0.5, space, ["Document"]).Count == 1, "The external vector contract did not survive restart.");
             var restored = routes.ToDictionary(pair => pair.Key, _ => EmbeddingSpace.Default);
-            catalog.ReconfigureModels(restored, () => { }, selection: ModelSelection.Default);
+            catalog.ReconfigureModels(restored, () => { }, selection: ModelSelection.LegacyDefault);
             catalog.ConfigureChunkingProfiles(new Dictionary<string, string>
             { ["Document"] = ChunkingProfiles.Documents, ["Code"] = ChunkingProfiles.Code });
             Program.Require(catalog.Setting("schema_version") == "10" &&

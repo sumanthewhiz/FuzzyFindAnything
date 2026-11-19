@@ -5,6 +5,7 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using FuzzyFindAnything.Core;
 
 namespace FuzzyFindAnything.Tools;
 
@@ -21,6 +22,7 @@ public static class ReleasePackage
     [
         "FuzzyFindAnything.exe", "FuzzyFindAnything.dll", "FuzzyFindAnything.runtimeconfig.json", "runtime.json",
         "Get-Model.ps1", "Reset-Index.ps1", "QUICKSTART.md", "THIRD-PARTY-NOTICES.txt", "release-manifest.json", "model-manifest.json",
+        "public-model-manifest.json",
         "engine/FuzzyFindAnything.Engine.exe", "engine/ffa_diskann.dll", "engine/libiomp5md.dll", "engine/e_sqlite3.dll",
         "inference/FuzzyFindAnything.Inference.exe", "inference/onnxruntime.dll",
         "hf-inference/FuzzyFindAnything.HuggingFaceInference.exe", "hf-inference/onnxruntime.dll", "hf-inference/DirectML.dll",
@@ -53,6 +55,7 @@ public static class ReleasePackage
                 leaf.EndsWith(".pyd", StringComparison.OrdinalIgnoreCase) || leaf.EndsWith(".onnx", StringComparison.OrdinalIgnoreCase) ||
                 leaf.EndsWith(".onnxe", StringComparison.OrdinalIgnoreCase) || leaf.EndsWith(".nupkg", StringComparison.OrdinalIgnoreCase) ||
                 leaf.EndsWith(".onnx.data", StringComparison.OrdinalIgnoreCase) || leaf.EndsWith(".safetensors", StringComparison.OrdinalIgnoreCase) ||
+                leaf.EndsWith(".onnx_data", StringComparison.OrdinalIgnoreCase) || leaf is "tokenizer.model" or "tokenizer.json" ||
                 leaf.StartsWith("python", StringComparison.OrdinalIgnoreCase) ||
                 leaf.EndsWith(".log", StringComparison.OrdinalIgnoreCase) || leaf.EndsWith(".jsonl", StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException("Development, user, model or interpreter payload found: " + name);
@@ -69,10 +72,25 @@ public static class ReleasePackage
             if (!configuration.RootElement.TryGetProperty(field.Key, out var value) || value.GetString() != field.Value)
                 throw new InvalidDataException("Runtime paths must be relative and match the supported deployment layout.");
         using var manifest = ReadJson(entries["release-manifest.json"]);
+        using (var embedded = typeof(EmbeddingRecipes).Assembly.GetManifestResourceStream("FuzzyFindAnything.PublicModel.json")!)
+        using (var packaged = entries["public-model-manifest.json"].Open())
+            if (!SHA256.HashData(embedded).SequenceEqual(SHA256.HashData(packaged)))
+                throw new InvalidDataException("The packaged public-model manifest differs from the embedded runtime contract.");
+        if (entries.TryGetValue("legacy-model-source.json", out var sourceEntry))
+        {
+            using var source = ReadJson(sourceEntry);
+            if (!Uri.TryCreate(source.RootElement.GetProperty("base_uri").GetString(), UriKind.Absolute, out var uri) ||
+                uri.Scheme != "https" || uri.UserInfo.Length > 0 || uri.Query.Length > 0 || uri.Fragment.Length > 0)
+                throw new InvalidDataException("The optional model source is unsafe.");
+        }
         var root = manifest.RootElement;
         if (root.GetProperty("schema_version").GetInt32() != 2 || root.GetProperty("runtime_id").GetString() != runtime ||
             root.GetProperty("version").GetString() != version || root.GetProperty("model").GetProperty("bundled").GetBoolean())
             throw new InvalidDataException("Release/model identity differs from the requested package.");
+        if (root.GetProperty("model").GetProperty("id").GetString() != ModelSelection.DefaultUrl ||
+            root.GetProperty("model").GetProperty("revision").GetString() != EmbeddingRecipes.PublicDefault.Revision ||
+            root.GetProperty("source_repository").GetString() != "https://github.com/sumanthewhiz/FuzzyFindAnything")
+            throw new InvalidDataException("Release provenance or public-model revision differs from this application.");
         if (!root.GetProperty("packages").EnumerateArray().Any(value => value.GetProperty("name").GetString() == "Microsoft.DiskANN"))
             throw new InvalidDataException("The native component inventory is incomplete.");
         var listed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -110,6 +128,7 @@ public static class ReleasePackage
     {
         string root = Path.Combine(Path.GetTempPath(), "ffa relocated-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
+        Exception? primary = null;
         try
         {
             ZipFile.ExtractToDirectory(archive, root);
@@ -126,13 +145,22 @@ public static class ReleasePackage
             if (Directory.Exists(Path.Combine(root, "missing-model"))) throw new InvalidDataException("Verification created an empty model directory.");
             Console.WriteLine("Relocated native runtime smoke passed with Python absent from PATH.");
         }
+        catch (Exception error) { primary = error; throw; }
         finally
         {
             for (int attempt = 0; Directory.Exists(root); attempt++)
             {
                 try { Directory.Delete(root, true); }
-                catch (Exception error) when (attempt < 60 && error is IOException or UnauthorizedAccessException)
-                { await Task.Delay(500, CancellationToken.None); }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+                {
+                    if (attempt >= 60)
+                    {
+                        if (primary is null) throw;
+                        Console.Error.WriteLine($"Cleanup also failed at {root}: {error.Message}");
+                        break;
+                    }
+                    await Task.Delay(500, CancellationToken.None);
+                }
             }
         }
     }

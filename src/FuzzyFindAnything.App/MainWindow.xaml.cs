@@ -22,6 +22,7 @@ public partial class MainWindow : Window
     private bool updatingAppearance;
     private bool updatingSimilarity;
     private bool engineStarted;
+    private bool initialModelsLoaded;
     private CancellationTokenSource thumbnailLifetime = new();
     private CancellationTokenSource? searchLifetime;
     private long searchGeneration;
@@ -44,6 +45,14 @@ public partial class MainWindow : Window
         engine.StatusChanged += status => Dispatcher.InvokeAsync(() =>
         {
             viewModel.Apply(status);
+            if (!initialModelsLoaded && status.ModelState == "Ready" && status.Models is { } models)
+            {
+                initialModelsLoaded = true;
+                settings.Reload();
+                viewModel.ApplySettings(settings.Current, settings.FilePath);
+                viewModel.ApplyModels(models.Selection);
+                _ = InspectModelsAsync();
+            }
             if (!modelInspectionStarted) { modelInspectionStarted = true; _ = InitializeModelSourcesAsync(); }
         });
         engine.StartupChanged += status => Dispatcher.InvokeAsync(() => viewModel.ApplyStartup(status));
@@ -159,7 +168,7 @@ public partial class MainWindow : Window
         try
         {
             var selection = viewModel.DraftModels;
-            if (selection == settings.Current.ModelSelection.Normalize()) return;
+            if (selection == settings.Current.ModelSelection.Normalize() && viewModel.ModelState == "Ready") return;
             viewModel.Error = "";
             viewModel.ConfigurationBusy = true;
             viewModel.BeginModelConfiguration();

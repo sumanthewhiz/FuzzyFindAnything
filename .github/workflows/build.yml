@@ -18,7 +18,7 @@ jobs:
   build:
     name: Build ${{ matrix.runtime }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -32,6 +32,8 @@ jobs:
         shell: pwsh
     env:
       DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_CLI_USE_MSBUILD_SERVER: '0'
+      MSBUILDDISABLENODEREUSE: '1'
       NATIVE_MODEL_BASE_URI: ${{ vars.NATIVE_MODEL_BASE_URI }}
     steps:
       - name: Check out source
@@ -55,9 +57,6 @@ jobs:
           if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -cne "v$version") {
             throw "Release tag must match Directory.Build.props: v$version."
           }
-          if ($env:GITHUB_REF_TYPE -eq 'tag' -and -not $env:NATIVE_MODEL_BASE_URI) {
-            throw 'Tagged native releases require an approved NATIVE_MODEL_BASE_URI for model parity validation.'
-          }
           "value=$version" >> $env:GITHUB_OUTPUT
 
       - name: Build pinned native dependencies and utilities
@@ -72,7 +71,7 @@ jobs:
 
       - name: Check .NET build and formatting
         run: |
-          dotnet build .\FuzzyFindAnything.sln -c Release --nologo
+          dotnet build .\FuzzyFindAnything.sln -c Release -p:UseSharedCompilation=false --nologo
           if ($LASTEXITCODE -ne 0) { throw 'The solution build failed.' }
           dotnet format .\FuzzyFindAnything.sln --no-restore --verify-no-changes --verbosity quiet
           if ($LASTEXITCODE -ne 0) { throw 'Formatting checks failed.' }
@@ -92,7 +91,19 @@ jobs:
         env:
           RELEASE_VERSION: ${{ steps.version.outputs.value }}
           RELEASE_RUNTIME: ${{ matrix.runtime }}
-        run: .\Build-Release.ps1 -SkipSetup -RuntimeIdentifier $env:RELEASE_RUNTIME -Version $env:RELEASE_VERSION
+        run: .\Build-Release.ps1 -SkipSetup -RuntimeIdentifier $env:RELEASE_RUNTIME -Version $env:RELEASE_VERSION -ModelBaseUri $env:NATIVE_MODEL_BASE_URI
+
+      - name: Require extracted public cold-start, recovery and reference acceptance
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.value }}
+          RELEASE_RUNTIME: ${{ matrix.runtime }}
+        run: |
+          $archive = ".\artifacts\releases\FuzzyFindAnything-v$env:RELEASE_VERSION-$env:RELEASE_RUNTIME.zip"
+          # Rebuild explicitly: the solution build can leave a framework-dependent runtimeconfig.
+          dotnet run --project .\tests\FuzzyFindAnything.NativeTests\FuzzyFindAnything.NativeTests.csproj -c Release `
+            -r win-x64 -p:PlatformTarget=x64 -p:SelfContained=true -p:UseSharedCompilation=false -- `
+            first-run-acquisition $archive .\tests\Fixtures
+          if ($LASTEXITCODE -ne 0) { throw 'Public cold-start/native reference acceptance failed; package publication is blocked.' }
 
       - name: Verify extracted runtime
         env:
@@ -145,13 +156,14 @@ jobs:
           ## Download and run
 
           Choose **win-x64** for Intel/AMD or **win-arm64** for Windows on ARM.
-          Extract the complete ZIP and provision the separately approved
-          **embeddinggemma-2-onnx-v1** model bundle using **Get-Model.ps1**.
-          Then open **FuzzyFindAnything.exe**. This application is Python-free;
+          Extract the complete ZIP and open **FuzzyFindAnything.exe**.
+          First launch automatically downloads and verifies the pinned public
+          **onnx-community/embeddinggemma-2-ONNX** FP32 model into your application-data
+          cache. No Python, Node.js, SDK, model conversion or manual Apply is required.
           .NET and native runtimes are included.
 
           Native ONNX model assets are approximately 1.8 GB uncompressed.
-          Use the approved bundle/base URI, not the earlier safetensors layout.
+          An internet connection is needed for first-time acquisition; completed caches work offline.
           Packages are unsigned. Check the matching SHA-256 file and follow your
           organization's application policy.
 

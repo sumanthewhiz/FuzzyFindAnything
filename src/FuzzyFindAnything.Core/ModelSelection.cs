@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Xml;
 using System.Xml.Linq;
+using System.Text.Json.Serialization;
 
 namespace FuzzyFindAnything.Core;
 
@@ -10,8 +11,10 @@ public sealed record ModelSelection(string Text, string Code, string Image,
     ModelOptions? TextOptions = null, ModelOptions? CodeOptions = null, ModelOptions? ImageOptions = null,
     ImagePipelineOptions? ImagePipeline = null)
 {
-    public const string DefaultUrl = "https://huggingface.co/google/embeddinggemma-2";
+    public const string DefaultUrl = "https://huggingface.co/onnx-community/embeddinggemma-2-ONNX";
+    public const string LegacyDefaultUrl = "https://huggingface.co/google/embeddinggemma-2";
     public static ModelSelection Default { get; } = new(DefaultUrl, DefaultUrl, DefaultUrl);
+    public static ModelSelection LegacyDefault { get; } = new(LegacyDefaultUrl, LegacyDefaultUrl, LegacyDefaultUrl);
     public ModelReference ReferenceFor(string kind) => ModelReference.Parse(ForKind(kind));
     public bool UsesExternalModels => EmbeddingSelection().DistinctUrls.Any(url => ModelReference.Parse(url) is ProviderModelReference);
     public string ForKind(string kind) => kind switch
@@ -67,7 +70,7 @@ public sealed record ModelSelection(string Text, string Code, string Image,
     private static ModelOptions? NormalizeOptions(ModelOptions? options) =>
         options?.Normalize() is { } value && value != ModelOptions.Default ? value : null;
     public bool RequiresVersion2 => UsesExternalModels || UsesImageUnderstanding || TextOptions is not null || CodeOptions is not null || ImageOptions is not null ||
-        DistinctUrls.Any(url => EmbeddingRecipes.Find(url) is not null);
+        DistinctUrls.Any(url => url != LegacyDefaultUrl && EmbeddingRecipes.Find(url) is not null);
     public string[] DistinctUrls => new[] { Text, Code, Image }.Distinct(StringComparer.Ordinal).ToArray();
 
     public static string Canonical(string value)
@@ -123,14 +126,14 @@ public sealed record ModelSelection(string Text, string Code, string Image,
         }
         if (models?.HasElements == true)
             throw new InvalidDataException("Extended model bindings require configuration version 2.");
-        return new ModelSelection((string?)models?.Attribute("text") ?? DefaultUrl,
-            (string?)models?.Attribute("code") ?? DefaultUrl, (string?)models?.Attribute("image") ?? DefaultUrl).Normalize();
+        return new ModelSelection((string?)models?.Attribute("text") ?? LegacyDefaultUrl,
+            (string?)models?.Attribute("code") ?? LegacyDefaultUrl, (string?)models?.Attribute("image") ?? LegacyDefaultUrl).Normalize();
     }
 
     public static ModelSelection Load(string dataDirectory)
     {
         string path = Path.Combine(dataDirectory, "settings.xml");
-        return File.Exists(path) ? Read(ReadDocument(path).Root!) : Default;
+        return File.Exists(path) ? Read(ReadDocument(path).Root!) : Catalog.ReadSelection(dataDirectory) ?? Default;
     }
 
     internal static XDocument ReadDocument(string path)
@@ -175,14 +178,22 @@ public sealed record ModelSelection(string Text, string Code, string Image,
 
 public sealed record EmbeddingSpace(string ModelUrl, string Revision, string Adapter, int Dimensions,
     int MaximumTokens, bool SupportsImages, long MemoryBytes, EmbeddingRecipe? Recipe = null, string? ArtifactUrl = null,
-    ExternalEmbeddingContract? External = null)
+    ExternalEmbeddingContract? External = null, string? AssetIdentity = null, string? AssetFingerprint = null)
 {
-    public static EmbeddingSpace Default { get; } = new(ModelSelection.DefaultUrl, ModelContract.Revision,
+    public static EmbeddingSpace Default { get; } = new(ModelSelection.LegacyDefaultUrl, ModelContract.Revision,
         "embeddinggemma2", ModelContract.Dimensions, 8192, true, 3L << 30);
+    public static EmbeddingSpace LegacyDefault => Default;
+    public bool UsesLegacyHost => Adapter == "embeddinggemma2";
+    [JsonIgnore]
+    public bool IsOriginalPublicFormat => Recipe?.IsOriginalPublicFormat == true;
+    public string FormatDocument(string title, string passage) =>
+        UsesLegacyHost || Recipe?.NativeMultimodal?.DocumentFormat == "title-text-v1"
+            ? $"title: {FilePaths.ScalarPrefix(title, 160)} | text: {passage}" : passage;
     public string Fingerprint => External is { } external
         ? $"{ModelUrl}:{external.VectorIdentity}:{external.Device}:{external.LogicalDimensions}:{Dimensions}:zero-pad8:f32:cosine:external-v1"
         : Recipe is not null
-        ? $"{ArtifactUrl ?? ModelUrl}@{Revision}:{Dimensions}:f32:{Recipe.DocumentFingerprint}:native-v2"
+        ? $"{ArtifactUrl ?? ModelUrl}@{Revision}:{Dimensions}:f32:{Recipe.DocumentFingerprint}:native-v2" +
+            (IsOriginalPublicFormat ? ":assets:" + AssetFingerprint : AssetIdentity is null ? "" : ":assets-" + AssetIdentity)
         : this == Default ? ModelContract.Fingerprint :
         $"{ModelUrl}@{Revision}:{Dimensions}:f32:{Adapter}:v1";
     public string IndexingFingerprint => External is { } external
@@ -219,10 +230,16 @@ public sealed record EmbeddingSpace(string ModelUrl, string Revision, string Ada
         _ = ModelSelection.Canonical(ModelUrl);
         if (ArtifactUrl is not null) _ = ModelSelection.Canonical(ArtifactUrl);
         Recipe?.Validate(MaximumTokens);
+        if (IsOriginalPublicFormat) OriginalGemma2Contract.ValidateSpace(this);
+        else if (AssetFingerprint is not null)
+            throw new InvalidDataException("An original asset fingerprint requires its reviewed original public recipe.");
         if (!Regex.IsMatch(Revision, "^[0-9a-f]{40}$") || Dimensions is < 8 or > 4096 || Dimensions % 8 != 0 ||
             MaximumTokens is < 16 or > 8192 || MemoryBytes <= 0 ||
-            Adapter is not ("embeddinggemma2" or "bert-mean" or "clip" or "native-text") ||
-            (Adapter == "native-text") != (Recipe is not null) || Recipe is not null && SupportsImages)
+            Adapter is not ("embeddinggemma2" or "bert-mean" or "clip" or "native-text" or "gemma2-onnx") ||
+            (Adapter is "native-text" or "gemma2-onnx") != (Recipe is not null) ||
+            Recipe is not null && SupportsImages != (Recipe.NativeMultimodal is not null) ||
+            (Adapter == "gemma2-onnx") != (Recipe?.NativeMultimodal is not null) ||
+            AssetIdentity is not null && !Regex.IsMatch(AssetIdentity, "^[0-9a-f]{64}$"))
             throw new InvalidDataException("The native embedding model descriptor is not supported.");
     }
 }

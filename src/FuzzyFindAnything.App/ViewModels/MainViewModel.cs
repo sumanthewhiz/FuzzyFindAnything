@@ -100,6 +100,7 @@ public sealed class MainViewModel : ObservableObject
     private string engineMessage = "Starting the local indexing engine...";
     private string modelState = "Starting";
     private int startupSequence = -1;
+    private string? startupError;
     private int startupPercent;
     private string startupStage = "Starting local engine";
     private string monitor = "Watching begins when you add a folder.";
@@ -196,7 +197,7 @@ public sealed class MainViewModel : ObservableObject
     public bool ConfigurationBusy
     {
         get => configurationBusy;
-        set { Set(ref configurationBusy, value); Changed(nameof(CanConfigure)); Changed(nameof(IsConfigurationIdle)); Changed(nameof(CanApplyModels)); Changed(nameof(CanSearch)); Changed(nameof(CanManageFolders)); Changed(nameof(CanRemove)); Changed(nameof(CanRetryImages)); NotifySearchOptions(); }
+        set { Set(ref configurationBusy, value); Changed(nameof(CanCancelModelPreparation)); Changed(nameof(CanConfigure)); Changed(nameof(IsConfigurationIdle)); Changed(nameof(CanApplyModels)); Changed(nameof(CanSearch)); Changed(nameof(CanManageFolders)); Changed(nameof(CanRemove)); Changed(nameof(CanRetryImages)); NotifySearchOptions(); }
     }
     public bool IsConfigurationIdle => !ConfigurationBusy;
     public bool CanConfigure => IsConnected && !ConfigurationBusy;
@@ -263,11 +264,12 @@ public sealed class MainViewModel : ObservableObject
     public string ModelState
     {
         get => modelState;
-        set { Set(ref modelState, value); Changed(nameof(IsEngineLoading)); Changed(nameof(ShowEngineState)); Changed(nameof(CanApplyModels)); }
+        set { Set(ref modelState, value); Changed(nameof(CanCancelModelPreparation)); Changed(nameof(IsEngineLoading)); Changed(nameof(ShowEngineState)); Changed(nameof(CanApplyModels)); }
     }
     public bool IsEngineLoading => ModelState is "Starting" or "Loading";
     public bool ShowEngineState => !IsEngineLoading;
     public int StartupPercent { get => startupPercent; private set { Set(ref startupPercent, value); Changed(nameof(StartupLabel)); } }
+    public bool CanCancelModelPreparation => ConfigurationBusy || IsEngineLoading;
     public string StartupLabel => $"{StartupPercent:0}% loaded";
     public string StartupStage { get => startupStage; private set => Set(ref startupStage, value); }
     public string Monitor { get => monitor; set => Set(ref monitor, value); }
@@ -281,6 +283,7 @@ public sealed class MainViewModel : ObservableObject
 
     public void Apply(EngineStatus status)
     {
+        if (status.Startup is { } snapshot && snapshot.Sequence < startupSequence) return;
         IsConnected = true;
         if (status.Startup is not null)
             ApplyStartup(status.Startup);
@@ -427,7 +430,15 @@ public sealed class MainViewModel : ObservableObject
         IsConnected = true;
         EngineMessage = status.Stage;
         if (!string.IsNullOrEmpty(status.Error))
+        {
+            startupError = status.Error;
             Error = status.Error;
+        }
+        else if (status.State == "Ready")
+        {
+            if (Error == startupError) Error = "";
+            startupError = null;
+        }
         Changed(nameof(CanSearch));
     }
 

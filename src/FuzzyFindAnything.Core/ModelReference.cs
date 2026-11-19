@@ -30,7 +30,7 @@ public abstract record ModelReference
                 throw new InvalidDataException("A Hugging Face binding must use a model-card URL.");
             if (required && element?.Attribute("modelUrl") is null)
                 throw new InvalidDataException("A custom embedding model reference is required.");
-            return ModelSelection.Canonical((string?)element?.Attribute("modelUrl") ?? ModelSelection.DefaultUrl);
+            return ModelSelection.Canonical((string?)element?.Attribute("modelUrl") ?? ModelSelection.LegacyDefaultUrl);
         }
         if (!providersAllowed || element?.Attribute("modelUrl") is not null)
             throw new InvalidDataException("Provider model bindings require configuration version 4 and cannot also contain a model URL.");

@@ -25,6 +25,42 @@ public sealed partial class Catalog : IDisposable
     public ModelSelection Selection { get { lock (gate) return configuredSelection ?? new(routes["Document"].ModelUrl, routes["Code"].ModelUrl, routes["Image"].ModelUrl); } }
     public EmbeddingSpace SpaceFor(string kind) { lock (gate) return routes[kind]; }
     public ImagePipelineDescriptor? ImagePipeline { get { lock (gate) return imagePipeline; } }
+    public bool HasCommittedModels => Setting("model_selection") is not null || Setting("embedding_routes") is not null;
+    public bool IsUnfinishedOnboarding
+    {
+        get
+        {
+            lock (gate) return !HasCommittedModels &&
+                Scalar<long>("SELECT COUNT(*) FROM files") == 0 && Scalar<long>("SELECT COUNT(*) FROM vectors") == 0 &&
+                Scalar<long>("SELECT COUNT(*) FROM index_jobs WHERE prepared<>0") == 0 &&
+                Scalar<long>("SELECT COUNT(*) FROM job_passages") == 0 && Generation == 0;
+        }
+    }
+
+    public static ModelSelection? ReadSelection(string directory)
+    {
+        string path = Path.Combine(directory, "catalog.sqlite3");
+        if (!File.Exists(path)) return null;
+        SQLitePCL.Batteries_V2.Init();
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        { DataSource = path, Mode = SqliteOpenMode.ReadOnly, Pooling = false }.ToString());
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT key,value FROM settings WHERE key IN ('model_selection','embedding_routes')";
+        using var reader = command.ExecuteReader();
+        var saved = new Dictionary<string, string>();
+        while (reader.Read()) saved[reader.GetString(0)] = reader.GetString(1);
+        if (saved.TryGetValue("model_selection", out string? selection))
+            return JsonSerializer.Deserialize<ModelSelection>(selection, Protocol.Json)?.Normalize()
+                ?? throw new InvalidDataException("Invalid saved model selection.");
+        if (saved.TryGetValue("embedding_routes", out string? routes))
+        {
+            var bindings = JsonSerializer.Deserialize<Dictionary<string, EmbeddingSpace>>(routes, Protocol.Json)
+                ?? throw new InvalidDataException("Invalid saved embedding routes.");
+            return new ModelSelection(bindings["Document"].ModelUrl, bindings["Code"].ModelUrl, bindings["Image"].ModelUrl).Normalize();
+        }
+        return ModelSelection.LegacyDefault;
+    }
 
     public Catalog(string directory, int nativeThreads, Action<string>? diagnostic = null)
     {
@@ -692,7 +728,8 @@ public sealed partial class Catalog : IDisposable
         if (!describedImages && !value["Image"].SupportsImages) throw new InvalidDataException("The selected image model cannot create image embeddings.");
     }
     public string[] ReconfigureModels(IReadOnlyDictionary<string, EmbeddingSpace> next, Action persistConfiguration,
-        Action? configurationCommitted = null, ModelSelection? selection = null, ImagePipelineDescriptor? pipeline = null)
+        Action? configurationCommitted = null, ModelSelection? selection = null, ImagePipelineDescriptor? pipeline = null,
+        bool commitUnchanged = false)
     {
         ValidateRoutes(next, pipeline is not null);
         lock (gate)
@@ -703,7 +740,7 @@ public sealed partial class Catalog : IDisposable
                 throw new InvalidDataException("The selected model URLs do not match the prepared routes.");
             string[] changed = routes.Keys.Where(kind => routes[kind].IndexingFingerprint != next[kind].IndexingFingerprint).ToArray();
             if (imagePipeline?.Fingerprint != pipeline?.Fingerprint) changed = changed.Append("Image").Distinct().ToArray();
-            if (changed.Length == 0 && selection == Selection) return [];
+            if (changed.Length == 0 && selection == Selection && (!commitUnchanged || HasCommittedModels)) return [];
             var prepared = new Dictionary<string, VectorShard>();
             try
             {

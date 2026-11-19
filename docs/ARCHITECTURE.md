@@ -49,7 +49,7 @@ selected file types + per-type thresholds -> role-aware local query embeddings
   -> matched chunk/region preview -> registered Windows viewer
 ```
 
-The current stack is C#/.NET 10 and WPF, C++ DiskANN 0.7.0, SQLite, ONNX Runtime 1.31.0 for the bundled default, Windows ML 2.4.89 for compatible models, Microsoft.ML.Tokenizers 2.0.0 and TreeSitter.DotNet 1.3.0. Original package notices and exact transitive versions accompany each release. This is a local application; there is no hosted inference endpoint.
+The current stack is C#/.NET 10 and WPF, C++ DiskANN 0.7.0, SQLite, ONNX Runtime 1.31.0 for the legacy custom export, Windows ML 2.4.89 for compatible models including the public default, Microsoft.ML.Tokenizers 2.0.0 and TreeSitter.DotNet 1.3.0. Original package notices and exact transitive versions accompany each release. This is a local application; there is no hosted inference endpoint.
 
 | Package | UI / inference | Coordinator / DiskANN / extractor / utilities |
 |---|---|---|
@@ -63,6 +63,14 @@ The UI communicates through redirected process pipes, not an HTTP listener. A Wi
 The WPF application owns a .NET Windows Forms `NotifyIcon` for the system tray. Minimize and Close hide the window and remove its taskbar presence without stopping the engine. The tray icon and its themed Open/Quit menu restore the existing window or invoke the same graceful shutdown path as the window's Quit button. The icon is disposed when the application exits, and the framework recreates it if Explorer restarts.
 
 ## Model contract
+
+The **fresh default** is the public `onnx-community/embeddinggemma-2-ONNX` package at `daa72c51243991dfcaf9f9137d2c573d8f7790c0`, using recipe `gemma2-public-f32-v1` in `model-assets\embeddinggemma-2-public.json`. It retains the original Google checkpoint revision below and obtains the missing SentencePiece file explicitly from that pinned upstream source.
+
+Its compatible native host consumes int64 `input_ids`/`attention_mask` and FP32 `[feature_tokens,512]` image/video/audio inputs. Text calls supply empty unused modalities. The named `sentence_embedding` output is already pooled `[batch,768]`; it is checked and normalized, not pooled again. Vision uses `pixel_values [1,2520,768]` and `pixel_position_ids [1,2520,2]`, with placeholder-count-checked `image_features`. A pair of images executes independently through both graphs. Audio/video support is not enabled.
+
+The processor contract is Gemma4 RGB/bicubic, rescale 1/255 without extra normalization, 16-pixel patches, pooling 3 and at most 280 soft tokens. GemmaTokenizer uses right padding and BOS=2/EOS=1/PAD=0. The qualified ceiling is 2,048 tokens, eight text inputs with at most 4,096 padded tokens, 512-token chunks and two independent images. Admission retains a 3 GiB model allowance and 2 GiB system reserve. Unsupported exports are rejected, not converted or guessed from their dimensions.
+
+The following table describes the **retained legacy custom export**, whose fingerprint and graph directory remain unchanged:
 
 | Property | Value |
 |---|---|
@@ -88,7 +96,11 @@ Image preprocessing handles RGB conversion, EXIF orientation, first-frame GIF, l
 
 ### Acquisition
 
-`Get-Model.ps1` invokes a self-contained .NET utility. It accepts an approved source directory or HTTPS base directory; no public native-model URL is hard-coded. Files are pinned by name, size and SHA-256. `.partial` files support resume, range responses are checked, and downloads cannot exceed the manifest's declared sizes.
+Startup and Apply share verified preparation. The public default uses immutable Hugging Face URLs and the writable `--data-dir` model cache; a compatible family checkpoint resolves to its own immutable revision and asset identity. Missing cached assets are repaired at the saved revision. Acquisition is excluded across writers, downloads are staged, and the cache manifest is published last. Complete checksummed partials are promoted without re-downloading. Range, length, hash, external-weight bounds and transfer deadlines are enforced; interrupted partials are retained for retry.
+
+Public vector identity includes weights, tokenizer provenance, preprocessing, graph bindings, framing, dimensions and FP32 precision. README/license documents retain integrity/provenance in the manifest but do not change vector identity. New optional recipe fields do not alter unchanged older fingerprints. Exact public aliases share their verified space; a persisted Google-URL legacy route retains its original contract.
+
+`Get-Model.ps1` remains a self-contained **legacy repair** utility accepting an approved source directory or optional HTTPS base directory. It is not required for the automatic public default. Files are pinned by name, size and SHA-256.
 
 Verified assets are atomically promoted. Inference holds read leases that prevent replacement of active model files. `-VerifyOnly` checks every asset without creating files, modifying contents or contacting a host. Model acquisition is separate from application packages and Git.
 
@@ -100,13 +112,13 @@ The **Model configuration** tab keeps one source/model binding per file type. Hu
 
 ```xml
 <Models>
-  <Text modelUrl="https://huggingface.co/google/embeddinggemma-2" />
-  <Code modelUrl="https://huggingface.co/google/embeddinggemma-2" />
-  <Image modelUrl="https://huggingface.co/google/embeddinggemma-2" />
+  <Text modelUrl="https://huggingface.co/onnx-community/embeddinggemma-2-ONNX" />
+  <Code modelUrl="https://huggingface.co/onnx-community/embeddinggemma-2-ONNX" />
+  <Image modelUrl="https://huggingface.co/onnx-community/embeddinggemma-2-ONNX" />
 </Models>
 ```
 
-The example is the child-binding format used by configuration versions 2-4. Legacy version-1 URL attributes remain readable. Older XML without a Models element receives the EmbeddingGemma2 defaults in memory. Reading it does not replace the existing index or rewrite the configuration. Apply with unchanged normalized URLs is a no-op.
+The example is the child-binding format used by configuration versions 2-4. Legacy version-1 URL attributes and omitted-binding defaults retain their original meaning. Reading does not replace indexes. Only the narrowly defined [unfinished onboarding](MIGRATION.md#automatic-recovery-of-unfinished-onboarding) state automatically migrates, after successful preparation. Healthy unchanged Apply is a no-op; failed startup permits an unchanged retry and initializes content storage before indexing.
 
 The native adapters retain the existing EmbeddingGemma2 bundle and direct CLIP image/text graphs. Text/code models can use reviewed embedding recipes, or compatible standard BERT WordPiece mean/CLS/already-pooled contracts. Unknown tokenizers, model families, extra projection modules and unreviewed prompt/scoring contracts are rejected. Hugging Face Python model code is never downloaded for execution.
 
@@ -126,7 +138,7 @@ New assets are fetched from the selected Hugging Face repository at a resolved c
 
 Acquisition inspects bounded ONNX protobuf metadata to discover real external-data dependencies and validate their file bounds; it no longer guesses external weights from filename suffixes. Paths cannot escape the model directory. Transfers retain a 4 GiB per-file and 12 GiB total-asset budget, with byte progress and resumable verified staging.
 
-The compatible-model process uses the self-contained `Microsoft.Windows.AI.MachineLearning` runtime, separate from the pinned original EmbeddingGemma2 process. Windows ML enumerates real EP/device pairs, including DirectML GPUs and compatible installed vendor providers such as QNN for Qualcomm NPUs. Installed providers may be activated for the process; missing providers are reported instead of being represented as available.
+The compatible-model process uses the self-contained `Microsoft.Windows.AI.MachineLearning` runtime, separate from the pinned original EmbeddingGemma2 process. Windows ML enumerates real EP/device pairs, including DirectML GPUs and compatible vendor providers such as QNN for Qualcomm NPUs. Discovery alone does not install missing providers. An explicitly requested eligible provider uses Windows ML readiness/registration before actual graph qualification; drivers and arbitrary repository code are never installed.
 
 Selection tries CPU first for continuity and then available local GPU/NPU devices if CPU cannot execute the graph. Each candidate must create the required graph sessions and produce valid, distinguishable normalized embeddings for its supported modalities. For accelerator candidates, runtime profiling must show that the selected provider actually executed embedding kernels; an all-CPU fallback does not count as GPU/NPU support. CPU assistance for supported control/shape nodes is allowed. Cloud execution providers are excluded.
 
@@ -142,7 +154,7 @@ Preparation runs outside the short configuration commit gate and on a separate r
 
 The catalog also persists the affected file types and completion state for each accepted model change. Status waits for folder reconciliation and the affected queue to finish before reporting completion, including separate succeeded/failed counts. This tracking survives restart; a later validation error is not overwritten by an earlier completion message. Valid images that an older CLIP build rejected because resize rounding produced a 223-pixel short edge are retried on startup without invalidating successfully indexed files.
 
-There is one DiskANN graph per distinct pinned embedding space, not simply per vector dimension. The default graph retains its existing `diskann` location. Other graphs live under `model-indexes\<space-key>`; model assets live separately under `models\<space-key>` in the selected data directory. Counts and search results are aggregated, while the model tab lists each graph's file types, dimensions and actual execution device.
+There is one DiskANN graph per distinct pinned embedding space, not simply per vector dimension. The legacy graph retains its existing `diskann` location. Other graphs, including the public Gemma2 space, live under `model-indexes\<space-key>`; model assets live separately under `models\<space-key>` in the selected data directory. Counts and search results are aggregated, while the model tab lists each graph's file types, dimensions and actual execution device.
 
 Schema numbers identify storage capabilities, not the 2.0 app version. Legacy catalogs start at schema 4, model routing/recipes introduced 5/6, and image artifacts introduced 7. Current structured document/code preparation uses schema 8; regions opt into 9, and provider-aware bindings use 10. Higher schemas are not downgraded when a feature is deselected. Current per-type search/region settings use XML version 3, and provider bindings use version 4; older readable settings are migrated without resetting user data.
 

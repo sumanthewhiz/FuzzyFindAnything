@@ -13,8 +13,27 @@ internal static class Check
     {
         string root = Path.Combine(Path.GetTempPath(), "ffa-native-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
+        Exception? primary = null;
         try { await action(root); }
-        finally { Directory.Delete(root, true); }
+        catch (Exception error) { primary = error; throw; }
+        finally { DeleteTemporary(root, primary); }
+    }
+    public static void DeleteTemporary(string root, Exception? primary = null)
+    {
+        for (int attempt = 0; Directory.Exists(root); attempt++)
+        {
+            try { Directory.Delete(root, true); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            {
+                if (attempt >= 60)
+                {
+                    if (primary is null) throw;
+                    Console.Error.WriteLine($"Cleanup also failed at {root}: {error.Message}");
+                    break;
+                }
+                Thread.Sleep(250);
+            }
+        }
     }
     public static async Task UntilAsync(Func<bool> condition, string message, int milliseconds = 15000)
     {

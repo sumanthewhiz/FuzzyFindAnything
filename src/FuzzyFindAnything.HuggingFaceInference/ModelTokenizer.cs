@@ -12,6 +12,7 @@ internal sealed class ModelTokenizer
     private readonly BertTokenizer? bert;
     private readonly BpeTokenizer? clip;
     private readonly BpeTokenizer? byteBpe;
+    private readonly SentencePieceTokenizer? gemma;
     private readonly Dictionary<string, int>? clipVocabulary;
     private static readonly Regex clipWords = new(@"<\|startoftext\|>|<\|endoftext\|>|'s|'t|'re|'ve|'m|'ll|'d|[\p{L}]+|[\p{N}]|[^\s\p{L}\p{N}]+",
         RegexOptions.Compiled, TimeSpan.FromSeconds(5));
@@ -25,6 +26,19 @@ internal sealed class ModelTokenizer
         using var definition = JsonDocument.Parse(File.ReadAllText(Path.Combine(directory, "tokenizer.json")));
         var config = configuration.RootElement;
         var native = definition.RootElement;
+        if (space.Recipe?.Tokenizer == "gemma-sentencepiece")
+        {
+            Gemma2ModelContract.ValidateMetadata(directory);
+            var special = native.GetProperty("added_tokens").EnumerateArray().Where(item => item.GetProperty("special").GetBoolean())
+                .ToDictionary(item => item.GetProperty("content").GetString()!, item => item.GetProperty("id").GetInt32(), StringComparer.Ordinal);
+            if (special.GetValueOrDefault("<bos>", -1) != 2 || special.GetValueOrDefault("<eos>", -1) != 1 ||
+                special.GetValueOrDefault("<pad>", -1) != 0 || special.GetValueOrDefault("<|image|>", -1) != 258880)
+                throw new NotSupportedException("The Gemma2 special-token identities are incompatible.");
+            using var stream = FilePaths.OpenRead(Path.Combine(directory, "tokenizer.model"));
+            gemma = SentencePieceTokenizer.Create(stream, addBeginningOfSentence: false, addEndOfSentence: false, specialTokens: special);
+            Beginning = 2; End = 1; Padding = 0;
+            return;
+        }
         if (space.Recipe?.Tokenizer == "byte-bpe-nfc")
         {
             var model = native.GetProperty("model");
@@ -99,6 +113,7 @@ internal sealed class ModelTokenizer
     }
     public int[] Encode(string text)
     {
+        if (gemma is not null) return gemma.EncodeToIds(text, addBeginningOfSentence: false, addEndOfSentence: false).ToArray();
         if (byteBpe is not null) return byteBpe.EncodeToIds(text.Normalize(NormalizationForm.FormC), considerNormalization: false).ToArray();
         if (bert is not null) return bert.EncodeToIds(text, addSpecialTokens: false).ToArray();
         text = Regex.Replace(text.Normalize(NormalizationForm.FormC), @"\s+", " ").ToLowerInvariant();

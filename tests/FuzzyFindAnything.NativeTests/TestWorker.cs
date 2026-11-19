@@ -132,7 +132,10 @@ internal static class TestWorker
     public static int Filter(string path)
     {
         string root = Path.GetDirectoryName(path)!;
-        File.WriteAllText(Path.Combine(root, Path.GetFileNameWithoutExtension(path) + ".entered"), Environment.ProcessId.ToString());
+        string marker = Path.Combine(root, Path.GetFileNameWithoutExtension(path) + ".entered");
+        string temporary = marker + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        File.WriteAllText(temporary, Environment.ProcessId.ToString());
+        File.Move(temporary, marker, true);
         if (File.Exists(Path.Combine(root, "barrier")))
         {
             var timer = Stopwatch.StartNew();

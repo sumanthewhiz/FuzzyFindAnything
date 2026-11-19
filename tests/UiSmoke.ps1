@@ -704,7 +704,7 @@ try {
         }
         Write-Output 'PASS model tab accessibility and uniform guidance spacing in both themes'
     }
-    $defaultModel = 'https://huggingface.co/google/embeddinggemma-2'
+    $defaultModel = 'https://huggingface.co/onnx-community/embeddinggemma-2-ONNX'
     foreach ($id in @('TextModelUrl','CodeModelUrl','ImageModelUrl')) {
         $value = [System.Windows.Automation.ValuePattern](Find-Id $id).GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
         if ($value.Current.Value -ne $defaultModel) { throw "Incorrect default in $id." }

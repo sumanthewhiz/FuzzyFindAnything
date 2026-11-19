@@ -54,7 +54,7 @@ internal static class RegionTests
         string data = Path.Combine(root, "index"), folderPath = Path.Combine(root, "images");
         Directory.CreateDirectory(folderPath);
         var definition = ImageModelRecipes.Find("https://huggingface.co/microsoft/Florence-2-base-ft")!;
-        var selected = ModelSelection.Default with { Image = definition.ModelUrls[0], ImagePipeline = new(false, false, RegionTask: "objects") };
+        var selected = ModelSelection.LegacyDefault with { Image = definition.ModelUrls[0], ImagePipeline = new(false, false, RegionTask: "objects") };
         var pipeline = new ImagePipelineDescriptor(selected.Image, definition, ["objects"], EmbeddingSpace.Default, ModelOptions.Default, "Automatic");
         long artifact;
         using (var catalog = new Catalog(data, 1))

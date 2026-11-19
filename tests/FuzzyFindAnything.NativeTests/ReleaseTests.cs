@@ -31,7 +31,8 @@ internal static class ReleaseTests
         foreach (string forbidden in new[] { "../outside.txt", "models/language.onnx", "MODELS/weights.txt", ".runtime/python.exe",
             "module.py", "python311.dll", "settings.xml", "folder\\escape.txt", "folder/../escape", "folder//alias.txt",
             "provider-settings.json", "provider.json", "provider-model.json", "ffa_provider_bridge.dll",
-            "model.quant.onnxe", "internal-sdk.nupkg", "FuzzyFindAnything.MicrosoftProvider.exe" })
+            "model.quant.onnxe", "internal-sdk.nupkg", "FuzzyFindAnything.MicrosoftProvider.exe",
+            "inference/weights.onnx_data", "tokenizer.model", "tokenizer.json" })
         {
             Create(archive, payload => payload[forbidden] = [1]);
             Check.Throws<InvalidDataException>(() => ReleasePackage.Validate(archive, "win-arm64", Version));
@@ -80,13 +81,20 @@ internal static class ReleaseTests
                 name.StartsWith("tools/") ? (ushort)0x8664 : (ushort)0xAA64) : Encoding.UTF8.GetBytes("synthetic test"));
         payload["runtime.json"] = JsonSerializer.SerializeToUtf8Bytes(ReleasePackage.RuntimePaths);
         payload["model-manifest.json"] = JsonSerializer.SerializeToUtf8Bytes(ModelAssets.Manifest, Protocol.Json);
+        using (var stream = typeof(EmbeddingRecipes).Assembly.GetManifestResourceStream("FuzzyFindAnything.PublicModel.json")!)
+        using (var buffer = new MemoryStream())
+        {
+            stream.CopyTo(buffer);
+            payload["public-model-manifest.json"] = buffer.ToArray();
+        }
         mutate?.Invoke(payload);
         payload["release-manifest.json"] = JsonSerializer.SerializeToUtf8Bytes(new
         {
             schema_version = 2,
             runtime_id = "win-arm64",
             version,
-            model = new { bundled = false },
+            source_repository = "https://github.com/sumanthewhiz/FuzzyFindAnything",
+            model = new { bundled = false, id = ModelSelection.DefaultUrl, revision = EmbeddingRecipes.PublicDefault.Revision },
             packages = new[] { new { name = "Microsoft.DiskANN" } },
             files = payload.Select(pair => new
             {

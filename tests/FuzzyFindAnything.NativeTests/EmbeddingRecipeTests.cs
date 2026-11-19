@@ -107,7 +107,7 @@ internal static class EmbeddingRecipeTests
         string data = Path.Combine(root, "index"), source = Path.Combine(root, "files");
         Directory.CreateDirectory(source);
         var space = Space("https://huggingface.co/Qwen/Qwen3-Embedding-0.6B");
-        var selection = new ModelSelection(space.ModelUrl, space.ModelUrl, ModelSelection.DefaultUrl);
+        var selection = new ModelSelection(space.ModelUrl, space.ModelUrl, ModelSelection.LegacyDefaultUrl);
         var routes = new Dictionary<string, EmbeddingSpace>
         { ["Document"] = space, ["Code"] = space, ["Image"] = EmbeddingSpace.Default };
         long generation, codeVector;

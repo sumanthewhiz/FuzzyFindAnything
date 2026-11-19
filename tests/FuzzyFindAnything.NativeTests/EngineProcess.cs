@@ -22,7 +22,7 @@ internal sealed class EngineProcess : IAsyncDisposable
     public int Id => process.Id;
     public long PeakMemory => process.PeakWorkingSet64;
     public long Affinity => process.ProcessorAffinity.ToInt64();
-    public EngineProcess(string package, string model, string data)
+    public EngineProcess(string package, string model, string data, bool offline = false, bool isolatedRuntime = false)
     {
         var start = new ProcessStartInfo(Path.Combine(package, "engine", "FuzzyFindAnything.Engine.exe"))
         {
@@ -36,6 +36,19 @@ internal sealed class EngineProcess : IAsyncDisposable
             StandardOutputEncoding = new UTF8Encoding(false),
             StandardErrorEncoding = new UTF8Encoding(false)
         };
+        if (isolatedRuntime)
+        {
+            start.Environment["PATH"] = Environment.GetFolderPath(Environment.SpecialFolder.System);
+            foreach (string name in new[] { "DOTNET_ROOT", "DOTNET_ROOT_X64", "DOTNET_ROOT_ARM64", "PYTHONHOME", "PYTHONPATH", "NODE_PATH" })
+                start.Environment.Remove(name);
+        }
+        if (offline)
+        {
+            start.Environment["HTTP_PROXY"] = "http://127.0.0.1:9";
+            start.Environment["HTTPS_PROXY"] = "http://127.0.0.1:9";
+            start.Environment["ALL_PROXY"] = "http://127.0.0.1:9";
+            start.Environment["NO_PROXY"] = "";
+        }
         foreach (string value in new[] { "--data-dir", data, "--model", model, "--extractor",
             Path.Combine(package, "extractor", "FuzzyFindAnything.Extractor.exe"), "--inference",
             Path.Combine(package, "inference", "FuzzyFindAnything.Inference.exe"), "--app-dir", package })
@@ -96,15 +109,17 @@ internal sealed class EngineProcess : IAsyncDisposable
         }
         finally { pending.TryRemove(id, out _); }
     }
-    public async Task ReadyAsync()
+    public async Task ReadyAsync(int timeout = 320000)
     {
         await Check.UntilAsync(() =>
         {
             if (failure is not null) throw new IOException("Coordinator protocol failed.", failure);
             if (process.HasExited) throw new IOException("Coordinator exited: " + string.Join("\n", Diagnostics));
-            if (Status?.ModelState == "Error") throw new IOException(Status.Error);
-            return Progress.Any(value => value.State == "Ready");
-        }, "Native startup never became ready.", 320000);
+            var latest = Progress.LastOrDefault();
+            if (Status?.ModelState == "Error" && (latest is null || latest.Sequence <= Status.Startup.Sequence)) throw new IOException(Status.Error);
+            if (latest?.State == "Error") throw new IOException(latest.Error);
+            return latest?.State == "Ready";
+        }, "Native startup never became ready.", timeout);
     }
     public async Task WaitAsync(Func<EngineState, bool> condition, string message, int timeout = 180000)
     {
@@ -112,7 +127,8 @@ internal sealed class EngineProcess : IAsyncDisposable
         {
             if (failure is not null) throw new IOException("Coordinator protocol failed.", failure);
             if (process.HasExited) throw new IOException("Coordinator exited: " + string.Join("\n", Diagnostics));
-            if (Status?.ModelState == "Error") throw new IOException(Status.Error);
+            if (Status?.ModelState == "Error" && (Progress.LastOrDefault()?.Sequence ?? -1) <= Status.Startup.Sequence)
+                throw new IOException(Status.Error);
             return Status is { } status && condition(status);
         }, message, timeout);
     }

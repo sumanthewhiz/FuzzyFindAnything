@@ -14,6 +14,8 @@ Keep changes focused. Preserve existing folder ownership, settings, vector ident
 
 Source builds require Windows 11, PowerShell 7, Git, the .NET 10 SDK and Visual Studio 2022 or later with Desktop development with C++, CMake and a Windows SDK. ARM64 packages additionally require the matching ARM64 C++ redistributable files.
 
+The repository's `global.json` selects the latest installed .NET 10 feature band, even on machines that also have a newer major SDK.
+
 ```powershell
 git clone https://github.com/sumanthewhiz/FuzzyFindAnything.git
 Set-Location .\FuzzyFindAnything
@@ -23,7 +25,7 @@ git switch -c feature-your-change
 .\Build.ps1 -SkipSetup
 ```
 
-Models are provisioned separately. Follow the [binary quickstart](QUICKSTART.md#2-prepare-models) for public model preparation or an approved default-model bundle.
+Weights stay separate from application packages. The public default is acquired automatically on first launch; follow the [binary quickstart](QUICKSTART.md#2-prepare-models) for other selections or legacy bundle repair.
 
 Normal setup, model acquisition, builds, tests and runtime are Python-free. Do not introduce a global interpreter dependency. Build different runtime identifiers sequentially: shared project asset files are restored for the active RID.
 

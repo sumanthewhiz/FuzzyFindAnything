@@ -90,6 +90,7 @@ $sourceCommit = git -C $root rev-parse HEAD
 if ($LASTEXITCODE -ne 0) { throw 'Cannot record the source revision.' }
 $dirty = [bool](git -C $root status --porcelain)
 if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect source provenance.' }
+$publicModel = Get-Content -LiteralPath (Join-Path $root 'model-assets\embeddinggemma-2-public.json') -Raw | ConvertFrom-Json
 [IO.File]::WriteAllText((Join-Path $Package 'THIRD-PARTY-NOTICES.txt'), @'
 FuzzyFindAnything 2.0 - bundled component notices
 
@@ -121,7 +122,7 @@ $manifest = @{
     built_at=[DateTime]::UtcNow.ToString('O');source_commit=$sourceCommit;source_dirty=$dirty
     source_repository='https://github.com/sumanthewhiz/FuzzyFindAnything'
     architectures=@{ui=$RuntimeIdentifier;inference=$RuntimeIdentifier;engine='win-x64';extractor='win-x64';tools='win-x64'}
-    model=@{id='google/embeddinggemma-2';revision='914f7f89142e33e77833254d9c9b90c3cef7303b';asset_id='embeddinggemma-2-onnx-v1';bundled=$false}
+    model=@{id=$publicModel.artifact_url;revision=$publicModel.revision;asset_id=$publicModel.recipe.id;bundled=$false}
     packages=@($components.Values | Sort-Object name,version);visual_cpp_runtime=@($crt);files=$files
 }
 $manifest | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $Package 'release-manifest.json') -Encoding utf8

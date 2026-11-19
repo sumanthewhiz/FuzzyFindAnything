@@ -8,6 +8,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
+if ($null -ne $BaseUri -and [string]::IsNullOrWhiteSpace($BaseUri.OriginalString)) { $BaseUri = $null }
 $tool = Join-Path $root 'tools\FuzzyFindAnything.Tools.exe'
 if (-not (Test-Path -LiteralPath $tool)) { $tool = Join-Path $root 'artifacts\tools\FuzzyFindAnything.Tools.exe' }
 if (-not (Test-Path -LiteralPath $tool)) {
@@ -19,6 +20,9 @@ if ($VerifyOnly) {
     & $tool verify-model --destination $Destination
     if ($LASTEXITCODE -ne 0) { throw 'Native model verification failed. No files were modified.' }
     return
+}
+if (-not $SourceDirectory -and $null -eq $BaseUri -and (Test-Path -LiteralPath (Join-Path $root 'legacy-model-source.json'))) {
+    $BaseUri = (Get-Content -LiteralPath (Join-Path $root 'legacy-model-source.json') -Raw | ConvertFrom-Json).base_uri
 }
 if ([bool]$SourceDirectory -eq [bool]$BaseUri) {
     throw 'Specify exactly one -SourceDirectory containing the approved ONNX bundle or -BaseUri for its approved HTTPS directory. See QUICKSTART.md.'

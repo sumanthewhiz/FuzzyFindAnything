@@ -34,7 +34,23 @@ Saving unrelated preferences preserves model/source/version bindings. Returning 
 
 Keep verified model caches and the separately installed Microsoft companion available. If an applied provider or required device disappears, startup reports the dependency rather than querying an index with a substitute encoder. Use the [employee setup](../QUICKSTART.md#microsoft-employees-psapi-models) to obtain the approved companion; existing registrations are not silently overwritten.
 
-Model source packages and execution formats are not interchangeable. The default native bundle requires its ONNX language/vision graphs, external data and tokenizer configuration; a source `model.safetensors` file is not a replacement. Preserve the previous model installation for rollback, or explicitly select another supported model and allow selective reindexing.
+Model source packages and execution formats are not interchangeable. An initialized legacy bundle requires its original ONNX language/vision graphs, external data and tokenizer configuration; neither the community export nor a source `model.safetensors` file is a drop-in replacement. Preserve the previous model installation for rollback, or explicitly select another supported model and allow selective reindexing.
+
+### Automatic recovery of unfinished onboarding
+
+Fresh installations now use `https://huggingface.co/onnx-community/embeddinggemma-2-ONNX` for all three roles. The application acquires its pinned public assets automatically into the selected data directory. Existing legacy vector fingerprints, serialization defaults and indexes are not renamed.
+
+An earlier failed first launch is recovered automatically only when all normalized model selections are untouched legacy defaults, no model-selection/route metadata has been committed, no file results/vectors or prepared passage progress exist, and no complete expected legacy bundle is installed. A saved folder list, an empty SQLite catalog or unprepared queued sources alone do not block recovery.
+
+The new XML and catalog routes are committed only after verified acquisition and native qualification succeed. Appearance, logging, thresholds, folder IDs and scope are preserved. A disconnected failure leaves the old XML intact. After recovery, the model fields show the actual public URL without an Apply click.
+
+Customized selections, committed legacy routes, nonempty indexes, prepared passage progress and provisioned legacy installations are excluded. To migrate an initialized legacy installation deliberately, select the explicit community URL and Apply; only the affected representations are rebuilt. When XML is missing but a catalog exists, its saved binding is inspected read-only rather than replaced with a fresh default.
+
+### Earlier public-ONNX recipe layout
+
+Initialized public-model catalogs may use the earlier `image`, `document_template` and `asset_fingerprint` descriptor fields. The loader recognizes that reviewed pinned contract and maps its tensor bindings to the native adapter while retaining its original vector fingerprint, cache key and index directory. It does not replace these with the newer descriptor's identities or reindex unchanged files. Supplemental tokenizer repair still uses the pinned Google source even when the older manifest has no per-file source fields.
+
+Unknown or altered processing contracts remain rejected. Do not hand-edit a catalog or clear its database to resolve a descriptor-layout error; use a build containing this compatibility reader.
 
 Native graph loading is attempted only after checksums, model identity and generation agree. A missing, incompatible or damaged graph is reconstructed from SQLite vectors without re-embedding completed content. The native graph format is not a reason to clear the catalog or folder list.
 
@@ -94,6 +110,6 @@ Native writes should not be assumed backward-compatible with every older binary,
 
 ## Distribution boundary
 
-Application ZIPs contain the native runtimes but no weights or personal data. The approved native model bundle is separately checksummed. Public hosting/publishing of that bundle is not automatic and requires the owner's release-channel approval.
+Application ZIPs contain native runtimes and a public package manifest, but no weights or personal data. The public default is downloaded from immutable Hugging Face revisions; its model-card/license provenance remains separate from the application's MIT license. Legacy manual provisioning remains available without being required by the public default.
 
 Use versioned package checksums and complete data backups to identify a rollback point. Branch names alone do not establish binary or catalog compatibility.

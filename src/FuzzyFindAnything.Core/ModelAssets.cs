@@ -4,7 +4,7 @@ using System.Text.Json;
 
 namespace FuzzyFindAnything.Core;
 
-public sealed record ModelAssetFile(string Name, long Bytes, string Sha256);
+public sealed record ModelAssetFile(string Name, long Bytes, string Sha256, string? SourceUrl = null, string? Revision = null);
 public sealed record ModelAssetManifest(string AssetId, string SourceModel, string Revision, int Dimensions,
     string Precision, string OnnxRuntime, int Opset, ModelAssetFile[] Files);
 
@@ -55,7 +55,7 @@ public static class ModelAssets
         public void Dispose() { foreach (var file in files) file.Dispose(); }
     }
 
-    private static string Hash(string path, CancellationToken cancellation)
+    internal static string Hash(string path, CancellationToken cancellation)
     {
         using var stream = FilePaths.OpenRead(path);
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);

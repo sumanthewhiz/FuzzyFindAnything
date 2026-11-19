@@ -18,6 +18,7 @@ public sealed class ModelManager : IEmbeddings
     private ImageUnderstandingPool? imageUnderstanding;
     private Catalog? catalog;
     private CancellationTokenSource? lifetime;
+    private CancellationTokenSource? startupPreparation;
     private bool disposed;
     private string warning = "";
 
@@ -70,55 +71,43 @@ public sealed class ModelManager : IEmbeddings
     public async Task StartAsync(Action<int, string> progress, CancellationToken cancellation)
     {
         lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
-        var wanted = ModelSelection.Load(dataDirectory);
-        var encoded = wanted.EmbeddingSelection();
-        var spaces = new Dictionary<string, EmbeddingSpace>();
-        foreach (string kind in new[] { "Document", "Code", "Image" })
-        {
-            string url = encoded.ForKind(kind), key = LookupKey(encoded, kind);
-            if (spaces.ContainsKey(key)) continue;
-            spaces[key] = ModelReference.Parse(url) is ProviderModelReference reference
-                ? external.FindCached(reference, encoded.OptionsFor(kind))
-                : catalog?.Spaces.FirstOrDefault(space => space.ModelUrl == url) ?? cache.FindCached(url);
-        }
-        encoded = NormalizeSelection(encoded, spaces);
-        wanted = wanted.WithEmbeddingOptions(encoded);
-        var next = BuildRoutes(encoded, spaces, wanted.UsesImageUnderstanding);
-        var started = new Dictionary<string, ModelPool>();
-        var byKind = new Dictionary<string, ModelPool>();
+        using var preparation = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+        lock (gate) startupPreparation = preparation;
         try
         {
-            int completed = 0, total = next.Select(pair => SessionKey(pair.Value, encoded.OptionsFor(pair.Key))).Distinct().Count();
-            foreach (var (kind, space) in next)
-            {
-                string key = SessionKey(space, encoded.OptionsFor(kind));
-                if (!started.TryGetValue(key, out var pool))
-                {
-                    pool = CreatePool(space, total, encoded.OptionsFor(kind));
-                    started.Add(key, pool);
-                    await pool.StartAsync((step, stage) => progress((completed * 6 + step) / total, $"{stage}"), lifetime.Token);
-                    completed++;
-                }
-                byKind[kind] = pool;
-            }
-            ImageUnderstandingPool? images = null;
-            if (wanted.UsesImageUnderstanding)
-                images = CreateImagePool(Pipeline(wanted, next["Image"]), lifetime.Token);
-            lock (gate) { pools = started; routes = next; kindPools = byKind; applied = wanted; embeddingSelection = encoded; imageUnderstanding = images; }
+            var wanted = ModelSelection.Load(dataDirectory);
+            if (IsUnfinishedOnboarding(wanted, catalog) && !HasLegacyBundle())
+                wanted = ModelSelection.Default;
+            await using var prepared = await PrepareAsync(wanted, stage => progress(1, stage), preparation.Token, startup: true);
+            if (prepared is not null) await CommitAsync(prepared);
+            progress(6, "Native models ready");
         }
-        catch
+        finally { lock (gate) startupPreparation = null; }
+    }
+    public bool CancelStartup()
+    {
+        lock (gate)
         {
-            foreach (var pool in started.Values) await pool.DisposeAsync();
-            throw;
+            if (startupPreparation is null) return false;
+            startupPreparation.Cancel();
+            return true;
         }
     }
+    internal static bool IsUnfinishedOnboarding(ModelSelection selection, Catalog? catalog) =>
+        selection.Normalize() == ModelSelection.LegacyDefault && catalog?.IsUnfinishedOnboarding != false;
+    private bool HasLegacyBundle()
+    {
+        string directory = cache.DirectoryFor(EmbeddingSpace.LegacyDefault);
+        try { ModelAssets.Verify(directory); return true; }
+        catch (Exception error) when (error is FileNotFoundException or DirectoryNotFoundException or InvalidDataException) { return false; }
+    }
     private ModelPool CreatePool(EmbeddingSpace space, int count, ModelOptions options) => new(
-        space.External is not null ? external.ExecutableFor(space) : space == EmbeddingSpace.Default ? legacyHost : compatibleHost,
+        space.External is not null ? external.ExecutableFor(space) : space.UsesLegacyHost ? legacyHost : compatibleHost,
         space.External is not null ? external.DirectoryFor((ProviderModelReference)ModelReference.Parse(space.ModelUrl), options.Device) : cache.DirectoryFor(space),
         budget, log,
-        space: space, workerLimit: count > 1 || space != EmbeddingSpace.Default ? 1 : null,
+        space: space, workerLimit: count > 1 || !space.UsesLegacyHost ? 1 : null,
         threadLimit: count > 1 ? Math.Max(1, budget.Processors / count) : null,
-        requiredProvider: space == EmbeddingSpace.Default ? null : options.ProviderSelector, memoryCoordinator: memory);
+        requiredProvider: space.UsesLegacyHost ? null : options.ProviderSelector, memoryCoordinator: memory);
 
     internal static ModelSelection NormalizeSelection(ModelSelection selection, IReadOnlyDictionary<string, EmbeddingSpace> spaces)
     {
@@ -130,7 +119,7 @@ public sealed class ModelManager : IEmbeddings
             if (profile == "choose") throw new ArgumentException($"Choose an approved query purpose for {kind} before applying this model.");
             if (space.Recipe is { } recipe) _ = recipe.Query(profile);
             else if (profile != "default") throw new NotSupportedException("This legacy model does not expose configurable query profiles.");
-            if (space == EmbeddingSpace.Default && value.Device is not ("Automatic" or "CPU"))
+            if (space.UsesLegacyHost && value.Device is not ("Automatic" or "CPU"))
                 throw new NotSupportedException("The bundled EmbeddingGemma2 artifact is CPU-only. Choose a separately qualified accelerator artifact rather than forcing this export onto another device.");
             if (space.Recipe is null && profile == "default") value = value with { QueryProfile = "" };
             return value == ModelOptions.Default ? null : value;
@@ -162,9 +151,16 @@ public sealed class ModelManager : IEmbeddings
         }
         return new(selection, requirements.ToArray());
     }
-    private Task<ModelRequirement> InspectBindingAsync(string kind, string reference, CancellationToken cancellation) =>
-        ModelReference.Parse(reference) is ProviderModelReference provider
-            ? external.InspectAsync(kind, provider, cancellation) : cache.InspectAsync(kind, reference, cancellation);
+    private Task<ModelRequirement> InspectBindingAsync(string kind, string reference, CancellationToken cancellation)
+    {
+        if (ModelReference.Parse(reference) is ProviderModelReference provider)
+            return external.InspectAsync(kind, provider, cancellation);
+        EmbeddingSpace? saved;
+        lock (gate) saved = routes.Values.FirstOrDefault(space => space.ModelUrl == reference);
+        if (saved is null && catalog?.HasCommittedModels == true)
+            saved = catalog.Spaces.FirstOrDefault(space => space.ModelUrl == reference);
+        return cache.InspectAsync(kind, reference, cancellation, saved);
+    }
 
     public Task<ProviderCatalog> ProviderCatalogAsync(string provider, string? version, bool refresh, CancellationToken cancellation) =>
         external.CatalogAsync(provider, version, refresh, cancellation);
@@ -197,10 +193,11 @@ public sealed class ModelManager : IEmbeddings
     private ImageUnderstandingPool CreateImagePool(ImagePipelineDescriptor descriptor, CancellationToken cancellation) =>
         new(descriptor, compatibleHost, imageAssets.DirectoryFor(descriptor.Model), Math.Max(1, Math.Min(2, budget.Processors)),
             log, cancellation, memory);
-    public async Task<PreparedModels?> PrepareAsync(ModelSelection selection, Action<string> progress, CancellationToken cancellation)
+    public async Task<PreparedModels?> PrepareAsync(ModelSelection selection, Action<string> progress, CancellationToken cancellation,
+        bool startup = false, bool retry = false)
     {
         selection = selection.Normalize();
-        if (selection == Selection) return null;
+        if (!retry && selection == Selection && Routes.Count == 3) return null;
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellation, lifetime?.Token ?? default);
         if (!selection.UsesImageUnderstanding && ImageUnderstanding is ImageUnderstandingPool previousImages)
             await previousImages.ReleaseIfIdleAsync();
@@ -218,11 +215,16 @@ public sealed class ModelManager : IEmbeddings
             {
                 spaces[key] = existing ?? await external.ResolveAsync(reference, encoded.OptionsFor(kind), progress, linked.Token, memory);
             }
-            else spaces[key] = existing ?? cache.FindVerified(url, progress) ?? await cache.ResolveAsync(url, progress, linked.Token);
+            else
+            {
+                var saved = existing ?? (catalog?.HasCommittedModels == true || startup && url == ModelSelection.LegacyDefaultUrl
+                    ? catalog?.Spaces.FirstOrDefault(space => space.ModelUrl == url) : null);
+                spaces[key] = await cache.ResolveAsync(url, progress, linked.Token, saved);
+            }
         }
         encoded = NormalizeSelection(encoded, spaces);
         selection = selection.WithEmbeddingOptions(encoded);
-        if (selection == Selection) return null;
+        if (!retry && selection == Selection && Routes.Count == 3) return null;
         var nextRoutes = BuildRoutes(encoded, spaces, selection.UsesImageUnderstanding);
         var next = new Dictionary<string, ModelPool>();
         var byKind = new Dictionary<string, ModelPool>();
@@ -245,13 +247,13 @@ public sealed class ModelManager : IEmbeddings
                 created.Add(pool);
                 await pool.StartAsync((_, stage) => progress(stage), linked.Token);
                 _ = await pool.QueryAsync("local model compatibility check", linked.Token);
-                if (space.SupportsImages && space == EmbeddingSpace.Default)
+                if (space.SupportsImages)
                 {
                     string probe = Path.Combine(dataDirectory, ".model-image-probe-" + Guid.NewGuid().ToString("N") + ".bmp");
                     try
                     {
                         WriteProbeBitmap(probe);
-                        _ = await pool.ImageAsync(probe, linked.Token);
+                        await pool.ValidateImageAsync(probe, linked.Token);
                     }
                     finally { File.Delete(probe); }
                 }

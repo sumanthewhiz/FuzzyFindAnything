@@ -30,7 +30,7 @@ public sealed class SettingsService
     private ApplicationSettings Load()
     {
         if (!File.Exists(FilePath))
-            return new ApplicationSettings("Light", true, defaultLogDirectory);
+            return new ApplicationSettings("Light", true, defaultLogDirectory, ModelSelection.Load(Path.GetDirectoryName(FilePath)!));
         try
         {
             using var reader = XmlReader.Create(FilePath, new XmlReaderSettings
