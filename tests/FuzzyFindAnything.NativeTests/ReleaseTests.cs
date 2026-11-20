@@ -15,8 +15,9 @@ internal static class ReleaseTests
     private static readonly string[] Names =
     [
         "FuzzyFindAnything.exe", "FuzzyFindAnything.dll", "FuzzyFindAnything.runtimeconfig.json",
-        "Get-Model.ps1", "Reset-Index.ps1", "QUICKSTART.md", "THIRD-PARTY-NOTICES.txt",
+        "Get-Model.ps1", "Reset-Index.ps1", "README.md", "QUICKSTART.md", "THIRD-PARTY-NOTICES.txt",
         "LICENSE", "APPLICATION-LICENSE", "CONTRIBUTING.md", "SECURITY.md", "THIRD-PARTY-NOTICES.md",
+        "docs/ARCHITECTURE.md", "docs/CHUNKING.md", "docs/MIGRATION.md", "docs/MODEL-COMPATIBILITY.md", "docs/VALIDATION.md",
         "engine/FuzzyFindAnything.Engine.exe", "engine/ffa_diskann.dll", "engine/libiomp5md.dll", "engine/e_sqlite3.dll",
         "inference/FuzzyFindAnything.Inference.exe", "inference/onnxruntime.dll",
         "hf-inference/FuzzyFindAnything.HuggingFaceInference.exe", "hf-inference/onnxruntime.dll", "hf-inference/DirectML.dll",
@@ -32,7 +33,7 @@ internal static class ReleaseTests
             "module.py", "python311.dll", "settings.xml", "folder\\escape.txt", "folder/../escape", "folder//alias.txt",
             "provider-settings.json", "provider.json", "provider-model.json", "ffa_provider_bridge.dll",
             "model.quant.onnxe", "internal-sdk.nupkg", "FuzzyFindAnything.MicrosoftProvider.exe",
-            "inference/weights.onnx_data", "tokenizer.model", "tokenizer.json" })
+            "inference/weights.onnx_data", "tokenizer.model", "tokenizer.json", "FuzzyFindAnything-v2.0.0-win-arm64.zip" })
         {
             Create(archive, payload => payload[forbidden] = [1]);
             Check.Throws<InvalidDataException>(() => ReleasePackage.Validate(archive, "win-arm64", Version));
@@ -51,6 +52,13 @@ internal static class ReleaseTests
         Check.Throws<InvalidDataException>(() => ReleasePackage.Validate(archive, "win-arm64", Version));
         Create(archive, payload => payload.Remove("APPLICATION-LICENSE"));
         Check.Throws<InvalidDataException>(() => ReleasePackage.Validate(archive, "win-arm64", Version));
+        Create(archive, payload => payload["APPLICATION-LICENSE"] = Encoding.UTF8.GetBytes("Different license terms"));
+        Check.Throws<InvalidDataException>(() => ReleasePackage.Validate(archive, "win-arm64", Version));
+        foreach (string missing in new[] { "README.md", "docs/MODEL-COMPATIBILITY.md" })
+        {
+            Create(archive, payload => payload.Remove(missing));
+            Check.Throws<InvalidDataException>(() => ReleasePackage.Validate(archive, "win-arm64", Version));
+        }
         Create(archive, payload => payload.Remove("APPLICATION-LICENSE"), version: "1.1.0");
         ReleasePackage.Validate(archive, "win-arm64", "1.1.0");
         Create(archive, null, tamper: true);

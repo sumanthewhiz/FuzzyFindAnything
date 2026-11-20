@@ -1,10 +1,12 @@
 # Security policy
 
+[Overview](README.md) · [Licensing and model terms](THIRD-PARTY-NOTICES.md)
+
 ## Reporting
 
 Use [GitHub private vulnerability reporting](https://github.com/sumanthewhiz/FuzzyFindAnything/security/advisories/new) for suspected vulnerabilities. Do not open a public issue containing an exploit, private file, credential, model payload or catalog.
 
-Include the affected version, Windows/CPU architecture, reproduction steps, expected impact and a minimal synthetic example. Share only the minimum diagnostic material needed. There is no guaranteed response-time SLA.
+Include the affected version, Windows/CPU architecture, reproduction steps, expected impact and a minimal synthetic example. Share only the diagnostic material needed. Reports are handled on a best-effort basis without a guaranteed response time.
 
 Security fixes target the current 2.0 codebase. Reproduce on the latest supported build where practical; older binaries may not contain current isolation, validation or recovery fixes.
 
@@ -16,9 +18,9 @@ The index stores paths, extracted text/snippets, generated descriptions and embe
 
 Process isolation limits faults, hangs and crashes; it is **not a security sandbox**. Installed IFilters, native execution providers and registered file viewers are part of the machine's trust boundary. Avoid indexing untrusted files on a privileged account.
 
-Native model assets are pinned/validated, and supported recipes do not execute arbitrary Hugging Face Python or JavaScript. Optional companion downloads require authenticated access, an approved internal repository/release and pinned archive digests. Registry access is checked separately.
+Integrated model recipes pin their artifacts; compatible exports are resolved to immutable revisions and verified in the cache. Supported recipes do not execute arbitrary Hugging Face Python or JavaScript. Optional companion downloads require authenticated access, an approved internal repository/release and pinned archive digests. Registry access is checked separately.
 
-Release packages are currently unsigned. SHA-256 checksums detect altered bytes but are not a substitute for publisher verification or code signing. Follow your organization's software and model-use policies.
+Release packages are currently unsigned. Download the versioned application ZIP and its checksum from the same release or successful run. SHA-256 checksums detect altered bytes but are not a substitute for publisher verification or code signing. Follow applicable software and model-use policies.
 
 ## Responsible handling
 

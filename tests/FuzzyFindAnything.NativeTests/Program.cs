@@ -21,6 +21,7 @@ internal static class Program
         if (args.Length > 0 && args[0] == "monitoring") { MonitoringTests.RunAsync().GetAwaiter().GetResult(); return 0; }
         if (args.SequenceEqual(["scheduling"])) { SchedulingTests.RunAsync().GetAwaiter().GetResult(); return 0; }
         if (args.Length > 0 && args[0] == "assets") { AssetTests.RunAsync().GetAwaiter().GetResult(); return 0; }
+        if (args.SequenceEqual(["release"])) { ReleaseTests.Run(); return 0; }
         if (args.Length > 0 && args[0] == "model-config") { ModelConfigurationTests.Run(); return 0; }
         if (args.Length == 3 && args[0] == "binary-quickstart") { ModelConfigurationTests.BinaryQuickstartAsync(args[1], args[2]).GetAwaiter().GetResult(); return 0; }
         if (args.Length > 0 && args[0] == "embedding-recipes") { EmbeddingRecipeTests.Run(); return 0; }

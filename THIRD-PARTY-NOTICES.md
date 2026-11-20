@@ -1,12 +1,14 @@
 # Licensing, components and model terms
 
+[Overview](README.md) · [Model compatibility](docs/MODEL-COMPATIBILITY.md) · [Upstream notice inventory](https://github.com/sumanthewhiz/FuzzyFindAnything/tree/dev/licenses)
+
 ## Application license
 
-**FuzzyFindAnything 2.0 is authored by Suman Ghosh and its original application source and documentation are licensed under the [MIT license](LICENSE).**
+Copyright (c) 2026 **Suman Ghosh**. Original FuzzyFindAnything application source and documentation are licensed under the [MIT license](LICENSE).
 
 The MIT grant does **not** replace the licenses or terms for dependencies, native runtimes, SDKs, models, tokenizers, exported artifacts or other third-party material. A binary package is a collection of separately licensed components, not a relicensing of all its contents under MIT.
 
-Binary ZIPs include `APPLICATION-LICENSE`, `THIRD-PARTY-NOTICES.txt`, original texts in `third-party`, and a checksummed `release-manifest.json` identifying the actual versions and files. These packaged notices are the authoritative inventory for that particular build.
+Binary ZIPs include matching `LICENSE` and `APPLICATION-LICENSE` copies, this guide, `THIRD-PARTY-NOTICES.txt`, original component texts in `third-party`, and a checksummed `release-manifest.json`. The original texts and exact version/file inventory govern the components in that build.
 
 ## Principal components
 
@@ -14,9 +16,9 @@ Binary ZIPs include `APPLICATION-LICENSE`, `THIRD-PARTY-NOTICES.txt`, original t
 |---|---|---|
 | [.NET / WPF](https://github.com/dotnet/wpf) | Desktop UI and managed runtime | MIT and bundled third-party notices |
 | [Microsoft DiskANN 0.7.0](https://github.com/microsoft/DiskANN/tree/df225d32da81db87596a3ce7c040ad0f78709a7c) | Native ANN graph | MIT; retain its NOTICE and vendored notices |
-| [ONNX Runtime 1.31.0](https://github.com/microsoft/onnxruntime) | Default native model inference | MIT and upstream third-party notices |
+| [ONNX Runtime 1.31.0](https://github.com/microsoft/onnxruntime) | Legacy custom-export inference host | MIT and upstream third-party notices |
 | [Microsoft.ML.Tokenizers 2.0.0](https://www.nuget.org/packages/Microsoft.ML.Tokenizers/2.0.0) | Native tokenization | MIT |
-| [Microsoft Windows ML 2.4.89](https://www.nuget.org/packages/Microsoft.Windows.AI.MachineLearning/2.4.89) | Compatible-model CPU/GPU/NPU execution | **Microsoft Software License Terms**, with separate included-component terms; not covered by the app's MIT grant |
+| [Microsoft Windows ML 2.4.89](https://www.nuget.org/packages/Microsoft.Windows.AI.MachineLearning/2.4.89) | Public default and compatible-model CPU/GPU/NPU execution | **Microsoft Software License Terms**, with separate included-component terms; not covered by the app's MIT grant |
 | [Microsoft.Data.Sqlite.Core 9.0.4](https://www.nuget.org/packages/Microsoft.Data.Sqlite.Core/9.0.4) | SQLite access | MIT |
 | [SQLitePCLRaw 3.0.3](https://github.com/ericsink/SQLitePCL.raw/tree/v3.0.3) | SQLite native bindings | Apache-2.0 |
 | [SQLite](https://www.sqlite.org/copyright.html) | Local catalog, queue and vectors | Public domain; wrapper licenses remain separate |
@@ -41,12 +43,14 @@ Examples:
 
 | Model / artifact | Upstream reference and guidance |
 |---|---|
-| `google/embeddinggemma-2` | The [pinned source card](https://huggingface.co/google/embeddinggemma-2/tree/914f7f89142e33e77833254d9c9b90c3cef7303b) declares Apache-2.0. The separately prepared native export must retain applicable attribution, notices and modification provenance. |
+| `onnx-community/embeddinggemma-2-ONNX` | The [pinned export](https://huggingface.co/onnx-community/embeddinggemma-2-ONNX/tree/daa72c51243991dfcaf9f9137d2c573d8f7790c0) and [original Google checkpoint](https://huggingface.co/google/embeddinggemma-2/tree/914f7f89142e33e77833254d9c9b90c3cef7303b) declare Apache-2.0. The tokenizer's supplemental source and export provenance are recorded in the public-model manifest. Retain applicable upstream attribution, license/NOTICE material and modification notices when redistribution is permitted. |
 | `sentence-transformers/paraphrase-MiniLM-L3-v2` | The [model card](https://huggingface.co/sentence-transformers/paraphrase-MiniLM-L3-v2) declares Apache-2.0. |
-| `Xenova/clip-vit-base-patch32` | The [ONNX card](https://huggingface.co/Xenova/clip-vit-base-patch32) identifies the [OpenAI CLIP model](https://huggingface.co/openai/clip-vit-base-patch32). OpenAI's [CLIP repository license](https://github.com/openai/CLIP/blob/main/LICENSE) is MIT; the export card does not declare a separate license identifier. Review both sources rather than inferring an app-granted license. |
+| `Xenova/clip-vit-base-patch32` | The [ONNX card](https://huggingface.co/Xenova/clip-vit-base-patch32) identifies the [OpenAI CLIP checkpoint](https://huggingface.co/openai/clip-vit-base-patch32). OpenAI's [CLIP repository license](https://github.com/openai/CLIP/blob/main/LICENSE) is MIT. Review the selected export and upstream checkpoint terms rather than inferring rights from the application's license. |
 | Other embedding, caption, OCR or region models | Consult the exact source and artifact revisions selected by their reviewed recipe. Licensing can differ by model and export. |
 
-The app does not grant rights to indexed documents or images. Generated descriptions can be inaccurate; do not treat them as verified facts or an ownership/license determination.
+The [compatibility catalogue](docs/MODEL-COMPATIBILITY.md) records repository-declared license identifiers at assessed revisions. Those labels are descriptive metadata, not legal clearance; a missing declaration is not permission to redistribute.
+
+The app does not grant rights to indexed documents or images. Generated descriptions can be inaccurate and are not an ownership or licensing determination. Third-party names identify their respective artifacts; listing them does not imply affiliation or endorsement.
 
 ## Internal Microsoft models and system filters
 
