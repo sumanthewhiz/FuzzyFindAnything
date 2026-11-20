@@ -2,7 +2,7 @@
 
 **FuzzyFindAnything 2.0 | As of November 2026**
 
-[Overview](../README.md) · [Quickstart](../QUICKSTART.md) · [Migration](MIGRATION.md) · [Model terms](../THIRD-PARTY-NOTICES.md#hugging-face-and-other-models)
+[Overview](../README.md) · [Quickstart](../QUICKSTART.md) · [Migration](MIGRATION.md) · [Validation](VALIDATION.md) · [Model terms](../THIRD-PARTY-NOTICES.md#hugging-face-and-other-models)
 
 This reference describes Hugging Face model selections for document, source-code and image search. It includes the complete integrated model registry and a revision-specific catalogue of additional compatible-format exports, assessed on **19 November 2026**.
 

@@ -1,8 +1,21 @@
-# FuzzyFindAnything 2.0: architecture and operations
+# Architecture and operations
 
-See [content chunking](CHUNKING.md) for model-independent document/code boundaries, native syntax grammars, token budgets, provenance and schema-8 migration.
+[Overview](../README.md) · [Quickstart](../QUICKSTART.md) · [Models](MODEL-COMPATIBILITY.md) · [Chunking](CHUNKING.md) · [Migration](MIGRATION.md) · [Validation](VALIDATION.md)
 
-[Overview](../README.md) · [Quickstart](../QUICKSTART.md) · [Migration](MIGRATION.md) · [Validation](VALIDATION.md)
+This reference describes the application's process boundaries, model contracts, indexing lifecycle and durable state. User-facing setup is covered in the Quickstart; exact model choices and chunking policies have separate references.
+
+## Contents
+
+- [Design boundaries](#design-boundaries)
+- [Components and architecture boundaries](#components-and-architecture-boundaries)
+- [Model contract](#model-contract)
+- [Configurable models and device checks](#configurable-models-and-device-checks)
+- [Startup and resource budgeting](#startup-and-resource-budgeting)
+- [Discovery, indexing and retrieval](#discovery-indexing-and-retrieval)
+- [Persistence and recovery](#persistence-and-recovery)
+- [Supported content](#supported-content)
+- [Settings, logs and data locations](#settings-logs-and-data-locations)
+- [Build, packaging and maintenance](#build-packaging-and-maintenance)
 
 ## Design boundaries
 
@@ -22,8 +35,8 @@ The 2.0 brand does not rename the repository, assemblies, executable, named-pipe
 | Coordinator executable | `src\FuzzyFindAnything.Engine` | Exclusive data-directory lease, local JSON IPC, startup/status and shutdown |
 | Engine library | `src\FuzzyFindAnything.Core` | Catalog, durable queue, discovery, monitoring, concurrency, extraction client and logs |
 | Content preparation | `src\FuzzyFindAnything.Chunking` | App-owned document/code boundaries, native syntax trees, token-budget enforcement and provenance |
-| Inference host | `src\FuzzyFindAnything.Inference` | Exact tokenization/decoding, image preprocessing and reusable ONNX sessions |
-| Compatible-model host | `src\FuzzyFindAnything.HuggingFaceInference` | Reviewed embedding/image-understanding recipes, native BERT/CLIP adapters and Windows ML device validation |
+| Legacy inference host | `src\FuzzyFindAnything.Inference` | Retained custom-export tokenization, image preprocessing and ONNX sessions |
+| Compatible-model host | `src\FuzzyFindAnything.HuggingFaceInference` | Public Gemma2, reviewed embedding/image-description recipes, BERT/CLIP adapters and Windows ML qualification |
 | IFilter helper | `src\FuzzyFindAnything.Extractor` | Isolated COM activation, content detection, bounded extraction and classified errors |
 | Native DiskANN bridge | `native` | Pinned C++ implementation, versioned C ABI, caller-owned buffers and packed snapshots |
 | Utilities | `src\FuzzyFindAnything.Tools` | Native model acquisition/verification, offline maintenance and package verification |
@@ -64,13 +77,21 @@ The WPF application owns a .NET Windows Forms `NotifyIcon` for the system tray. 
 
 ## Model contract
 
-The **fresh default** is the public `onnx-community/embeddinggemma-2-ONNX` package at `daa72c51243991dfcaf9f9137d2c573d8f7790c0`, using recipe `gemma2-public-f32-v1` in `model-assets\embeddinggemma-2-public.json`. It retains the original Google checkpoint revision below and obtains the missing SentencePiece file explicitly from that pinned upstream source.
+### Public default
+
+The default is `onnx-community/embeddinggemma-2-ONNX` at `daa72c51243991dfcaf9f9137d2c573d8f7790c0`, using recipe `gemma2-public-f32-v1` in `model-assets\embeddinggemma-2-public.json`. Its supplemental SentencePiece file comes from `google/embeddinggemma-2` at `914f7f89142e33e77833254d9c9b90c3cef7303b`.
 
 Its compatible native host consumes int64 `input_ids`/`attention_mask` and FP32 `[feature_tokens,512]` image/video/audio inputs. Text calls supply empty unused modalities. The named `sentence_embedding` output is already pooled `[batch,768]`; it is checked and normalized, not pooled again. Vision uses `pixel_values [1,2520,768]` and `pixel_position_ids [1,2520,2]`, with placeholder-count-checked `image_features`. A pair of images executes independently through both graphs. Audio/video support is not enabled.
 
 The processor contract is Gemma4 RGB/bicubic, rescale 1/255 without extra normalization, 16-pixel patches, pooling 3 and at most 280 soft tokens. GemmaTokenizer uses right padding and BOS=2/EOS=1/PAD=0. The qualified ceiling is 2,048 tokens, eight text inputs with at most 4,096 padded tokens, 512-token chunks and two independent images. Admission retains a 3 GiB model allowance and 2 GiB system reserve. Unsupported exports are rejected, not converted or guessed from their dimensions.
 
-The following table describes the **retained legacy custom export**, whose fingerprint and graph directory remain unchanged:
+Queries use `task: search result | query: <text>`. Documents/code use `title: <filename> | text: <passage>`, with titles bounded to 160 Unicode scalars. Framing is part of the vector contract; source text and filenames are treated as data.
+
+Image preparation handles RGB conversion, EXIF orientation, the first GIF frame and the largest supported ICO frame. Decode dimensions and allocations are bounded; images above the preparation limit are resized before patching. Filename vectors are never substituted for decoding failures.
+
+### Legacy custom export
+
+Initialized installations can retain the original custom export, whose fingerprint and graph directory remain unchanged:
 
 | Property | Value |
 |---|---|
@@ -86,13 +107,13 @@ The following table describes the **retained legacy custom export**, whose finge
 | Passages | App-owned document/code structure, model-measured 512-token budget and bounded splitting of oversized units |
 | Title / preview limits | 160 / 400 Unicode scalars |
 
-The managed SentencePiece encoder matches the reference token IDs. Passage decoding explicitly follows `tokenizer.json`'s replacement, byte-fallback and concatenation operations; the generic decoder would drop the model's ordinary newline token. Code previews preserve line breaks and indentation. Document previews collapse whitespace.
+The legacy SentencePiece decoder follows `tokenizer.json` replacement, byte-fallback and concatenation semantics, including ordinary newline tokens. Code previews preserve line breaks and indentation; document previews collapse whitespace.
 
 The language graph supports dynamic batches and sequence lengths and outputs projected 768-dimensional token states. Pooling is attention-mask-aware and includes prompt tokens. Non-finite, zero-length and dimensionally invalid embeddings are rejected. The export explicitly expands position IDs per batch to preserve padded-batch RoPE behavior.
 
 The vision graph has a **single-image** input shape: pixels `[1,2520,768]` and positions `[1,2520,2]`. A two-image request makes two valid vision calls, aligns their soft-token features, then batches language processing. This is not a one-image-at-a-time application restriction.
 
-Image preprocessing handles RGB conversion, EXIF orientation, first-frame GIF, largest supported ICO frame, a 2,048-pixel preparation limit, bicubic resizing, 16-pixel patches, pooling factor 3 and up to 280 soft tokens. Decoded dimensions and allocations are bounded. Filename vectors are never substituted for failed image decoding.
+Its retained input ceiling is 8,192 tokens, distinct from the public default's qualified 2,048-token context. See [Content chunking](CHUNKING.md#token-budgets-context-and-overlap) for each path's formatted passage budget.
 
 ### Acquisition
 
@@ -104,7 +125,7 @@ Public vector identity includes weights, tokenizer provenance, preprocessing, gr
 
 Verified assets are atomically promoted. Inference holds read leases that prevent replacement of active model files. `-VerifyOnly` checks every asset without creating files, modifying contents or contacting a host. Model acquisition is separate from application packages and Git.
 
-A custom `-Destination` does not automatically change `runtime.json`; update its `model` path while the application is stopped. Export changes, precision changes and tokenizer/preprocessing changes require new parity evidence and an explicit embedding-space compatibility decision.
+For legacy provisioning, a custom `-Destination` does not automatically change `runtime.json`; its `model` path must match while the application is stopped. Public models instead use the selected data-directory cache. Export, precision, tokenizer or preprocessing changes require numerical qualification and an explicit vector-identity decision.
 
 ## Configurable models and device checks
 
@@ -126,33 +147,31 @@ The native adapters retain the existing EmbeddingGemma2 bundle and direct CLIP i
 
 `model-assets\embedding-recipes.json` is embedded into the native core; it is reviewed application data, not executable metadata supplied by an arbitrary model card. Entries map model-card URLs to a pinned artifact repository/revision, expected hashes and a bounded recipe. The recipe defines tokenization, special tokens, padding, tensor names, output selection, pooling, document formatting, approved query profiles, chunk size and batch-token limits. Adding a compatible checkpoint requires registry data and qualification, not UI/indexer model-name branches. A new algorithm/graph ABI still requires an adapter.
 
-The initial decoder recipe maps `Qwen/Qwen3-Embedding-0.6B` to Qdrant's stateless fp32 ONNX export at `af95f2c416ffe9379369ad64f9113e865db6112c`. It uses native byte-level BPE/NFC, the checkpoint's terminal token, left padding, last-real-token pooling and normalization into 1,024 dimensions. Query-purpose presets add approved instructions; documents do not receive a query instruction. The qualified input ceiling is 2,048 tokens and document chunks are bounded to 512 tokens, not the model card's full advertised context.
+The Qwen recipe maps `Qwen/Qwen3-Embedding-0.6B` to Qdrant's stateless FP32 ONNX export. It uses native byte-level BPE/NFC, the checkpoint's terminal token, left padding, last-real-token pooling and 1,024-dimensional normalization. Query-purpose presets add role-specific instructions; documents do not receive a query instruction. The qualified input ceiling is 2,048 tokens and chunks are bounded to 512 tokens. Exact revisions are listed in [Model compatibility](MODEL-COMPATIBILITY.md#integrated-models).
 
-Two E5 checkpoints demonstrate the same extensible path with a different recipe: WordPiece, mean pooling, `passage: ` document prefixes and `query: ` query prefixes. Mean, CLS, last-token and pre-pooled outputs share mask-aware validation; pre-pooled vectors are not pooled twice. Float16 outputs are converted explicitly when the recipe path permits them; the durable vector boundary remains normalized float32.
+The E5 recipes use WordPiece, mean pooling, `passage: ` document prefixes and `query: ` query prefixes. Mean, CLS, last-token and pre-pooled outputs share mask-aware validation; pre-pooled vectors are not pooled twice. Float16 outputs are converted only when the recipe path permits them; the durable vector boundary remains normalized float32.
 
 Artifact caching and model sessions are distinct from document-vector identity. Legacy fingerprints/cache layouts remain unchanged. New document-space fingerprints include tokenizer, output/pooling and document-format contracts; indexing fingerprints also include chunking. Query-purpose changes do not rewrite document vectors. The same physical model can serve different query roles; shared-space search filters allowed source kinds before consuming a binding's result limit. A bounded in-memory query cache keys by space, full recipe contract, device and query profile.
 
 Model inspection reads cached descriptors or bounded Hub metadata, without downloading weights or changing applied settings. Each role has its own source/model binding; Hugging Face uses a model-card URL and an approved provider uses fixed catalog choices. Simple/default models have no additional setup; applicable details are collapsed, and genuine unresolved choices are exposed through built-in controls rather than arbitrary forms from remote metadata. The actual artifact source, revision and limits are disclosed.
 
-New assets are fetched from the selected Hugging Face repository at a resolved commit, with bounded downloads, LFS SHA-256 verification where supplied and a complete local checksum manifest. Previously cached assets can be reused offline. Active models hold read leases on their assets. Model payloads remain outside Git and application ZIPs.
-
-Acquisition inspects bounded ONNX protobuf metadata to discover real external-data dependencies and validate their file bounds; it no longer guesses external weights from filename suffixes. Paths cannot escape the model directory. Transfers retain a 4 GiB per-file and 12 GiB total-asset budget, with byte progress and resumable verified staging.
+Acquisition inspects bounded ONNX protobuf metadata for external-data dependencies and validates their file bounds. Paths cannot escape the model directory. Transfers enforce a 4 GiB per-file and 12 GiB total-asset budget, with byte progress and resumable verified staging.
 
 The compatible-model process uses the self-contained `Microsoft.Windows.AI.MachineLearning` runtime, separate from the pinned original EmbeddingGemma2 process. Windows ML enumerates real EP/device pairs, including DirectML GPUs and compatible vendor providers such as QNN for Qualcomm NPUs. Discovery alone does not install missing providers. An explicitly requested eligible provider uses Windows ML readiness/registration before actual graph qualification; drivers and arbitrary repository code are never installed.
 
 Selection tries CPU first for continuity and then available local GPU/NPU devices if CPU cannot execute the graph. Each candidate must create the required graph sessions and produce valid, distinguishable normalized embeddings for its supported modalities. For accelerator candidates, runtime profiling must show that the selected provider actually executed embedding kernels; an all-CPU fallback does not count as GPU/NPU support. CPU assistance for supported control/shape nodes is allowed. Cloud execution providers are excluded.
 
-New recipe hosts also execute a representative near-maximum token workload on each candidate before reporting readiness. Qualification runs again on worker startup/replacement; no stale persisted device certificate bypasses these checks. Memory admission includes the model estimate plus a system reserve, and the recipe's token budget bounds batching. An explicit device policy is a strict request: it does not silently fall back to another provider.
+Recipe hosts execute a representative near-maximum token workload before reporting readiness. Qualification runs again on worker startup/replacement. Memory admission includes the model estimate plus the system reserve, and the recipe's token budget bounds batching. An explicit device policy does not silently fall back to another provider.
 
 Model changes are prepared before mutating the catalog. Only after asset, modality, memory and execution checks succeed are file workers paused, affected jobs/vectors removed, XML and routing state published, and processing restarted. Unchanged file types retain their vector IDs and committed passage batches. A failed validation leaves the applied XML and indexes intact.
 
 `ModelMemoryCoordinator` serializes native model loads, including startup, replacement after worker failure, image generation and external-provider qualification. It admits the next model only when its allowance plus the 2 GiB system reserve fits available RAM. Under pressure it releases least-recently-used idle workers, waiting for busy operations rather than interrupting their batches. Cold pools retain their queues, vector identity and routing and recreate workers on demand; all selected models need not remain resident simultaneously. Optional warmup cannot evict another model to obtain memory.
 
-Provider acquisition happens before a protocol-version-2 memory handoff. The companion requests its validated allowance immediately before native qualification; the coordinator acknowledges only after admission and retains the loading lease until that process exits. Failure, timeout and cancellation release the lease and leave existing model pools recoverable. These changes do not modify vector fingerprints, folder scope, XML or SQLite schema. Resource estimates remain conservative: this is working-set management, not a guarantee that every model fits every device.
+Provider acquisition happens before a protocol-version-2 memory handoff. The companion requests its allowance immediately before native qualification; the coordinator acknowledges only after admission and retains the loading lease until that process exits. Failure, timeout and cancellation release the lease and leave existing model pools recoverable. Admission itself does not change vector identities or stored preferences; it manages residency rather than guaranteeing every model fits every device.
 
 Preparation runs outside the short configuration commit gate and on a separate request task, so existing-index queries can continue while assets/devices are checked. Model changes remain serialized; cancellation before publication preserves the applied settings. A failure after commit is reported as an applied configuration with stopped indexing, not as a successful rollback. A query-purpose-only change retains document embeddings. Device changes follow the vector contract: provider device-specific identities selectively reindex rather than assuming CPU/NPU equivalence.
 
-The catalog also persists the affected file types and completion state for each accepted model change. Status waits for folder reconciliation and the affected queue to finish before reporting completion, including separate succeeded/failed counts. This tracking survives restart; a later validation error is not overwritten by an earlier completion message. Valid images that an older CLIP build rejected because resize rounding produced a 223-pixel short edge are retried on startup without invalidating successfully indexed files.
+The catalog persists the affected kinds and completion state for each accepted model change. Status waits for folder reconciliation and the affected queue before reporting succeeded/failed counts. Tracking survives restart, and stale completion messages cannot replace a later validation error. Known recoverable legacy CLIP resize failures are retried without invalidating healthy image vectors.
 
 There is one DiskANN graph per distinct pinned embedding space, not simply per vector dimension. The legacy graph retains its existing `diskann` location. Other graphs, including the public Gemma2 space, live under `model-indexes\<space-key>`; model assets live separately under `models\<space-key>` in the selected data directory. Counts and search results are aggregated, while the model tab lists each graph's file types, dimensions and actual execution device.
 
@@ -162,7 +181,7 @@ Source roles, approved query profiles and device policy are persisted independen
 
 ### Native image-understanding pipelines
 
-`model-assets\image-recipes.json` defines reviewed image-input/task providers separately from embedding recipes. The first adapter is `vision-text-seq2seq-bpe-v1`, with Florence-2 base, base-ft, large and large-ft checkpoints using the same implementation. A definition supplies pinned component graphs, image normalization/shape, tokenizer/decoder geometry, task prompts and output limits. Large profiles specify 1,024 hidden dimensions, 16 heads and 12 layers instead of the base profile's 768/12/6. Their graph payload is about 3.07 GiB; the generator planning allowance is 6.5 GiB plus the usual 2 GiB system reserve. The shared compatible-model executable runs this provider in a separate `--image-model` process; it does not run Hugging Face Python or JavaScript.
+`model-assets\image-recipes.json` defines image-input/task providers separately from embedding recipes. The `vision-text-seq2seq-bpe-v1` adapter supports the four registered Florence-2 base/large and fine-tuned checkpoints. A definition supplies pinned component graphs, image normalization/shape, tokenizer/decoder geometry, prompts and output limits. Large profiles use 1,024 hidden dimensions, 16 heads and 12 layers rather than the base profile's 768/12/6. Their generator allowance is 6.5 GiB plus the 2 GiB system reserve. The compatible-model executable hosts generation in a separate `--image-model` process, without upstream Python or JavaScript.
 
 The native path performs safe image decoding and recipe-specific bicubic resize/RGB normalization, vision encoding, task-token embedding, a text/image encoder and bounded cached decoding. The current qualified policy is greedy decoding with a forced beginning token, EOS termination and three-token repetition blocking. Caption and OCR have separate token limits; reaching a limit produces a partial/truncated outcome, not false successful completion. Cached decoder cross-attention states are retained from the first step because subsequent merged-graph outputs for them are empty.
 
@@ -175,6 +194,16 @@ Image model changes use persisted reindex-operation membership and initial-scan 
 Generation is single-task-per-worker, lazy on restart, bounded by the shared CPU affinity, and subject to memory/device admission. Idle generation workers are released without affecting search and can be released before qualifying a different image model. Existing direct Gemma/CLIP configurations do not create a generator or require downstream/tokenizer/task controls. A described-image model automatically links to Text unless the user chooses a separate embedder; that dependency is included in invalidation rather than copied as an unrelated URL.
 
 Other checkpoints of a supported native task ABI require reviewed recipe data and qualification. New processors/architectures still require another native adapter; sparse/multi-vector retrieval, hybrid visual-plus-caption fusion, arbitrary remote code and VQA are not implicitly supported.
+
+### Typed region output and retrieval
+
+`ImageTaskProfile` declares an output kind and reviewed postprocessor. `ImageRegion` is a provider-neutral contract containing region ID, text, optional genuine confidence and finite normalized bounds in the oriented image coordinate system. The `florence-boxes-v1` postprocessor supports object labels (`<OD>`) and dense region descriptions (`<DENSE_REGION_CAPTION>`), including multiple boxes after a shared label. It dequantizes 1,000 bins as `(bin + 0.5) / 1000` and does not infer confidence or repair invalid boxes silently.
+
+Output is bounded to 64 unique regions and 4,096 characters per label/description. Empty completed output is distinct from failure. Truncated or malformed output may retain complete valid regions with an explicit Partial outcome; raw control/location tokens never become embedding text. Startup probes execute the shared graph path through a reviewed text task, while region correctness is qualified separately on image fixtures.
+
+One region task can run alone or alongside caption/OCR. Each region is split and embedded by the final text encoder, with geometry retained in prepared passages and committed vectors. Search uses region text rather than visual crop vectors and returns the original image with its best matching region. EXIF-aware overlays reject previews whose file identity, timestamp, size or oriented dimensions no longer match.
+
+Schema 9 adds `region_json` to task artifacts, prepared passages and vectors. It preserves source IDs and existing caption/OCR fingerprints. Changing only the final embedder reuses valid regions; a changed image, producer/task contract or loss of the last folder owner invalidates the dependent data. Restarted searches use retained vectors without loading the generator.
 
 ### Optional internal model providers
 
@@ -194,28 +223,18 @@ SDK/package versions and hardware architecture alone are not proof of usable inf
 
 The public application remains buildable without private feeds or SDKs. Private headers, encrypted model assets, provider registration/configuration and companion binaries are not copied into public builds; release validation rejects internal-provider and encrypted-model payloads. The internal companion has its own approved acquisition/build/servicing instructions.
 
-### Typed region output and retrieval
-
-`ImageTaskProfile` declares an output kind and reviewed postprocessor. `ImageRegion` is a provider-neutral contract containing region ID, text, optional genuine confidence and finite normalized bounds in the oriented source-image coordinate system. The first postprocessor, `florence-boxes-v1`, qualifies object detection (`<OD>`) and dense region captioning (`<DENSE_REGION_CAPTION>`). It supports multiple boxes after a shared label and dequantizes the model's 1,000 bins as `(bin + 0.5) / 1000`. It does not infer confidence or silently repair reversed/out-of-range boxes.
-
-Outputs are bounded to 64 unique regions and 4,096 characters per label/description. Empty completed output is distinct from failure. Truncated/malformed output can retain complete valid regions with an explicit Partial outcome; raw location/control tokens never become embedding text. Startup probes execute the shared graph/cache path through a reviewed text task; regional correctness is separately qualified on meaningful image fixtures. A future region-only model definition needs an appropriate reviewed readiness probe rather than passing startup without executing inference.
-
-The optional region selector comes from the selected model's capabilities. One regional task may run alone or alongside caption/OCR. Each retained region is independently split and embedded by the final text encoder. The catalog carries its typed geometry through prepared passages and committed vectors; the task artifact retains the full region array. Search uses region text, not a visual crop vector, and deduplicates at the original image, exposing the best matching region. Gallery overlays use the same EXIF-aware image decoder as inference, not a shell-cropped thumbnail. Preview loading checks the indexed timestamp/size, decode-time file identity and oriented dimensions, rejecting stale previews when those differ.
-
-Schema 9 adds optional `region_json` to task artifacts, prepared passages and vectors. It is opt-in for region tasks and does not renumber sources or alter old caption/OCR fingerprints. Adding approved task profiles to an otherwise identical cached model does not redownload weights or discard existing text artifacts. Changing only the final embedder reuses valid regions; changing the image revision, producer/task recipe or removing the last folder owner invalidates them. Restarted searches use retained region vectors without loading the generator.
-
 ## Startup and resource budgeting
 
 Readiness follows nine checkpoints: catalog, scheduling background monitoring, six primary-model phases and service readiness. Startup events carry monotonic sequence numbers, completed/total steps, percentage, phase, state and error. The UI cannot regress from Ready to a stale Loading snapshot. Percentages describe checkpoints, not elapsed time or an ETA.
 
-Startup validates each distinct selected model before enabling search, but pressure-aware pools need not keep every validated worker resident. For the shared default text/vision model, an optional second copy warms asynchronously and cannot block primary readiness. A real warmup failure leaves the primary usable with a visible warning; insufficient optional headroom is logged without a warning. Each worker initialization has a five-minute deadline; progress messages do not extend it. Native operations have a three-minute deadline. Shutdown cancels admission waits and reaps partially initialized workers.
+Startup validates each distinct selected model before enabling search, but pressure-aware pools need not keep every validated worker resident. Compatible-model pools, including the public default, use one worker per distinct session. The shared legacy custom-export pool can warm a second copy asynchronously when resources permit. A warmup failure leaves the primary usable; insufficient optional headroom is logged. Worker initialization has a five-minute deadline and native operations a three-minute deadline; progress does not extend those limits. Shutdown cancels admission waits and reaps partially initialized workers.
 
 The shared CPU set contains at most `floor(physical cores / 2)`, selecting one logical processor per chosen physical core and respecting inherited restrictions. Multi-group systems conservatively use the primary group. WPF, coordinator, model hosts, IFilters and native graph work inherit the same set.
 
 | Independent bound | Current value |
 |---|---|
 | File pipelines | `min(8, eligible processors)` |
-| Model processes | One per distinct selected binding; the shared default can add a second copy when CPU/memory permit; idle copies may be evicted |
+| Model processes | One per distinct compatible-model session; the shared legacy pool can add a second copy; idle workers may be evicted |
 | Planning memory | Per-model allowance plus a shared 2 GiB system reserve at each load; the default model allowance is 3 GiB |
 | Text inference batch | Up to 8 passages |
 | Image request | Up to 2 images |
@@ -249,11 +268,11 @@ USN v2/v3 replay tracks file and parent identities. **Unprivileged records may o
 
 Directory notifications provide a complementary low-latency path. Overflow, journal identity/cursor gaps and unknown record versions trigger conservative reconciliation. Metadata reconciliation also runs periodically. Durable journal cursors advance only after detected changes have been represented by queued work or completed deletions, not before callback delivery.
 
-Search validates the query, produces a query embedding, retrieves DiskANN candidates, resolves their current ownership, filters missing files, reranks by cosine similarity and deduplicates by file. The default limit is 50 files per active model index. Results are grouped by file type rather than applying a shared cross-model cutoff: a model with higher raw cosine scores must not suppress another model's matches. A selected similarity is a score, not a probability, and the same threshold can have different effects with different models.
+Search validates the query, produces role-aware query embeddings, retrieves DiskANN candidates, resolves current ownership, filters missing files, reranks by cosine similarity and deduplicates by file. The default result budget is 50 files **per selected content type**, including types sharing one model/index. A model's higher raw scores must not suppress another type's matches. Similarity is a score, not a probability, and thresholds have different effects across models.
 
 ## Persistence and recovery
 
-SQLite uses **WAL + FULL synchronization** and retains the schema-4 catalog contract:
+SQLite uses **WAL + FULL synchronization**. Feature-specific schema versions extend the authoritative catalog and durable queue:
 
 | Table | Durable responsibility |
 |---|---|
@@ -299,7 +318,7 @@ Exact resume means **completed files and committed passage batches do not repeat
 
 Matching is case-insensitive. Text/code support UTF-8, BOM-marked UTF-16/32 and explicit Windows-code-page fallback. Binary code without an appropriate Unicode BOM is rejected. Valid source mentioning document signatures is not routed through IFilter. Compiled artifacts are not source formats.
 
-The isolated extractor detects actual document formats, supports registered and Office Click-to-Run filters, and handles stream/file initialization. It does not rename source files or change registrations. Existing PDF activation and Office-content diagnostics are retained.
+The isolated extractor detects actual document formats, supports registered and Office Click-to-Run filters, and handles stream/file initialization. It does not rename source files or change filter registrations. Classified diagnostics distinguish content, activation, access and dependency failures.
 
 | Condition | Policy |
 |---|---|
@@ -316,9 +335,16 @@ Scanned PDFs need an OCR-capable filter. Some Excel IFilters omit inline-string 
 
 Default data: `%LOCALAPPDATA%\FuzzyFindAnything`. Override it with `--data-dir <absolute-directory>`.
 
+The public/compatible model cache lives under `models` in that data directory. Legacy custom-export provisioning uses the separate `model` path in `runtime.json`. The following illustrates a generated fresh-profile configuration; use the UI to preserve existing bindings and validated values.
+
 ```xml
 <FuzzyFindAnythingConfiguration version="3">
   <Appearance theme="Light" />
+  <Models>
+    <Text modelUrl="https://huggingface.co/onnx-community/embeddinggemma-2-ONNX" />
+    <Code modelUrl="https://huggingface.co/onnx-community/embeddinggemma-2-ONNX" />
+    <Image modelUrl="https://huggingface.co/onnx-community/embeddinggemma-2-ONNX" />
+  </Models>
   <Search>
     <Documents enabled="true" minimumSimilarity="0.6" />
     <Code enabled="true" minimumSimilarity="0.6" />
@@ -342,7 +368,9 @@ Source builds require PowerShell 7, .NET 10 SDK, Git, MSVC desktop tools, CMake 
 
 Output replacement uses atomic same-volume directory moves and rollback, never a file-by-file deployment swap. It does not terminate a running application. A locked destination is retained; choose another output directory.
 
-`Build-Release.ps1` creates relocatable ZIPs, retained notices, exact component/file manifests and SHA-256 sidecars. It validates architecture, relative paths, every inventoried checksum and absence of interpreter/model/user data, then exercises native dependencies after relocation. `tools\Build-ModelBundle.ps1` separately verifies and packages model assets; it does not publish them.
+`Build-Release.ps1` creates a versioned ZIP containing application files directly, retained notices, exact component/file manifests and a SHA-256 sidecar. It validates architecture, paths, checksums, required documentation and payload exclusions, then exercises native dependencies after relocation. Actions uploads the existing ZIP and checksum separately without another archive layer; the release job preserves those bytes. See [Validation and releases](VALIDATION.md#distribution-verification).
+
+`tools\Build-ModelBundle.ps1` separately verifies and packages legacy model assets; it does not publish them or replace automatic public-model acquisition.
 
 Offline maintenance requires a stopped application and acquires the same engine lease:
 
@@ -356,6 +384,6 @@ Offline maintenance requires a stopped application and acquires the same engine 
 
 Neither command starts the application. Never delete an active catalog or WAL. Folder backups are archival and are not imported automatically.
 
-For troubleshooting, inspect the per-file error before assuming a filter is missing; inspect passage progress before attributing a long workbook to extraction. `FFA_IFILTER_TRACE=1` enables additional helper diagnostics. No interpreter thread-dump setting is required in the native engine.
+For troubleshooting, inspect the per-file classification and passage progress before diagnosing a missing filter or an extraction hang. `FFA_IFILTER_TRACE=1` enables additional helper diagnostics.
 
 See [validation](VALIDATION.md) for test commands and [migration](MIGRATION.md) for safe cutover. Binaries, model payloads, package caches, personal corpora, indexes, logs and credentials are excluded from Git. The application icon and small synthetic test fixtures are intentional source assets.

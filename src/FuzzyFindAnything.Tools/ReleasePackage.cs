@@ -21,7 +21,7 @@ public static class ReleasePackage
     private static readonly string[] Required =
     [
         "FuzzyFindAnything.exe", "FuzzyFindAnything.dll", "FuzzyFindAnything.runtimeconfig.json", "runtime.json",
-        "Get-Model.ps1", "Reset-Index.ps1", "QUICKSTART.md", "THIRD-PARTY-NOTICES.txt", "release-manifest.json", "model-manifest.json",
+        "Get-Model.ps1", "Reset-Index.ps1", "README.md", "QUICKSTART.md", "THIRD-PARTY-NOTICES.txt", "release-manifest.json", "model-manifest.json",
         "public-model-manifest.json",
         "engine/FuzzyFindAnything.Engine.exe", "engine/ffa_diskann.dll", "engine/libiomp5md.dll", "engine/e_sqlite3.dll",
         "inference/FuzzyFindAnything.Inference.exe", "inference/onnxruntime.dll",
@@ -47,6 +47,8 @@ public static class ReleasePackage
                 parts.Any(part => part == ".." || part == ".") || !entries.TryAdd(name, entry))
                 throw new InvalidDataException("Unsafe or duplicate archive path: " + name);
             string leaf = parts[^1].ToLowerInvariant();
+            if (leaf.EndsWith(".zip", StringComparison.Ordinal))
+                throw new InvalidDataException("Release packages must contain application files directly, not nested ZIPs: " + name);
             if (parts.Any(part => part.ToLowerInvariant() is ".git" or ".github" or ".runtime" or "__pycache__" or "site-packages" or "models" or "data" or "corpus" or "index") ||
                 leaf is "settings.xml" or "engine.lock" or "catalog.sqlite3" or "catalog.sqlite3-wal" or "catalog.sqlite3-shm" or ".env" or
                     "provider.json" or "provider-settings.json" or "provider-model.json" or "ffa_provider_bridge.dll" or
@@ -63,8 +65,15 @@ public static class ReleasePackage
         foreach (string name in Required)
             if (!entries.ContainsKey(name)) throw new InvalidDataException("Required release file is missing: " + name);
         if (Version.TryParse(version.Split('-')[0], out var releaseVersion) && releaseVersion.Major >= 2)
-            foreach (string name in new[] { "LICENSE", "APPLICATION-LICENSE", "CONTRIBUTING.md", "SECURITY.md", "THIRD-PARTY-NOTICES.md" })
-                if (!entries.ContainsKey(name)) throw new InvalidDataException("Required licensing/contribution document is missing: " + name);
+        {
+            foreach (string name in new[] { "LICENSE", "APPLICATION-LICENSE", "CONTRIBUTING.md", "SECURITY.md", "THIRD-PARTY-NOTICES.md",
+                "docs/ARCHITECTURE.md", "docs/CHUNKING.md", "docs/MIGRATION.md", "docs/MODEL-COMPATIBILITY.md", "docs/VALIDATION.md" })
+                if (!entries.ContainsKey(name)) throw new InvalidDataException("Required release document is missing: " + name);
+            using var license = entries["LICENSE"].Open();
+            using var applicationLicense = entries["APPLICATION-LICENSE"].Open();
+            if (!SHA256.HashData(license).SequenceEqual(SHA256.HashData(applicationLicense)))
+                throw new InvalidDataException("The application license copies do not match.");
+        }
         using var configuration = ReadJson(entries["runtime.json"]);
         if (configuration.RootElement.EnumerateObject().Count() != RuntimePaths.Count)
             throw new InvalidDataException("Unexpected runtime configuration.");

@@ -1,14 +1,16 @@
-# Contributing to FuzzyFindAnything
+# Contributing
 
 FuzzyFindAnything 2.0 is authored and maintained by **Suman Ghosh**. Contributions to the application and its documentation are welcome under the [MIT license](LICENSE).
 
-## Before changing code
+[Overview](README.md) · [Architecture](docs/ARCHITECTURE.md) · [Validation and releases](docs/VALIDATION.md) · [Security](SECURITY.md)
+
+## Propose a change
 
 Use an issue to describe a substantial feature or architectural change before implementing it. Include the user scenario, expected behavior and relevant platform/model constraints. For bugs, include the app version, Windows/CPU architecture, reproduction steps and a minimal **synthetic** example.
 
 Never attach private documents, catalogs, model weights, credentials or unredacted logs. Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
 
-Keep changes focused. Preserve existing folder ownership, settings, vector identities and durable progress unless a deliberate migration is part of the change. The repository remains named `FuzzyFindAnything`; the 2.0 suffix is app branding, not a namespace or data-directory migration.
+Keep changes focused. Preserve folder ownership, settings, vector identities and durable progress unless a deliberate migration is part of the change. Product branding does not imply a namespace or data-directory migration.
 
 ## Development environment
 
@@ -25,7 +27,7 @@ git switch -c feature-your-change
 .\Build.ps1 -SkipSetup
 ```
 
-Weights stay separate from application packages. The public default is acquired automatically on first launch; follow the [binary quickstart](QUICKSTART.md#2-prepare-models) for other selections or legacy bundle repair.
+Weights stay separate from application packages. The public default is acquired automatically on [first launch](QUICKSTART.md#2-first-launch). Other supported selections use the model UI; initialized legacy bundles have a separate [repair workflow](docs/MIGRATION.md#legacy-model-bundles).
 
 Normal setup, model acquisition, builds, tests and runtime are Python-free. Do not introduce a global interpreter dependency. Build different runtime identifiers sequentially: shared project asset files are restored for the active RID.
 
@@ -52,20 +54,20 @@ dotnet build .\FuzzyFindAnything.sln -c Release --nologo
 dotnet format .\FuzzyFindAnything.sln --no-restore --verify-no-changes
 ```
 
-Model/inference changes also require the relevant numerical and real-device tests. Packaging changes require both architecture packages and relocation checks:
+Model/inference changes require the relevant numerical and real-device tests. Packaging changes require both architecture packages and the [distribution checks](docs/VALIDATION.md#distribution-verification):
 
 ```powershell
 .\Build-Release.ps1 -SkipSetup -RuntimeIdentifier win-x64
 .\Build-Release.ps1 -SkipSetup -RuntimeIdentifier win-arm64
 ```
 
-UI changes should pass the headless contracts and the applicable isolated UI workflow. Render screenshots from current XAML using synthetic data, never personal search results. Documentation changes should include link/command checks where relevant.
+UI changes require headless contracts and the applicable isolated UI workflow. Render previews from current XAML with synthetic data, never personal search results. Documentation changes require relevant link, command, model-catalogue and licensing checks. Keep the README as an overview, the Quickstart task-oriented, and implementation/validation details in their dedicated references.
 
 ## Pull requests and releases
 
-Target `dev` for ordinary work. Describe the problem, the implementation, compatibility implications and checks actually performed. Do not claim unrun tests or unverified hardware support. The maintainer promotes verified work to `main`; release promotions keep both branches aligned.
+Target `dev` for ordinary work. Describe the problem, implementation, compatibility implications and checks actually performed. State unrun tests and unavailable hardware explicitly. The maintainer promotes verified work to `main` for release.
 
-Release ZIPs must contain their MIT application license, third-party notices, exact inventory and checksums. Model payloads, private provider components, user data and credentials must remain outside public packages. Keep the pinned upstream notice bytes in `licenses\upstream` unchanged unless deliberately updating the source/hash inventory.
+Release downloads use one versioned ZIP per architecture, containing application files directly, plus a separate SHA-256 file. Preserve the MIT application license, original third-party notices, documentation and complete checksummed inventory. Model payloads, private provider components, user data and credentials remain outside public packages. Keep pinned bytes in `licenses\upstream` unchanged unless deliberately updating their source/hash inventory.
 
 The Microsoft companion has a separate authorized source/distribution channel. Public contributions must not disclose private model identifiers, SDK payloads, feed credentials or internal user data.
 

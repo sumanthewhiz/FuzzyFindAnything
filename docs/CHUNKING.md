@@ -1,8 +1,8 @@
-# FuzzyFindAnything 2.0: content chunking
+# Content chunking
 
-[Overview](../README.md) · [Architecture](ARCHITECTURE.md) · [Migration](MIGRATION.md)
+[Overview](../README.md) · [Architecture](ARCHITECTURE.md) · [Model compatibility](MODEL-COMPATIBILITY.md) · [Migration](MIGRATION.md)
 
-## Who creates the chunks?
+## Responsibilities
 
 **The application creates file chunks; the embedding model does not decide file boundaries.**
 
@@ -10,7 +10,7 @@ The model's tokenizer turns text into token IDs, and its encoder produces vector
 
 Image patching inside a vision processor is a different operation. Direct Gemma/CLIP images are not source-code/document chunks. Caption/OCR pipelines first generate text and retain their existing model-specific text preparation; a document/code chunk-profile update does not regenerate those image descriptions or invalidate their vectors.
 
-## Current pipeline
+## Preparation pipeline
 
 ```text
 File kind and extension
@@ -38,9 +38,10 @@ Document structure is limited by what extraction provides. An IFilter may flatte
 
 All final chunk inputs are checked with the **actual selected model tokenizer**. Source offsets are UTF-16 string offsets; line numbers are one-based positions in the extracted text/source file.
 
-| Model path | Current budget |
+| Model path | Budget |
 |---|---|
-| EmbeddingGemma2 | 512 content/context tokens plus its bounded filename/title and special-token framing, always below the 8,192-token input ceiling. |
+| Public EmbeddingGemma2 ONNX | 512 total formatted chunk tokens, including filename/title and special-token framing, within the qualified 2,048-token input ceiling. |
+| Legacy EmbeddingGemma2 custom export | 512 content/context tokens plus bounded filename/title and special-token framing, below its retained 8,192-token input ceiling. |
 | Reviewed Qwen embedding recipe | 512 total formatted chunk tokens, including applicable prefix/special tokens, within the 2,048-token runtime ceiling. |
 | Other reviewed embedding recipes | Their declared `chunk_tokens`, including their document prefix and special tokens. |
 | Legacy compatible BERT/CLIP text encoders | Their admitted sequence limit, with special tokens counted before accepting a chunk. |
@@ -50,7 +51,7 @@ Code context contains a bounded parent/symbol signature; document context contai
 
 Provider SDKs may tokenize or process a bounded sequence internally, but the application still chooses the file's chunks and retains their provenance. An embedding model's advertised context length is not a file-chunking strategy.
 
-Whole units that fit are not arbitrarily sliced. Oversized units use overlap bounded by **64 tokenizer tokens or one eighth of the chunk budget**, whichever is smaller, preferring a structural/line boundary. This replaces the compatible host's earlier character-count overlap for document/code preparation. Boundaries do not split UTF-16 surrogate pairs.
+Whole units that fit are not arbitrarily sliced. Oversized units use overlap bounded by **64 tokenizer tokens or one eighth of the chunk budget**, whichever is smaller, preferring a structural/line boundary. Boundaries do not split UTF-16 surrogate pairs.
 
 Distinct code spans are not deduplicated by collapsing whitespace. This preserves indentation-sensitive code and repeated declarations at different source locations. The structured profiles preserve source coverage, including comments and line breaks.
 
@@ -60,7 +61,7 @@ Each prepared chunk carries its profile, language, source offset/length, line ra
 
 Chunking profile identity is independent of the model's document-vector identity. Text and code can still share a compatible Qwen/Gemma vector index while using different source segmentation. Query Purpose controls query instructions; it does **not** select the file chunker.
 
-Catalog schema 8 adds full chunk text and provenance. The first startup with the new native preparation protocol updates document/code profiles and schedules an incremental background rebuild of those representations. Folder lists, source IDs, image vectors and cached caption/OCR are retained. Old prepared document/code batches are invalidated because their boundaries belong to a different profile. A later code-profile-only change invalidates code, not documents or images.
+Catalog schema 8 stores full chunk text and provenance. Upgrading from an older preparation profile schedules an incremental background rebuild of the affected document/code representations. Folder lists, source IDs, image vectors and cached caption/OCR are retained. Prepared batches using a different profile are invalidated; a code-profile-only change invalidates code, not documents or images.
 
 An unchanged profile does not trigger another rebuild on restart. A query-only preference or similarity-threshold change does not reindex files.
 
